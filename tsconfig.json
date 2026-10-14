@@ -5,6 +5,7 @@
     { "path": "packages/formats" },
     { "path": "packages/state" },
     { "path": "packages/adapters" },
-    { "path": "packages/cli" }
+    { "path": "packages/cli" },
+    { "path": "packages/demo" }
   ]
 }

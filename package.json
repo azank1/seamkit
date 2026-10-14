@@ -9,7 +9,8 @@
     "packages/formats",
     "packages/state",
     "packages/adapters",
-    "packages/cli"
+    "packages/cli",
+    "packages/demo"
   ],
   "engines": {
     "node": ">=20"
@@ -17,7 +18,8 @@
   "scripts": {
     "build": "tsc -b",
     "clean": "tsc -b --clean",
-    "test": "npm run build && node scripts/run-tests.mjs"
+    "test": "npm run build && node scripts/run-tests.mjs",
+    "demo": "npm run build && node packages/demo/dist/main.js"
   },
   "devDependencies": {
     "@types/node": "20.19.43",
