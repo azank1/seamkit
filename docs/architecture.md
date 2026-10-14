@@ -70,14 +70,17 @@ The implementation is TypeScript on Node 20 or later, published as ES modules, i
 | Package | Contents | Runtime dependencies |
 |---|---|---|
 | `core` | types, verdict algebra, every check as a pure function | none |
-| `formats` | card and policy parsing, canonical JSON, event schema validation | `yaml` |
+| `formats` | card and policy parsing | `yaml` |
+| `state` | the event store on the `seamkit/state` branch, written with git plumbing | none (it runs the `git` binary) |
 | `adapters` | git, GitHub (REST over `fetch`), version endpoint, bundle marker, Vercel, Supabase, Postgres, fake | `pg` as an optional peer dependency only |
 | `cli` | the `seamkit` binary, TTY prompts, the init interview | none beyond the packages above |
 | `mcp` | the MCP server, elicitation, the loopback approval page | `@modelcontextprotocol/server` (the v2 SDK, which supports the 2026-07-28 revision and serves older clients through a shim) |
 | `action` | the GitHub Action, bundled into one committed file | bundled at build time |
 | `console` | the static HTML generator | none |
 
-The core stays dependency-free so that it can be audited in one sitting and vendored if needed. Argument parsing uses
+The core stays dependency-free so that it can be audited in one sitting and vendored if needed. It also holds the
+event format and canonical JSON, which follows RFC 8785 and is used only for seamkit's own events and input digests.
+It never canonicalises or verifies a receipt, which remains orcha-sdk's job. Argument parsing uses
 `node:util` `parseArgs`, prompts use `node:readline`, and HTTP uses the global `fetch`, which keeps the command line tool
 close to dependency-free as well.
 
@@ -128,7 +131,8 @@ the first is a decision someone made and the second is an absence of evidence.
 | 4 | unclassified, which stops for a human |
 
 Every non-zero code means "not a pass", so a shell agent that chains commands with `&&` can never proceed on a result it
-misread. `--json` prints the verdicts as JSON lines on standard output in all cases.
+misread. `--json` prints one JSON object per invocation, holding the outcome, the exit code and the verdicts, so an agent
+parses a single document rather than a stream.
 
 ### 5.4 Rendering rules
 
@@ -270,6 +274,13 @@ with a fetch of that branch. A session that cannot reach the remote still works,
 "state not synchronised since <time>" in `notExamined`. The state is still files in the repository, readable with plain
 git, and no service or database is involved. This refines the handoff's sketch, in which everything lived under `.seamkit/`
 on the working branch, and it is listed as a decision in section 12.
+
+Three details of the implementation follow from this. The branch is written with git plumbing (a private index file,
+`commit-tree` and a compare-and-swap update of the ref), so recording an event never touches the working tree, the
+index or HEAD of the session that records it. State commits carry a fixed tool identity rather than the human's, which
+says plainly who wrote them and keeps them out of contribution histories and commit budgets; who caused an event is
+recorded inside the event, as provenance. And a verdict is recorded only when the branch already exists or the caller
+asks for it, so a first run of the tool creates no branch by surprise.
 
 ### 7.4 Channels and assurance levels
 
