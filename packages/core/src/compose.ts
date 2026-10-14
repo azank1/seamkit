@@ -5,7 +5,8 @@ import { assertVerdict, type Verdict } from './verdict.js';
 /**
  * Combines several verdicts about one subject into a composite, for example the gate verdict for
  * one pull request. The outcome is the most severe part; gaps, evidence and reasons are carried
- * over with the part's check name in front, so aggregation never hides a gap.
+ * over with the part's check and subject in front, so aggregation never hides a gap and two parts
+ * of the same check stay apart.
  *
  * A composite of no parts is `examined_nothing`.
  */
@@ -21,8 +22,8 @@ export function compose(check: string, subject: string, parts: readonly Verdict[
     check,
     subject,
     outcome,
-    examined: parts.flatMap((p) => p.examined.map((e) => ({ ...e, item: `${p.check}: ${e.item}` }))),
-    notExamined: parts.flatMap((p) => p.notExamined.map((g) => ({ ...g, item: `${p.check}: ${g.item}` }))),
+    examined: parts.flatMap((p) => p.examined.map((e) => ({ ...e, item: `${p.check} (${p.subject}): ${e.item}` }))),
+    notExamined: parts.flatMap((p) => p.notExamined.map((g) => ({ ...g, item: `${p.check} (${p.subject}): ${g.item}` }))),
     evidence: parts.flatMap((p) => p.evidence),
     reasons,
     inputs: digest({ compose: check, subject, parts: parts.map((p) => p.inputs) }),

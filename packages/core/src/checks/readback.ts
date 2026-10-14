@@ -390,6 +390,14 @@ function versionStatus(facts: Facts, change: ReadbackChange, m: Extract<Marker, 
     };
   }
   const examined: Examined = { item: `${item} (running ${short(doc.commit)})` };
+  // An implicit marker reads production's own version document, which the summary names. A card can
+  // name any document, such as a server function's, so its reasons say which one was read.
+  if (change.markerSource === 'card') {
+    const runs = `production at ${m.url} runs ${short(doc.commit)}`;
+    return fact.contains
+      ? { marker: m, status: 'present', why: `${runs}, which contains this change`, examined, evidence }
+      : { marker: m, status: 'absent', why: `${runs}, which does not contain this change`, examined, evidence };
+  }
   return fact.contains
     ? { marker: m, status: 'present', why: `production's version ${short(doc.commit)} contains this change`, examined, evidence }
     : { marker: m, status: 'absent', why: `production runs ${short(doc.commit)}, which does not contain this change`, examined, evidence };

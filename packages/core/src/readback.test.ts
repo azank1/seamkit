@@ -127,6 +127,19 @@ describe('readback by version ancestry', () => {
     assert.equal(run(input({ changes: [implicit(3)], ancestry: [contains(3, false)] })).by.get('pr#3')?.state, 'not_proven');
   });
 
+  it('names the version document a card points at, since it need not be the main one', () => {
+    const fn = 'https://notes.example/api/sync/version.json';
+    const { by } = run(
+      input({
+        changes: [change(2, [{ kind: 'version', url: fn }]), implicit(1)],
+        versions: [...input().versions, { url: fn, at: AT, status: 'ok', reported: RUNNING, commit: RUNNING, digest: DIGEST }],
+        ancestry: [contains(1, true), contains(2, false)],
+      }),
+    );
+    assert.deepEqual(by.get('pr#2')?.reasons, [`production at ${fn} runs ${RUNNING.slice(0, 12)}, which does not contain this change`]);
+    assert.deepEqual(by.get('pr#1')?.reasons, [`production's version ${RUNNING.slice(0, 12)} contains this change`]);
+  });
+
   it('says so when no ledger was read, since not live cannot then be told apart', () => {
     const { by } = run(input({ changes: [implicit(3)], ancestry: [contains(3, false)], history: null }));
     assert.ok(by.get('pr#3')?.notExamined.some((g) => g.item === 'earlier sightings'));

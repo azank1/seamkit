@@ -133,9 +133,9 @@ describe('compose', () => {
     ];
     const c = compose('gate', 'pr#1', parts, AT);
     assert.equal(c.outcome, 'examined_nothing');
-    assert.deepEqual(c.notExamined, [{ item: 'sandbox: sandbox evidence', reason: 'no_adapter' }]);
+    assert.deepEqual(c.notExamined, [{ item: 'sandbox (thing): sandbox evidence', reason: 'no_adapter' }]);
     assert.deepEqual(c.reasons, ['sandbox (thing): no sandbox adapter is configured']);
-    assert.deepEqual(c.examined, [{ item: 'ci: runs on head', count: 2 }]);
+    assert.deepEqual(c.examined, [{ item: 'ci (thing): runs on head', count: 2 }]);
   });
 
   it('fails when any part fails, and its inputs digest depends on the parts', () => {
