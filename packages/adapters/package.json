@@ -1,0 +1,20 @@
+{
+  "name": "@seamkit/adapters",
+  "version": "0.0.0",
+  "private": true,
+  "description": "seamkit adapters: read-only views of production and of the repository, plus a fake production for tests.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@seamkit/core": "0.0.0",
+    "@seamkit/state": "0.0.0"
+  }
+}

@@ -6,7 +6,9 @@
   "type": "module",
   "workspaces": [
     "packages/core",
+    "packages/formats",
     "packages/state",
+    "packages/adapters",
     "packages/cli"
   ],
   "engines": {

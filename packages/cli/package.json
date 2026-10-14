@@ -5,6 +5,12 @@
   "description": "Deterministic production checks for teams whose code is mostly written by AI agents.",
   "license": "Apache-2.0",
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/cli.d.ts",
+      "default": "./dist/cli.js"
+    }
+  },
   "bin": {
     "seamkit": "bin/seamkit.js"
   },
@@ -16,7 +22,9 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@seamkit/adapters": "0.0.0",
     "@seamkit/core": "0.0.0",
+    "@seamkit/formats": "0.0.0",
     "@seamkit/state": "0.0.0"
   }
 }

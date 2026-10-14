@@ -9,6 +9,11 @@ function readStdin(): Promise<string> {
   });
 }
 
+// A reader that stops early, as in "seamkit audit | head", is not an error; the exit code still says the verdict.
+process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code !== 'EPIPE') throw err;
+});
+
 const code = await run(process.argv.slice(2), {
   out: (text) => process.stdout.write(text),
   err: (text) => process.stderr.write(text),

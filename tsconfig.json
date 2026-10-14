@@ -2,7 +2,9 @@
   "files": [],
   "references": [
     { "path": "packages/core" },
+    { "path": "packages/formats" },
     { "path": "packages/state" },
+    { "path": "packages/adapters" },
     { "path": "packages/cli" }
   ]
 }
