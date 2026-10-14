@@ -58,7 +58,7 @@ describe('the demo', () => {
   });
 
   it('seeds the same history on every machine', () => {
-    assert.equal(d.result.merges.get(20), '2c5c5a34e4c12fdbd0847e556dfc34692f9813b3');
+    assert.equal(d.result.merges.get(20), '264b11fa07f30be961285848782ce24dd15a7546');
     assert.equal(d.result.merges.size, 20);
   });
 
@@ -94,8 +94,8 @@ describe('the demo', () => {
 
   it('explains each not-proven change in terms an agent can act on', () => {
     const by = new Map(d.runs[1]!.verdicts.map((v) => [v.subject, v]));
-    assert.match(by.get('pr#11')!.reasons[0]!, /although production's version b784ac3e4bed contains this change; the text is probably not in the built output/);
-    assert.match(by.get('pr#18')!.reasons[0]!, /production runs b784ac3e4bed, which does not contain this change$/);
+    assert.match(by.get('pr#11')!.reasons[0]!, /although production's version e48d7758f6ec contains this change; the text is probably not in the built output/);
+    assert.match(by.get('pr#18')!.reasons[0]!, /production runs e48d7758f6ec, which does not contain this change$/);
     assert.match(by.get('pr#17')!.reasons[0]!, /it was seen live at 2026-10-14T12:00:\d\d\.000Z \(event [0-9a-f]{12}\)$/);
   });
 

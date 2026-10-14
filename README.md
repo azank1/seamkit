@@ -32,9 +32,10 @@ commit is an ancestor of the running commit is live by version, and every later 
 working tree with uncommitted changes proves nothing, and readback says so rather than trusting it.
 
 The second question is whether production serves what the change added. A change's scope card, a fenced block in its
-pull request description that GitHub carries into the merge commit, can name markers: text that the built output must
-contain, or a version document of its own for a server function. Readback reads the page, the scripts and styles it
-loads from its own origin, and the chunks those scripts name, and searches all of them for each marker's text.
+pull request description that reaches the history with its merge (see Scope cards), can name markers: text that the
+built output must contain, or a version document of its own for a server function. Readback reads the page, the scripts
+and styles it loads from its own origin, and the chunks those scripts name, and searches all of them for each marker's
+text.
 
 | State | Condition | Outcome |
 |---|---|---|
@@ -63,21 +64,21 @@ request 14 and reads back again. The second run sorts the twenty changes as foll
 ```
 NOT LIVE  3 of 20  (3 fail)
   pr#17  Export notes as CSV
-         marker "Export as CSV" not found in 3 files served from http://127.0.0.1:43053/; production runs b784ac3e4bed, which does not contain this change; it was seen live at 2026-10-14T18:51:41.836Z (event 9186f0549c1f)
-         production at http://127.0.0.1:43053/api/notes-export/version.json runs b784ac3e4bed, which does not contain this change; it was seen live at 2026-10-14T18:51:41.814Z (event 9186f0549c1f)
+         marker "Export as CSV" not found in 3 files served from http://127.0.0.1:33413/; production runs e48d7758f6ec, which does not contain this change; it was seen live at 2026-10-14T19:02:20.551Z (event 5fe217c110c7)
+         production at http://127.0.0.1:33413/api/notes-export/version.json runs e48d7758f6ec, which does not contain this change; it was seen live at 2026-10-14T19:02:20.523Z (event 5fe217c110c7)
   pr#16  Pin notes to the top of the list
-         production runs b784ac3e4bed, which does not contain this change; it was seen live at 2026-10-14T18:51:41.639Z (event 9186f0549c1f)
+         production runs e48d7758f6ec, which does not contain this change; it was seen live at 2026-10-14T19:02:20.366Z (event 5fe217c110c7)
   ...
 
 NOT PROVEN  5 of 20  (1 examined nothing, 4 fail)
   ...
   pr#18  Queue edits while offline
-         marker "offline-queue" not found in 3 files served from http://127.0.0.1:43053/; production runs b784ac3e4bed, which does not contain this change
+         marker "offline-queue" not found in 3 files served from http://127.0.0.1:33413/; production runs e48d7758f6ec, which does not contain this change
   pr#12  Store sync state per note
          1 of 1 marker could not be read
          database object notes.sync_state: this version of seamkit has no adapter for database markers
   pr#11  Show a sync badge on each note
-         marker "SyncBadge" not found in 3 files served from http://127.0.0.1:43053/, although production's version b784ac3e4bed contains this change; the text is probably not in the built output (text that exists only in source, such as a comment or a component name, never reaches a bundle)
+         marker "SyncBadge" not found in 3 files served from http://127.0.0.1:33413/, although production's version e48d7758f6ec contains this change; the text is probably not in the built output (text that exists only in source, such as a comment or a component name, never reaches a bundle)
 
 NOTHING TO PROVE  3 of 20  (3 examined nothing)
   pr#13  Cache dependencies in CI
@@ -86,10 +87,10 @@ NOTHING TO PROVE  3 of 20  (3 examined nothing)
 
 LIVE  9 of 20  (9 pass)
   pr#14  Add keyboard shortcuts for new note and search
-         marker "shortcut-help" found in 3 files served from http://127.0.0.1:43053/
+         marker "shortcut-help" found in 3 files served from http://127.0.0.1:33413/
   ...
   pr#6   Retry notes-sync on transient errors
-         production at http://127.0.0.1:43053/api/notes-sync/version.json runs b784ac3e4bed, which contains this change
+         production at http://127.0.0.1:33413/api/notes-sync/version.json runs e48d7758f6ec, which contains this change
   ...
 
 FAIL  readback  main
@@ -97,9 +98,9 @@ FAIL  readback  main
   not live 3: seen live earlier, absent now
   not proven 5: 4 absent or contradicted, 1 could not be read
   nothing to prove 3, by their cards' claims, which a human has to accept
-  production at http://127.0.0.1:43053/version.json runs b784ac3e4bed (pr#14)
-  production at http://127.0.0.1:43053/api/notes-export/version.json runs b784ac3e4bed (pr#14)
-  production at http://127.0.0.1:43053/api/notes-sync/version.json runs b784ac3e4bed (pr#14)
+  production at http://127.0.0.1:33413/version.json runs e48d7758f6ec (pr#14)
+  production at http://127.0.0.1:33413/api/notes-export/version.json runs e48d7758f6ec (pr#14)
+  production at http://127.0.0.1:33413/api/notes-sync/version.json runs e48d7758f6ec (pr#14)
   not examined: changes before the last 20 on main (outside --last)
   not examined: 1 item listed with the changes above
 ```
@@ -133,6 +134,12 @@ readback resolves against the production URL it is given, so one card serves sta
 kind `none` with a reason declares that nothing deployed changes. A change without a card, or with a card that does not
 parse, is proven by version alone, and a broken card stays listed among the change's gaps.
 
+Readback finds cards in the history rather than through GitHub's API, so a card counts once its merge commit carries it.
+GitHub writes the description into the merge commit only when the repository's default commit message is "Pull
+request title and description" (Settings, General, Pull Requests), for merge commits and squash merges alike. With the
+default message the card is lost and the change is proven by version alone, and `seamkit audit` says so when it
+finds no cards.
+
 ## Version documents
 
 ```sh
@@ -165,7 +172,7 @@ production URL with credentials or a query string is refused for that reason.
 
 ```sh
 npm ci
-npm test       # 116 tests on Node 20 and 22, using temporary repositories and a local fake production
+npm test       # 117 tests on Node 20 and 22, using temporary repositories and a local fake production
 npm run demo   # the demo above; add -- --keep to keep the demo repository
 ```
 

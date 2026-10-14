@@ -15,9 +15,10 @@ function data(text: string): string {
   return `data ${Buffer.byteLength(text, 'utf8')}\n${text}\n`;
 }
 
+/** The message GitHub writes for a merge commit when the repository uses "Pull request title and description". */
 function mergeMessage(pr: PullRequest): string {
   const card = pr.card === undefined ? '' : `\n\`\`\`seamkit-card\n${pr.card}\n\`\`\`\n`;
-  return `Merge pull request #${pr.n} from agents/${pr.branch}\n\n${pr.title}\n\n${pr.summary}\n${card}`;
+  return `${pr.title} (#${pr.n})\n\n${pr.summary}\n${card}`;
 }
 
 /** The whole history as one git fast-import stream: an initial commit, then a branch and a merge per pull request. */

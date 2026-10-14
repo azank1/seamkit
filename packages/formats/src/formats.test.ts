@@ -101,8 +101,16 @@ describe('scope card', () => {
 });
 
 describe('commit messages', () => {
-  it('reads a merged pull request', () => {
-    assert.deepEqual(parseChangeMessage('Merge pull request #12 from agent/sync-badge\n\nShow sync state\n\nbody', 2), {
+  it('reads a merge commit in each of the three forms GitHub writes', () => {
+    // Default message: the number and branch first, the title on the third line.
+    assert.deepEqual(parseChangeMessage('Merge pull request #12 from agent/sync-badge\n\nShow sync state', 2), {
+      kind: 'pull_request',
+      pr: 12,
+      title: 'Show sync state',
+    });
+    // Pull request title, and pull request title and description, which carries the card.
+    assert.deepEqual(parseChangeMessage('Show sync state (#12)', 2), { kind: 'pull_request', pr: 12, title: 'Show sync state' });
+    assert.deepEqual(parseChangeMessage('Show sync state (#12)\n\nAdds a badge.\n\n```seamkit-card\ncard: 1\n```', 2), {
       kind: 'pull_request',
       pr: 12,
       title: 'Show sync state',

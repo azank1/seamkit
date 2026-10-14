@@ -35,8 +35,12 @@ async function cli(args: string[], cwd: string, env: Record<string, string> = {}
   return { code: await run(args, io), out, err };
 }
 
-/** A repository with two merged pull requests (the second with a card) and one direct commit. */
-async function repo(): Promise<{ dir: string; merges: string[]; direct: string }> {
+/**
+ * A repository with two merged pull requests and one direct commit. The first merge has GitHub's
+ * default message, which holds no description; the second has the form that "Pull request title
+ * and description" writes, and carries a card unless `card` is false.
+ */
+async function repo(options: { card?: boolean } = {}): Promise<{ dir: string; merges: string[]; direct: string }> {
   const dir = join(root, `repo-${++counter}`);
   await git(['init', '-q', '-b', 'main', dir], { cwd: root });
   await writeFile(join(dir, 'README.md'), 'x\n');
@@ -44,16 +48,16 @@ async function repo(): Promise<{ dir: string; merges: string[]; direct: string }
   await git([...ID, 'commit', '-q', '-m', 'Initial commit'], { cwd: dir });
   const merges: string[] = [];
   const card = '```seamkit-card\ncard: 1\nintent: Add the badge.\nlayers: [frontend]\ntargets: [web]\nmarkers:\n  - kind: bundle\n    text: "sync-badge-v2"\n```';
-  for (const [n, body] of [
-    [1, ''],
-    [2, card],
+  for (const [n, message] of [
+    [1, 'Merge pull request #1 from agent/b1\n\nChange 1'],
+    [2, `Change 2 (#2)\n\nAdds the badge.\n\n${options.card === false ? '' : card}`],
   ] as const) {
     await git(['switch', '-q', '-c', `b${n}`, 'main'], { cwd: dir });
     await writeFile(join(dir, `f${n}.txt`), `${n}\n`);
     await git(['add', `f${n}.txt`], { cwd: dir });
     await git([...ID, 'commit', '-q', '-m', `change ${n}`], { cwd: dir });
     await git(['switch', '-q', 'main'], { cwd: dir });
-    await git([...ID, 'merge', '-q', '--no-ff', '-m', `Merge pull request #${n} from agent/b${n}\n\nChange ${n}\n\n${body}`, `b${n}`], { cwd: dir });
+    await git([...ID, 'merge', '-q', '--no-ff', '-m', message, `b${n}`], { cwd: dir });
     merges.push(await git(['rev-parse', 'HEAD'], { cwd: dir }));
   }
   await writeFile(join(dir, 'f3.txt'), '3\n');
@@ -152,6 +156,15 @@ describe('seamkit audit', () => {
     assert.match(r.out, /Production does not say which version it runs \(production serves no version document/);
     assert.match(r.out, /seamkit stamp --out <your public directory>\/version\.json/);
     assert.match(r.out, /There is no ledger yet\. Run "seamkit state init"/);
+  });
+
+  it('says how a card reaches the history when it finds none', async () => {
+    const { dir, direct } = await repo({ card: false });
+    deploy(direct);
+    const r = await cli(['audit', '--url', prod.url], dir);
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /No change carries a seamkit-card/);
+    assert.match(r.out, /"Pull request title and description"/);
   });
 
   it('is for the last changes only', async () => {

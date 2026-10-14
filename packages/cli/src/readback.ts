@@ -223,7 +223,9 @@ export function auditAdvice(context: ReadbackContext): string[] {
     out.push(`${context.cards.broken} change${context.cards.broken === 1 ? ' has a card' : 's have cards'} that cannot be used; each is listed above with its problems.`);
   }
   if (context.cards.found === 0) {
-    out.push('No change carries a seamkit-card, so changes are proven by version alone. A card lets a change name text that production must serve.');
+    out.push(
+      'No change carries a seamkit-card, so changes are proven by version alone. A card in a pull request description lets the change name text that production must serve, and it reaches the history only when the default commit message for merges is "Pull request title and description" (on GitHub: Settings, General, Pull Requests, for merge commits and squash merging alike).',
+    );
   }
   return out;
 }
