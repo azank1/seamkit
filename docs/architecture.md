@@ -1,7 +1,7 @@
 # Architecture (M0 draft)
 
-Status: draft for review. The working name is undecided, so this document calls the tool "the harness" and its
-command `ph`. Both are placeholders.
+Status: draft for review. The product is called seamkit and its command is `seamkit`. This document also calls it
+"the harness", the generic term for what it is.
 
 ## 1. Purpose and design spine
 
@@ -42,7 +42,7 @@ receipts (section 10).
 ```
         agents · models · humans  (Claude Code, Cursor, Codex, any MCP client, a shell, CI)
                  │              │                │                  │
-             CLI `ph`      MCP server       GitHub Action      harness hooks
+             CLI `seamkit`      MCP server       GitHub Action      harness hooks
                  └──────────────┴───────┬────────┴──────────────────┘
                                    shell (I/O)
             reads policy and events · calls adapters · asks humans · writes events
@@ -59,7 +59,7 @@ active rulings, a set of observations and the current time) and returns verdicts
 clock access of its own. The shell gathers observations through adapters, passes them to the core and records both the
 observations and the verdicts as events.
 
-This split is what makes the judge auditable. Because a verdict is a pure function of recorded inputs, `ph replay
+This split is what makes the judge auditable. Because a verdict is a pure function of recorded inputs, `seamkit replay
 <event>` can recompute any past verdict from the ledger and confirm that it comes out the same. A verdict that cannot be
 replayed is a defect.
 
@@ -72,7 +72,7 @@ The implementation is TypeScript on Node 20 or later, published as ES modules, i
 | `core` | types, verdict algebra, every check as a pure function | none |
 | `formats` | card and policy parsing, canonical JSON, event schema validation | `yaml` |
 | `adapters` | git, GitHub (REST over `fetch`), version endpoint, bundle marker, Vercel, Supabase, Postgres, fake | `pg` as an optional peer dependency only |
-| `cli` | the `ph` binary, TTY prompts, the init interview | none beyond the packages above |
+| `cli` | the `seamkit` binary, TTY prompts, the init interview | none beyond the packages above |
 | `mcp` | the MCP server, elicitation, the loopback approval page | `@modelcontextprotocol/server` (the v2 SDK, which supports the 2026-07-28 revision and serves older clients through a shim) |
 | `action` | the GitHub Action, bundled into one committed file | bundled at build time |
 | `console` | the static HTML generator | none |
@@ -144,7 +144,7 @@ A scope card is a fenced block in the pull request body, so that any agent able 
 write one.
 
 ````markdown
-```ph-card
+```seamkit-card
 card: 1
 intent: Show a saved indicator after a note is synced.
 layers: [frontend, function]
@@ -173,7 +173,7 @@ or acknowledgement that policy requires for the pull request's radius class, a r
 and the deploy window. CI with zero recorded runs on the head returns `examined_nothing`, never a pass. The deploy window
 depends on the time, which the shell passes in, so the verdict stays replayable.
 
-`ph gate` with no arguments lists every open pull request with its composite verdict and the exact missing items. That
+`seamkit gate` with no arguments lists every open pull request with its composite verdict and the exact missing items. That
 listing is the board the console renders.
 
 ### 6.3 Carry
@@ -240,7 +240,7 @@ not go red invalidates the review.
 
 | Kind | Asked | Stored | Binds |
 |---|---|---|---|
-| Policy | once at `ph init`, revised rarely | `.ph/policy.yaml` on the default branch, changed by pull request | every session and agent, until changed |
+| Policy | once at `seamkit init`, revised rarely | `.seamkit/policy.yaml` on the default branch, changed by pull request | every session and agent, until changed |
 | Ruling | when a check returns `unclassified` | an event, append-only | every later session, prospectively, within its scope |
 | Approval | at the moment of a gated action | an event, append-only | one human, one action, one commit, one performer, used once |
 
@@ -260,15 +260,15 @@ because no event exists. A case that neither policy nor a ruling covers is `uncl
 
 Policy lives on the default branch because it changes rarely and deserves review. Rulings, approvals, observations and
 verdicts cannot live there. They are written continuously, by many sessions on many branches, and a ruling must bind
-other sessions the moment it is made rather than when some branch merges. Writing them into `.ph/` on feature branches
+other sessions the moment it is made rather than when some branch merges. Writing them into `.seamkit/` on feature branches
 would also produce merge conflicts on every append.
 
-The proposal is a dedicated state branch, `ph/state`, holding one file per event under `events/YYYY/MM/DD/`, named by
+The proposal is a dedicated state branch, `seamkit/state`, holding one file per event under `events/YYYY/MM/DD/`, named by
 a sortable unique id and the hash of the event's canonical JSON. One file per event means concurrent writers never
 conflict, so a write is a commit and a push that retries on a non-fast-forward. Every session reads the shared truth
 with a fetch of that branch. A session that cannot reach the remote still works, but every verdict it produces lists
 "state not synchronised since <time>" in `notExamined`. The state is still files in the repository, readable with plain
-git, and no service or database is involved. This refines the handoff's sketch, in which everything lived under `.ph/`
+git, and no service or database is involved. This refines the handoff's sketch, in which everything lived under `.seamkit/`
 on the working branch, and it is listed as a decision in section 12.
 
 ### 7.4 Channels and assurance levels
@@ -295,7 +295,7 @@ The harness therefore separates asking from proving, and ranks each answer by wh
 
 The level 3 challenge is a hash of the action, the commit, the policy digest and a nonce held only in the server's
 memory, so an assertion cannot be replayed for another action, commit or process. The credential is enrolled by the
-human at `ph init`, and its public key lives in policy on the default branch, which changes only by a reviewed merge, so
+human at `seamkit init`, and its public key lives in policy on the default branch, which changes only by a reviewed merge, so
 the trust root is the same as for every other rule. When a client does not support URL-mode elicitation, the harness
 prints the approval link in the tool result. The agent can relay that link to the human but cannot complete it, which
 turns the relayed-approval failure into a harmless one. An OpenSSH `ed25519-sk` signature is an alternative level 3
@@ -351,7 +351,7 @@ milestones that need them.
 
 | Surface | Commands or tools | Notes |
 |---|---|---|
-| CLI | `ph init`, `ph gate [--pr N]`, `ph carry <target>`, `ph readback [--pr N]`, `ph parity`, `ph radius [<range>]`, `ph rule`, `ph approve <action>`, `ph replay <event>`, `ph console` | exit codes per 5.3; `ph approve` opens the channel itself and never reads the answer from its arguments |
+| CLI | `seamkit init`, `seamkit gate [--pr N]`, `seamkit carry <target>`, `seamkit readback [--pr N]`, `seamkit parity`, `seamkit radius [<range>]`, `seamkit rule`, `seamkit approve <action>`, `seamkit replay <event>`, `seamkit console` | exit codes per 5.3; `seamkit approve` opens the channel itself and never reads the answer from its arguments |
 | MCP server | tools mirroring the read-only commands, plus `request_ruling` and `request_approval`, which take the question and the action but never the answer | human answers arrive only through the channel the server opens; the result of `request_approval` is a link or a level, never a yes the agent supplied |
 | GitHub Action | runs `gate` on pull requests and `readback` after merges or deploys | posts one check run per pull request; read-only token scopes are documented |
 | Hooks | copy-in examples for Claude Code and Cursor that refuse a deploy command unless `gate` and `carry` pass for the exact head | shipped as examples, not installed silently |
@@ -363,7 +363,7 @@ milestones that need them.
 |---|---|
 | orcha-sdk receipts | The harness owns a deploy evidence ledger, not agent-run receipts, and never verifies a receipt. Where agent work is attested, an event stores the receipt's reference and the harness runs `orcha verify` as an external command |
 | Metabot scope classes | Radius reuses the vocabulary and the unknown-is-most-dangerous rule, applied to diffs and deploys rather than tool calls. No code is copied |
-| Code Desks | The harness is a check provider. A Code Desks gate can run `ph readback --pr N` as its check command and read the exit code. Seats and messaging stay with Code Desks |
+| Code Desks | The harness is a check provider. A Code Desks gate can run `seamkit readback --pr N` as its check command and read the exit code. Seats and messaging stay with Code Desks |
 | SOI | SOI is a fast, model-backed check on an agent's command, sealed as a receipt; the harness is a deterministic check that a deploy is allowed for an exact commit. Both can sit in the same pre-tool hook, SOI first. The harness never calls SOI's model, and SOI's receipts are referenced like any other receipt |
 | bizopsmap | Optional later: export the gate board and read-back as a `lens@1` rule lens, whose three states (measured, examined with no answer, not examined) map one to one onto the harness outcomes |
 
@@ -376,29 +376,31 @@ controls, in which a fixture is changed so that a check must fail, and the suite
 tested against the local fake production, and network adapters have contract tests that run only when credentials are
 present, which the test report states as not examined when they are absent.
 
-## 12. Decisions needed
+## 12. Decisions
 
-These are azank's to make. Each carries the session's recommendation and the evidence behind it.
+azank decided the following on 2026-10-14, after reading the M0 findings.
 
-1. **Name.** `provenlive` is free on npm, has no GitHub repository by that name and no visible commercial use, and reads
-   as the claim the product makes. `seamkit` is also free and ties to the launch story, but does not say what the tool
-   does. `liveproof` is free but reads as biometric liveness. `shipproof`, `readback`, `shipledger`, `proofline` and
-   `seamcheck` are taken, the last three by tools in the same space. Recommendation: `provenlive`.
-2. **Licence.** MIT matches Code Desks and bizopsmap and maximises adoption; Apache-2.0 matches Metaorcha and adds a
-   patent grant. Recommendation: MIT.
-3. **Home.** `azank1/<name>` until v0.1, then reconsider, because the portfolio lists the production harness as azank's
-   own work. Recommendation: personal.
-4. **Cross-session approvals.** The research makes the strict reading cheap to keep and the loose reading unsafe. The
-   recommendation is that an approval binds one action and one commit, is used once, expires after a policy-set time,
-   and names its performer, chosen by the human at the moment of approval: either the session that asked, or a CI
-   identity listed in policy. A relayed approval is impossible because only the channel the harness opens can create
-   one. On this machine the GitHub token is held locally, so an account review (level 2) proves little here, and level
-   3 needs a WebAuthn authenticator.
-5. **First dogfood target.** commit.city, because it deploys from git on Vercel, so the platform already knows the
-   commit of each production deploy, and a version route costs one entry in an existing router rather than a new
-   function. The portfolio follows as the second target, because it needs version stamping and so proves `ph stamp`; its
-   owning session would make that change.
-6. **State branch.** Accept the refinement in 7.3, which keeps rulings, approvals and evidence on a `ph/state` branch with
-   one file per event, optionally in a separate private repository for public projects.
-7. **Milestone order.** Accept the brainstorm's proposal to put a zero-configuration audit and `ph stamp` in M2, move
-   carry to M3 ahead of card and gate, and ship the Claude Code plugin packaging with the MCP server in M5.
+| Decision | Outcome |
+|---|---|
+| Name | seamkit (package, repository and command `seamkit`) |
+| Licence | Apache-2.0 |
+| Home | `azank1/seamkit`, private until azank decides otherwise |
+| Cross-session approvals | an approval binds one action and one commit, is used once, expires after a policy-set time, and names its performer, which the human chooses at the moment of approval: the session that asked, or a CI identity listed in policy |
+| First dogfood target | commit.city, through a version route added to its existing API router |
+| State | the `seamkit/state` branch, one file per event, with an option to keep state in a separate private repository |
+| Milestone order | reshuffled: a zero-configuration audit and version stamping join M2, carry moves to M3 ahead of card and gate, and the Claude Code plugin packaging ships with the MCP server in M5 |
+
+Level 3 approvals (section 7.4) are built in M5 but stay optional. Until an authenticator is enrolled, which can be a
+phone passkey or a hardware key, policy runs approvals at level 1 and every approval event records that level.
+
+### Revised milestones
+
+| M | Scope | Done when |
+|---|---|---|
+| M1 | repository scaffold, `core` verdict algebra, event writer for the state branch, CLI skeleton with exit codes, replay | unit tests cover every outcome, including zero rows as `examined_nothing`, and a replay test reproduces every verdict |
+| M2 | `readback` with the version-endpoint and bundle-marker adapters, version ancestry, the fake production, `seamkit audit` with zero configuration, `seamkit stamp` | the demo history sorts into live, not proven, not live and nothing to prove, and the audit runs against commit.city |
+| M3 | `carry` and the split rule | given a production version behind main, carry lists the riding pull requests by title, and a hand deploy blocks |
+| M4 | `card` and `gate` with the GitHub adapter | `seamkit gate` lists each open pull request with its verdict and the exact missing items |
+| M5 | MCP server with elicitation for policy and rulings, approvals at levels 1 and 3, the init interview, Claude Code plugin packaging | an MCP client completes init and a ruling round trip, and an approval passed as an argument is refused |
+| M6 | static console and the GitHub Action | the console renders from policy and state alone, and the Action posts check runs |
+| M7 | `radius`, `parity`, hook packs for Cursor and Codex | unclassified stops, and the three parity outcomes are tested |
