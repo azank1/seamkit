@@ -1,0 +1,404 @@
+# Architecture (M0 draft)
+
+Status: draft for review. The working name is undecided, so this document calls the tool "the harness" and its
+command `ph`. Both are placeholders.
+
+## 1. Purpose and design spine
+
+The harness is a set of deterministic checks that sit between "a change merged" and "the change is proven live in
+production". It is built for small teams whose code is mostly written by AI agents, where the change volume is that of
+a much larger organisation while the number of people who can read changes stays small. Agents, models and humans use
+it through the same four surfaces: a command line tool, an MCP server, a GitHub Action and copy-in harness hooks.
+
+Three properties form the spine of the design, and no feature may trade them away.
+
+1. Every check returns one of three primary outcomes, which are pass, fail and examined nothing, and every result
+   lists what it did not examine. A check that looked at zero rows never passes.
+2. Production is the source of truth for "done". A merged change counts as shipped only after production has been read
+   back and shows it.
+3. The judge is deterministic. No model runs inside the harness. Agents call it, it never calls an agent, and human
+   decisions reach it only through channels it opens itself, never through an agent's tool arguments.
+
+## 2. Threat model and non-goals
+
+The harness defends against the failures that agent volume produces in an honest team. These are an agent that
+believes a change is shipped because it merged, a deploy that carries changes nobody chose to ship, a check that
+passes because it inspected nothing, an approval that one agent relays to another, and a staging copy that silently
+stopped being a copy. Every module in section 6 answers one of these.
+
+It does not claim to stop a hostile agent that runs as the same operating system user as the human and holds the same
+credentials. Such an agent can edit any file, call any API the human can call and drive any terminal the human can
+drive. The harness states this boundary in its documentation and offers one mechanism that does hold against it: an
+approval proved with a WebAuthn assertion from an authenticator that needs a physical touch, over a challenge bound to the
+exact action and commit (section 7.4). Everything else in the ledger is tamper-evident through content hashes, not
+tamper-proof.
+
+The harness also does not deploy anything, does not write to production, does not review code with a model and does not
+manage agent sessions or messaging. Existing tools deploy, Code Desks manages sessions, and orcha-sdk owns agent-run
+receipts (section 10).
+
+## 3. System overview
+
+```
+        agents · models · humans  (Claude Code, Cursor, Codex, any MCP client, a shell, CI)
+                 │              │                │                  │
+             CLI `ph`      MCP server       GitHub Action      harness hooks
+                 └──────────────┴───────┬────────┴──────────────────┘
+                                   shell (I/O)
+            reads policy and events · calls adapters · asks humans · writes events
+                                        │
+                                 core (pure, no I/O)
+      verdict · card · gate · carry · readback · parity · radius · rulings · approvals
+                                        │
+                         adapters (read-only views of the world)
+        git · GitHub · /version endpoint · served bundle · Vercel · Supabase · Postgres · fake
+```
+
+The core follows the functional-core, imperative-shell pattern. Every core function takes plain data (the policy, the
+active rulings, a set of observations and the current time) and returns verdicts. It performs no network, file or
+clock access of its own. The shell gathers observations through adapters, passes them to the core and records both the
+observations and the verdicts as events.
+
+This split is what makes the judge auditable. Because a verdict is a pure function of recorded inputs, `ph replay
+<event>` can recompute any past verdict from the ledger and confirm that it comes out the same. A verdict that cannot be
+replayed is a defect.
+
+## 4. Packages and dependencies
+
+The implementation is TypeScript on Node 20 or later, published as ES modules, in one repository with npm workspaces.
+
+| Package | Contents | Runtime dependencies |
+|---|---|---|
+| `core` | types, verdict algebra, every check as a pure function | none |
+| `formats` | card and policy parsing, canonical JSON, event schema validation | `yaml` |
+| `adapters` | git, GitHub (REST over `fetch`), version endpoint, bundle marker, Vercel, Supabase, Postgres, fake | `pg` as an optional peer dependency only |
+| `cli` | the `ph` binary, TTY prompts, the init interview | none beyond the packages above |
+| `mcp` | the MCP server, elicitation, the loopback approval page | `@modelcontextprotocol/server` (the v2 SDK, which supports the 2026-07-28 revision and serves older clients through a shim) |
+| `action` | the GitHub Action, bundled into one committed file | bundled at build time |
+| `console` | the static HTML generator | none |
+
+The core stays dependency-free so that it can be audited in one sitting and vendored if needed. Argument parsing uses
+`node:util` `parseArgs`, prompts use `node:readline`, and HTTP uses the global `fetch`, which keeps the command line tool
+close to dependency-free as well.
+
+## 5. The verdict contract
+
+### 5.1 Types
+
+```ts
+type Outcome = 'pass' | 'fail' | 'examined_nothing' | 'unclassified';
+
+interface Verdict {
+  check: string;              // dotted name, e.g. 'readback.bundle_marker'
+  subject: string;            // 'pr#42', 'fn:notes-sync', 'sandbox'
+  outcome: Outcome;
+  state?: string;             // module-specific detail, e.g. readback 'not_proven'
+  examined: Item[];           // what was looked at, each with a count where counting applies
+  notExamined: Gap[];         // what was not, each with a reason; [] only when truly complete
+  evidence: EvidenceRef[];    // URLs, hashes, counts with denominators, event ids
+  reasons: string[];          // why this outcome, in order, phrased so an agent can act on them
+  inputs: string;             // digest of policy, rulings and observations used (enables replay)
+  at: string;                 // ISO time supplied by the shell, never read inside the core
+}
+interface Gap { item: string; reason: 'not_required' | 'unreadable' | 'no_adapter' | 'out_of_scope' | 'timeout' | string }
+```
+
+`unclassified` belongs to the radius module and to any composite that contains a radius result. It means that neither
+policy nor a ruling covers the case, and it stops for a human in the same way a failure does.
+
+### 5.2 Aggregation
+
+Composite checks, such as the gate verdict for one pull request, combine their parts by severity. Any `fail` makes the
+composite `fail`. Otherwise any `unclassified` makes it `unclassified`. Otherwise any `examined_nothing` makes it
+`examined_nothing`. Only when every part passes does the composite pass. The composite carries the union of its parts'
+`notExamined` lists, so a gap is never hidden by aggregation.
+
+A check that policy does not require is not run, and it appears in `notExamined` with the reason `not_required`. A check
+that policy requires but that finds nothing to inspect returns `examined_nothing`. The two cases are kept apart because
+the first is a decision someone made and the second is an absence of evidence.
+
+### 5.3 Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | pass |
+| 1 | fail |
+| 2 | usage or configuration error; no verdict was produced |
+| 3 | examined nothing |
+| 4 | unclassified, which stops for a human |
+
+Every non-zero code means "not a pass", so a shell agent that chains commands with `&&` can never proceed on a result it
+misread. `--json` prints the verdicts as JSON lines on standard output in all cases.
+
+### 5.4 Rendering rules
+
+Every surface follows the same rules. A pass is the only outcome that may be shown in green. Examined nothing and not
+proven are never green and never hidden behind a pass count. Every summary that reports a count also reports its
+denominator, for example "proven live 10 of 21 merged changes".
+
+## 6. Modules
+
+### 6.1 Card
+
+A scope card is a fenced block in the pull request body, so that any agent able to write a pull request description can
+write one.
+
+````markdown
+```ph-card
+card: 1
+intent: Show a saved indicator after a note is synced.
+layers: [frontend, function]
+targets: [web, fn:notes-sync]
+markers:
+  - kind: bundle
+    text: "data-sync-state"
+  - kind: version
+    url: https://notes.example.dev/version.json
+releaseNote: Notes now show when they were last saved.
+risk: ship_alone
+```
+````
+
+The parser is strict. Unknown fields are rejected and every error names the field and the fix, phrased so that an agent
+can repair the card in one pass. The card's `risk` is a claim, and the radius module re-derives the class from the diff,
+with the stricter of the two winning. The documentation carries the bundle-marker lesson: a marker must be text that the
+built output contains, and text that exists only in source files, such as JSX, will never be found in a production
+bundle.
+
+### 6.2 Gate
+
+The gate evaluates every open pull request exactly as the deploy step will. Its parts are a valid card, CI green on the
+exact head commit across every run recorded for that commit, sandbox evidence recorded against that head, the approval
+or acknowledgement that policy requires for the pull request's radius class, a release note when policy requires one,
+and the deploy window. CI with zero recorded runs on the head returns `examined_nothing`, never a pass. The deploy window
+depends on the time, which the shell passes in, so the verdict stays replayable.
+
+`ph gate` with no arguments lists every open pull request with its composite verdict and the exact missing items. That
+listing is the board the console renders.
+
+### 6.3 Carry
+
+Before a deploy of a target, carry compares the version production is running with the commit about to be deployed. It
+lists, by title, every merged pull request between the two that touches the target's paths, which are mapped in policy.
+A running version that is unknown, or that the adapter reports as deployed by hand, blocks the deploy with `fail`. An
+unreadable target returns `examined_nothing`. Riding pull requests that need a human under the radius rules, and lack an
+approval for this commit, also fail the carry.
+
+The split rule is part of carry. It warns when one pull request is really several ships: schema and code together,
+six or more functions, or a merge into a branch other than the default branch. The warning is a verdict reason, not a
+separate outcome, unless policy promotes it to a failure.
+
+Some platforms do not report a commit for a deployed artifact. For those, an adapter may report a content digest
+instead, and the shell resolves the digest to a commit by building candidate commits on request. Until that capability
+exists for a platform, its carry verdict is `examined_nothing` with the reason stated.
+
+### 6.4 Readback
+
+After a merge, readback proves whether production holds the change by checking the markers from its card.
+
+| State | Condition | Outcome |
+|---|---|---|
+| `live` | every marker is present | pass |
+| `not_live` | a marker was seen in production earlier and is now absent | fail |
+| `not_proven` | a marker is absent and was never seen, or a marker could not be read | fail when readable and absent; `examined_nothing` when nothing could be read |
+| `nothing_to_prove` | the card declares `kind: none` with a reason | `examined_nothing` |
+
+`not_live` requires history, which is why every successful marker check writes a `marker_seen` event. A change with
+nothing to prove is never reported as live. Its card's reason is shown instead, and a human may record it as accepted.
+
+### 6.5 Parity
+
+Parity asks whether the sandbox is still a copy of production. The sandbox is described in policy by a recorded base
+and a recorded list of applied changes. The check compares running versions per target and the presence of named
+database objects between the two environments, and returns `pass` for parity, `fail` for drift, or `examined_nothing`.
+The policy also records that the sandbox runs on synthetic data only. The harness cannot verify that statement, and it
+says so in `notExamined` on every parity verdict rather than implying it was checked.
+
+### 6.6 Radius
+
+Radius classifies a diff into `ship_alone`, `stop_for_human` or `unclassified`. It reuses the scope-class vocabulary
+owned by Metabot (`read`, `write`, `destructive`), together with that vocabulary's rule that an unknown case is treated as
+the most dangerous one. Here the vocabulary describes the effect of a diff on production, not an agent's tool call. Policy
+maps path globs to an effect class and to optional sensitive areas, such as authentication, payments, data export or
+shared state. A path that no glob covers is `unclassified`, and so is the whole diff that contains it.
+
+Four rails apply whatever the class. A production write needs a snapshot and a written revert beside it. Destructive
+operations, such as `DROP`, `TRUNCATE` or a `DELETE` without `WHERE`, always stop for a human. Done requires a readback.
+And schema changes never reach production through a command-line shortcut that bypasses the migration record. The rails
+are implemented as named checks, so each one appears in a verdict and can be seen to have run.
+
+### 6.7 Review evidence
+
+The independent re-run of a builder's tests by a second agent is the agent's job, not the harness's. The harness defines
+the evidence shape that such a review records (the head commit, the command run, the counts with denominators, and the
+negative controls with their expected and observed results), and the gate can require one. A negative control that did
+not go red invalidates the review.
+
+## 7. Human input: policy, rulings and approvals
+
+### 7.1 Three kinds of input
+
+| Kind | Asked | Stored | Binds |
+|---|---|---|---|
+| Policy | once at `ph init`, revised rarely | `.ph/policy.yaml` on the default branch, changed by pull request | every session and agent, until changed |
+| Ruling | when a check returns `unclassified` | an event, append-only | every later session, prospectively, within its scope |
+| Approval | at the moment of a gated action | an event, append-only | one human, one action, one commit, one performer, used once |
+
+A ruling records the question, the answer, the human's handle, the time, a scope (a path glob or a class) and an optional
+expiry. Rulings are never edited, only superseded, and a ruling can be promoted into policy by pull request. An approval
+records the action (for example `deploy fn:notes-sync`), the exact commit, the performer it authorises, the channel it
+came through and its assurance level. An approval expires with its commit, because a new head needs a new approval, and
+it is marked used by the event of the action that consumed it.
+
+### 7.2 Structural rules
+
+No MCP tool and no command-line flag accepts an approval or a ruling as an argument. The harness asks the human itself
+through a channel it opens, and records the answer. An agent that reports "the engineer approved" changes nothing,
+because no event exists. A case that neither policy nor a ruling covers is `unclassified`, which stops.
+
+### 7.3 Where state lives
+
+Policy lives on the default branch because it changes rarely and deserves review. Rulings, approvals, observations and
+verdicts cannot live there. They are written continuously, by many sessions on many branches, and a ruling must bind
+other sessions the moment it is made rather than when some branch merges. Writing them into `.ph/` on feature branches
+would also produce merge conflicts on every append.
+
+The proposal is a dedicated state branch, `ph/state`, holding one file per event under `events/YYYY/MM/DD/`, named by
+a sortable unique id and the hash of the event's canonical JSON. One file per event means concurrent writers never
+conflict, so a write is a commit and a push that retries on a non-fast-forward. Every session reads the shared truth
+with a fetch of that branch. A session that cannot reach the remote still works, but every verdict it produces lists
+"state not synchronised since <time>" in `notExamined`. The state is still files in the repository, readable with plain
+git, and no service or database is involved. This refines the handoff's sketch, in which everything lived under `.ph/`
+on the working branch, and it is listed as a decision in section 12.
+
+### 7.4 Channels and assurance levels
+
+The research for this section, summarised in `prior-art.md` section 7, settled the central question against the handoff's
+first sketch. No revision of the MCP specification requires that a human answer an elicitation. The 2025-11-25 revision
+obliges a client that shows a form to show it clearly, but the protocol "does not mandate any specific user interaction
+model", and the 2026-07-28 revision says the client gathers input "from the user or other sources". In practice the
+answer can be automated in the clients that matter most. In Claude Code an `Elicitation` hook can accept a form or a URL
+request with content, and when it does "no dialog appears"; a hook source can be a project's own settings file, which an
+agent in a permissive mode can edit. Codex auto-accepts approval forms with an empty schema under one approval policy and
+auto-declines under `codex exec`. A terminal prompt is no stronger, because an agent can type into it through
+`tmux send-keys`, and a pull request review is spoofable when the reviewer's token is on the same machine. An automated
+decline is also byte-for-byte identical to a human one.
+
+The harness therefore separates asking from proving, and ranks each answer by what it proves.
+
+| Level | Channel | What the record can honestly claim | Used for |
+|---|---|---|---|
+| 0, asserted | a tool argument, a peer's message, an agent's report | nothing; never accepted | nothing |
+| 1, interactive | form elicitation with a required, non-empty typed field, or a terminal prompt | "an answer arrived through the session's interface" | policy at init, rulings |
+| 2, account | an approving review on the exact head commit by a named account whose token policy says is not held on the machine | "account X approved commit S" | approvals where policy allows it, typically CI deploys |
+| 3, presence | a WebAuthn assertion with user presence and verification, on a page the harness serves on `127.0.0.1`, reached through URL-mode elicitation or a printed link | "the holder of credential K, enrolled by handle N at time T, proved presence over a challenge that binds action A, commit S and this server process" | approvals for `stop_for_human` changes |
+
+The level 3 challenge is a hash of the action, the commit, the policy digest and a nonce held only in the server's
+memory, so an assertion cannot be replayed for another action, commit or process. The credential is enrolled by the
+human at `ph init`, and its public key lives in policy on the default branch, which changes only by a reviewed merge, so
+the trust root is the same as for every other rule. When a client does not support URL-mode elicitation, the harness
+prints the approval link in the tool result. The agent can relay that link to the human but cannot complete it, which
+turns the relayed-approval failure into a harmless one. An OpenSSH `ed25519-sk` signature is an alternative level 3
+channel for terminal use, with one caveat: `ssh-keygen -Y verify` is not documented to check the user-presence flag, so
+the harness would have to check it itself, and the M5 spike has to confirm that it can.
+
+Policy sets the minimum level for each radius class. Every approval event records the level it achieved and keeps the raw
+assertion, so CI can verify it again later. No record claims more than its level allows, and in particular no record
+claims that a person read and understood the change.
+
+The fallback order is level 3 through URL-mode elicitation, then level 3 through a printed link, then level 2 where policy
+allows it, and then refusal. Decline and cancel both mean not approved. Form elicitation is used only for policy and
+rulings, never for approvals, and every form carries a required non-empty field because empty-schema forms are the ones
+that clients auto-accept.
+
+### 7.5 Identity and sessions
+
+The human is identified by a handle configured in policy, never by an email address or a name. A performer is
+identified by its kind (human, agent or CI), a handle and, where the client provides one, a session identifier.
+
+Claude Code sets `CLAUDE_CODE_SESSION_ID` in the environment of the processes it starts, including Bash subprocesses
+(confirmed on version 2.1.299 on this machine) and, according to its documentation, standard-input MCP servers. Claude
+Code and Codex also pass `session_id` to hooks. These identifiers correlate events with a session, but they do not
+authenticate anything, because the agent can read them. The MCP 2026-07-28 revision removes protocol-level sessions
+altogether and asks servers to mint their own handles and protect them with a keyed hash.
+
+The harness binds an approval to the session in the way that revision recommends. The server process keeps a key in
+memory only, computes a keyed hash over the action, the argument digest, the commit, the policy digest, the client's
+session identifier and an expiry, and consumes the approval once, server-side, on the call whose digest matches. That
+binds the approval to one server process and one client connection, which is the most MCP can offer. Commit binding and
+single use are the guarantees the harness enforces. The session identifier is recorded as provenance, not claimed as a
+control.
+
+## 8. Adapters
+
+```ts
+interface ProductionAdapter {
+  name: string;
+  capabilities: ('running_version' | 'content_digest' | 'marker:bundle' | 'marker:version' | 'marker:db_object')[];
+  runningVersion(target: string): Promise<Observed<{ sha?: string; digest?: string; deployedBy: 'pipeline' | 'hand' | 'unknown' }>>;
+  hasMarker(m: Marker): Promise<Observed<'present' | 'absent' | 'unreadable'>>;
+}
+interface Observed<T> { value: T; at: string; source: string; raw?: string }  // raw is a digest, never a payload
+```
+
+Adapters are read-only by construction. They take credentials from the environment, document the narrowest token scope
+that suffices, and never write the credential or a response payload into an event. Each observation is recorded with its
+source and time so that the verdict built on it can be replayed. The first adapters are git, GitHub, a version endpoint,
+a served-bundle marker and a local fake production for tests and the demo. Vercel, Supabase and Postgres follow in the
+milestones that need them.
+
+## 9. Surfaces
+
+| Surface | Commands or tools | Notes |
+|---|---|---|
+| CLI | `ph init`, `ph gate [--pr N]`, `ph carry <target>`, `ph readback [--pr N]`, `ph parity`, `ph radius [<range>]`, `ph rule`, `ph approve <action>`, `ph replay <event>`, `ph console` | exit codes per 5.3; `ph approve` opens the channel itself and never reads the answer from its arguments |
+| MCP server | tools mirroring the read-only commands, plus `request_ruling` and `request_approval`, which take the question and the action but never the answer | human answers arrive only through the channel the server opens; the result of `request_approval` is a link or a level, never a yes the agent supplied |
+| GitHub Action | runs `gate` on pull requests and `readback` after merges or deploys | posts one check run per pull request; read-only token scopes are documented |
+| Hooks | copy-in examples for Claude Code and Cursor that refuse a deploy command unless `gate` and `carry` pass for the exact head | shipped as examples, not installed silently |
+| Console | a static HTML page generated from the policy and the events | no server, no model, no network at view time |
+
+## 10. Boundaries with other products
+
+| Product | Boundary |
+|---|---|
+| orcha-sdk receipts | The harness owns a deploy evidence ledger, not agent-run receipts, and never verifies a receipt. Where agent work is attested, an event stores the receipt's reference and the harness runs `orcha verify` as an external command |
+| Metabot scope classes | Radius reuses the vocabulary and the unknown-is-most-dangerous rule, applied to diffs and deploys rather than tool calls. No code is copied |
+| Code Desks | The harness is a check provider. A Code Desks gate can run `ph readback --pr N` as its check command and read the exit code. Seats and messaging stay with Code Desks |
+| SOI | SOI is a fast, model-backed check on an agent's command, sealed as a receipt; the harness is a deterministic check that a deploy is allowed for an exact commit. Both can sit in the same pre-tool hook, SOI first. The harness never calls SOI's model, and SOI's receipts are referenced like any other receipt |
+| bizopsmap | Optional later: export the gate board and read-back as a `lens@1` rule lens, whose three states (measured, examined with no answer, not examined) map one to one onto the harness outcomes |
+
+## 11. Testing strategy
+
+Every core function is tested against fixed observations, including the empty cases, so that zero rows is shown to give
+`examined_nothing` for every check. Golden verdict files pin the output for the demo history, and a replay test
+recomputes every verdict in the demo ledger and requires identical results. The harness's own tests include negative
+controls, in which a fixture is changed so that a check must fail, and the suite asserts that it does. Adapters are
+tested against the local fake production, and network adapters have contract tests that run only when credentials are
+present, which the test report states as not examined when they are absent.
+
+## 12. Decisions needed
+
+These are azank's to make. Each carries the session's recommendation and the evidence behind it.
+
+1. **Name.** `provenlive` is free on npm, has no GitHub repository by that name and no visible commercial use, and reads
+   as the claim the product makes. `seamkit` is also free and ties to the launch story, but does not say what the tool
+   does. `liveproof` is free but reads as biometric liveness. `shipproof`, `readback`, `shipledger`, `proofline` and
+   `seamcheck` are taken, the last three by tools in the same space. Recommendation: `provenlive`.
+2. **Licence.** MIT matches Code Desks and bizopsmap and maximises adoption; Apache-2.0 matches Metaorcha and adds a
+   patent grant. Recommendation: MIT.
+3. **Home.** `azank1/<name>` until v0.1, then reconsider, because the portfolio lists the production harness as azank's
+   own work. Recommendation: personal.
+4. **Cross-session approvals.** The research makes the strict reading cheap to keep and the loose reading unsafe. The
+   recommendation is that an approval binds one action and one commit, is used once, expires after a policy-set time,
+   and names its performer, chosen by the human at the moment of approval: either the session that asked, or a CI
+   identity listed in policy. A relayed approval is impossible because only the channel the harness opens can create
+   one. On this machine the GitHub token is held locally, so an account review (level 2) proves little here, and level
+   3 needs a WebAuthn authenticator.
+5. **First dogfood target.** commit.city, because it deploys from git on Vercel, so the platform already knows the
+   commit of each production deploy, and a version route costs one entry in an existing router rather than a new
+   function. The portfolio follows as the second target, because it needs version stamping and so proves `ph stamp`; its
+   owning session would make that change.
+6. **State branch.** Accept the refinement in 7.3, which keeps rulings, approvals and evidence on a `ph/state` branch with
+   one file per event, optionally in a separate private repository for public projects.
+7. **Milestone order.** Accept the brainstorm's proposal to put a zero-configuration audit and `ph stamp` in M2, move
+   carry to M3 ahead of card and gate, and ship the Claude Code plugin packaging with the MCP server in M5.
