@@ -70,19 +70,21 @@ The implementation is TypeScript on Node 20 or later, published as ES modules, i
 | Package | Contents | Runtime dependencies |
 |---|---|---|
 | `core` | types, verdict algebra, every check as a pure function | none |
-| `formats` | card and policy parsing | `yaml` |
+| `formats` | scope card and commit message parsing, and later policy | `yaml` 2.9.1, pinned |
 | `state` | the event store on the `seamkit/state` branch, written with git plumbing | none (it runs the `git` binary) |
-| `adapters` | git, GitHub (REST over `fetch`), version endpoint, bundle marker, Vercel, Supabase, Postgres, fake | `pg` as an optional peer dependency only |
+| `adapters` | git history, version documents, served bundles and a local fake production (M2); GitHub (REST over `fetch`), Vercel, Supabase and Postgres later | none; `pg` will be an optional peer dependency only |
 | `cli` | the `seamkit` binary, TTY prompts, the init interview | none beyond the packages above |
 | `mcp` | the MCP server, elicitation, the loopback approval page | `@modelcontextprotocol/server` (the v2 SDK, which supports the 2026-07-28 revision and serves older clients through a shim) |
 | `action` | the GitHub Action, bundled into one committed file | bundled at build time |
 | `console` | the static HTML generator | none |
+| `demo` | the seeded demo history, its builds and `npm run demo`; private, never published | none |
 
 The core stays dependency-free so that it can be audited in one sitting and vendored if needed. It also holds the
 event format and canonical JSON, which follows RFC 8785 and is used only for seamkit's own events and input digests.
 It never canonicalises or verifies a receipt, which remains orcha-sdk's job. Argument parsing uses
 `node:util` `parseArgs`, prompts use `node:readline`, and HTTP uses the global `fetch`, which keeps the command line tool
-close to dependency-free as well.
+close to dependency-free as well. The adapters reuse the state package's git runner, so one module in the repository
+starts `git`, with one set of rules for its environment and errors.
 
 ## 5. The verdict contract
 
@@ -92,8 +94,8 @@ close to dependency-free as well.
 type Outcome = 'pass' | 'fail' | 'examined_nothing' | 'unclassified';
 
 interface Verdict {
-  check: string;              // dotted name, e.g. 'readback.bundle_marker'
-  subject: string;            // 'pr#42', 'fn:notes-sync', 'sandbox'
+  check: string;              // e.g. 'readback'; events record it with its version, as readback@1
+  subject: string;            // 'pr#42', 'commit:1a2b3c4d5e6f', 'main', 'fn:notes-sync'
   outcome: Outcome;
   state?: string;             // module-specific detail, e.g. readback 'not_proven'
   examined: Item[];           // what was looked at, each with a count where counting applies
@@ -140,6 +142,12 @@ Every surface follows the same rules. A pass is the only outcome that may be sho
 proven are never green and never hidden behind a pass count. Every summary that reports a count also reports its
 denominator, for example "proven live 10 of 21 merged changes".
 
+Readback's text output groups changes by state with the problems first: not live, then not proven, then nothing to
+prove, then live. Each group's header gives its share of the total and its outcomes, as in "NOT PROVEN  5 of 20  (1
+examined nothing, 4 fail)". When three or more changes in a group share an outcome and an explanation, the explanation
+is printed once above them, so a site that serves no version document produces one explanation rather than twenty. The
+run's summary verdict comes last.
+
 ## 6. Modules
 
 ### 6.1 Card
@@ -157,16 +165,32 @@ markers:
   - kind: bundle
     text: "data-sync-state"
   - kind: version
-    url: https://notes.example.dev/version.json
+    url: /api/notes-sync/version.json
 releaseNote: Notes now show when they were last saved.
 risk: ship_alone
 ```
 ````
 
-The parser is strict. Unknown fields are rejected and every error names the field and the fix, phrased so that an agent
-can repair the card in one pass. The card's `risk` is a claim, and the radius module re-derives the class from the diff,
-with the stricter of the two winning. The documentation carries the bundle-marker lesson: a marker must be text that the
-built output contains, and text that exists only in source files, such as JSX, will never be found in a production
+The parser is strict. It reads YAML 1.2 with the core schema, refuses aliases and custom tags, and rejects unknown
+fields. It reports every problem in one pass, each naming the field and the fix, so that an agent can repair the card
+with one edit. A description holds at most one card, and a card larger than 16 KiB is refused.
+
+Readback finds cards in the history rather than through GitHub's API, so a card counts once its merge commit carries it.
+GitHub's first line for a merged pull request is either "Merge pull request #N from branch", with the title on the third
+line, or "Title (#N)", depending on the repository's default commit message. Only the setting "Pull request title and
+description" also writes the description, for merge commits and squash merges alike, so it is the setting that cards
+need. Under any other setting the card is lost, and the change is proven by version alone. The M4 GitHub adapter can
+read a card from the pull request itself, which removes this dependency for repositories that grant it a token.
+
+A marker has one of four kinds. A `bundle` marker names a `text` of 4 to 200 characters that the built output must
+contain. A `version` marker names a version document, such as a server function's. A `db_object` marker names a database
+object. A `none` marker gives a reason why nothing deployed changes, and it must be the only marker. A marker's `url` is
+optional: a bundle marker defaults to the production page, and a version marker to production's own version document.
+A path is resolved against the production URL that readback is given, so one card serves staging and production alike.
+
+The card's `risk` is a claim, and the radius module re-derives the class from the diff, with the stricter of the two
+winning. The documentation carries the bundle-marker lesson: a marker must be text that the built output contains, and
+text that exists only in source files, such as a component name or a comment, will never be found in a production
 bundle.
 
 ### 6.2 Gate
@@ -198,17 +222,67 @@ exists for a platform, its carry verdict is `examined_nothing` with the reason s
 
 ### 6.4 Readback
 
-After a merge, readback proves whether production holds the change by checking the markers from its card.
+After a merge, readback proves whether production holds each change. It walks the first-parent history of the default
+branch, one change per merged pull request or direct commit, and asks production two questions about each.
+
+The first is which commit production runs, which a version document answers (section 6.4.1). A change whose commit is
+an ancestor of the running commit, by `git merge-base --is-ancestor`, is contained in the build, and a later change is
+not. A build stamped from a working tree with uncommitted changes says nothing reliable about what it contains, so its
+version is reported as unreadable rather than trusted, and so is a running commit that the repository does not have.
+
+The second is whether production serves what the change added. Readback reads the page, the scripts and styles it loads
+from its own origin, and the chunks those scripts name, and searches all of them for each bundle marker's text. A marker
+counts as absent only when that search was complete. When a file could not be read, or the search reached its limits,
+an unfound marker is unreadable instead. Files that the page loads from other origins are listed as not examined rather
+than read. A marker found in a build whose version does not contain the change is contradicted: the text is not unique
+to the change, so it proves nothing. A marker absent from a build whose version does contain the change gets a hint
+that the text is probably not in the built output, which is the commonest card mistake.
 
 | State | Condition | Outcome |
 |---|---|---|
 | `live` | every marker is present | pass |
-| `not_live` | a marker was seen in production earlier and is now absent | fail |
-| `not_proven` | a marker is absent and was never seen, or a marker could not be read | fail when readable and absent; `examined_nothing` when nothing could be read |
+| `not_live` | a marker that an earlier recorded run saw is absent now | fail |
+| `not_proven` | a marker is absent and was never seen, or production's version contradicts it | fail |
+| `not_proven` | nothing is absent, but some marker could not be read | `examined_nothing` |
 | `nothing_to_prove` | the card declares `kind: none` with a reason | `examined_nothing` |
 
-`not_live` requires history, which is why every successful marker check writes a `marker_seen` event. A change with
-nothing to prove is never reported as live. Its card's reason is shown instead, and a human may record it as accepted.
+A change without a usable card is checked against production's version document alone, through an implicit version
+marker, and a card that does not parse stays listed among the change's gaps. Database markers are not examined until an
+adapter for them exists. A readback over no changes is `examined_nothing`, never a pass. The run's summary verdict
+counts every state against the total, names the commit that each version document reports, and lists the run's own
+gaps, such as changes outside `--last` or a shallow clone.
+
+`not_live` requires history. The M0 draft proposed a `marker_seen` event for every successful marker check. The
+implementation derives sightings instead from the readback runs already recorded on the state branch: a marker that a
+recorded run found present, and that its version did not contradict, counts as seen at that run's time. The ledger
+then holds one kind of event for readback, and replay recomputes the history along with the verdicts. Without a ledger,
+readback says that it cannot tell a change that left production from one that never arrived. A change with nothing to
+prove is never reported as live. Its card's reason is shown instead, and a human may record it as accepted.
+
+#### 6.4.1 Version documents, stamp and audit
+
+A version document is a small JSON file that production serves:
+
+```json
+{ "schema": "seamkit.version/1", "commit": "<full commit id>", "dirty": false, "source": "git", "ref": "main", "builtAt": "<time>" }
+```
+
+When it is given no URL, readback looks for one at `/version.json`, `/api/version` and `/version`, in that order. It
+also reads the documents that other tools serve, from fields such as `commit`, `sha` or `git.commit.id`, accepts an
+abbreviated commit id that the repository can resolve, and refuses a document whose fields name two different commits.
+A web page served in place of a document is refused, because sites often answer unknown paths with their index page.
+Problems are described without quoting the response.
+
+`seamkit stamp` writes the document at build time. It prefers git, which alone can tell a clean working tree from a
+dirty one, and leaves its own output file out of that check. Where the build has no history, it falls back to the
+commit that the CI system provides, such as `VERCEL_GIT_COMMIT_SHA` or `GITHUB_SHA`, records which variable it used,
+and leaves `dirty` out because it cannot know. `--require-clean` refuses to stamp a dirty tree.
+
+`seamkit audit --url <production>` is readback over the last 20 changes with no configuration. After the verdicts it
+gives advice for each gap it found, such as serving a version document, fetching an unknown commit, deepening a shallow
+clone, starting a ledger, or the merge setting that cards need, so that examined nothing becomes a list of next steps.
+Its first run against the dogfood site examined nothing for all 20 changes, because that site serves no version
+document.
 
 ### 6.5 Parity
 
@@ -284,7 +358,7 @@ asks for it, so a first run of the tool creates no branch by surprise.
 
 ### 7.4 Channels and assurance levels
 
-The research for this section, summarised in `prior-art.md` section 7, settled the central question against the handoff's
+The research for this section, summarised in `prior-art.md` section 6, settled the central question against the handoff's
 first sketch. No revision of the MCP specification requires that a human answer an elicitation. The 2025-11-25 revision
 obliges a client that shows a form to show it clearly, but the protocol "does not mandate any specific user interaction
 model", and the 2026-07-28 revision says the client gathers input "from the user or other sources". In practice the
@@ -342,6 +416,37 @@ control.
 
 ## 8. Adapters
 
+Adapters observe and the core judges. An adapter reports what it read, never a verdict such as present or absent:
+
+```ts
+interface VersionObservation {
+  url: string; at: string; status: 'ok' | 'unreadable';
+  reported?: string;          // the commit as the document gave it, possibly abbreviated
+  commit?: string;            // the full id, when the repository has it
+  dirty?: boolean; digest?: string; reason?: string;
+}
+interface BundleObservation {
+  url: string; at: string; status: 'ok' | 'unreadable';
+  complete: boolean;          // every same-origin file the page references was read, within the limits
+  files: number; bytes: number;
+  digest?: string;            // over the sorted [url, sha256] pairs of the files read
+  searched: string[];         // the marker texts looked for
+  found: string[];            // the subset that was found
+  versionUrl?: string;        // the same-origin version document, for contradictions and hints
+  otherOrigins?: string[];    // origins the page references that were not read
+  reason?: string;
+}
+```
+
+The core decides from these whether a marker is present, absent, contradicted or unreadable. The decision is therefore
+replayable from the recorded observation, and an adapter cannot pass a change by reporting that it did. Observations
+hold URLs, commit ids, counts and digests, never content. HTTP reads are bounded: 10 seconds and 5 MiB per response by
+default, 64 KiB for a version document, 10 MiB for each script or style, and 100 files and 25 MiB for a whole crawl,
+fetched six at a time.
+
+M2 ships the git history, version document, served bundle and fake production adapters. The platform interface below
+is the plan for M3, where carry needs the running version of a target and how it was deployed:
+
 ```ts
 interface ProductionAdapter {
   name: string;
@@ -353,16 +458,16 @@ interface Observed<T> { value: T; at: string; source: string; raw?: string }  //
 ```
 
 Adapters are read-only by construction. They take credentials from the environment, document the narrowest token scope
-that suffices, and never write the credential or a response payload into an event. Each observation is recorded with its
-source and time so that the verdict built on it can be replayed. The first adapters are git, GitHub, a version endpoint,
-a served-bundle marker and a local fake production for tests and the demo. Vercel, Supabase and Postgres follow in the
+that suffices, and never write the credential or a response payload into an event. A production URL that carries
+credentials or a query string is refused, because URLs are recorded. Each observation is recorded with its source and
+time so that the verdict built on it can be replayed. GitHub follows in M4, and Vercel, Supabase and Postgres in the
 milestones that need them.
 
 ## 9. Surfaces
 
 | Surface | Commands or tools | Notes |
 |---|---|---|
-| CLI | `seamkit init`, `seamkit gate [--pr N]`, `seamkit carry <target>`, `seamkit readback [--pr N]`, `seamkit parity`, `seamkit radius [<range>]`, `seamkit rule`, `seamkit approve <action>`, `seamkit replay <event>`, `seamkit console` | exit codes per 5.3; `seamkit approve` opens the channel itself and never reads the answer from its arguments |
+| CLI | built: `seamkit readback [--pr N \| --commit C] [--last N]`, `seamkit audit`, `seamkit stamp [--out F] [--require-clean]`, `seamkit check`, `seamkit checks`, `seamkit replay [<event>]`, `seamkit state init\|list\|verify\|sync`; planned: `seamkit init`, `seamkit gate [--pr N]`, `seamkit carry <target>`, `seamkit parity`, `seamkit radius [<range>]`, `seamkit rule`, `seamkit approve <action>`, `seamkit console` | exit codes per 5.3; `seamkit approve` opens the channel itself and never reads the answer from its arguments |
 | MCP server | tools mirroring the read-only commands, plus `request_ruling` and `request_approval`, which take the question and the action but never the answer | human answers arrive only through the channel the server opens; the result of `request_approval` is a link or a level, never a yes the agent supplied |
 | GitHub Action | runs `gate` on pull requests and `readback` after merges or deploys | posts one check run per pull request; read-only token scopes are documented |
 | Hooks | copy-in examples for Claude Code and Cursor that refuse a deploy command unless `gate` and `carry` pass for the exact head | shipped as examples, not installed silently |
@@ -381,11 +486,15 @@ milestones that need them.
 ## 11. Testing strategy
 
 Every core function is tested against fixed observations, including the empty cases, so that zero rows is shown to give
-`examined_nothing` for every check. Golden verdict files pin the output for the demo history, and a replay test
-recomputes every verdict in the demo ledger and requires identical results. The harness's own tests include negative
-controls, in which a fixture is changed so that a check must fail, and the suite asserts that it does. Adapters are
-tested against the local fake production, and network adapters have contract tests that run only when credentials are
-present, which the test report states as not examined when they are absent.
+`examined_nothing` for every check. The demo history is imported with `git fast-import` under fixed identities and
+dates, so its commit ids are identical on every machine, and the demo's test pins those ids and the state of every
+change in both of its runs. A replay test recomputes every verdict in the demo ledger and requires identical results.
+The harness's own tests include negative controls, in which a fixture is changed so that a check must fail, and the
+suite asserts that it does; the demo's control drops the first recorded run, and its three not-live changes fall back
+to not proven. Each milestone also runs mutations by hand: a deliberate defect goes into a check, the suite must turn
+red, and the file is restored and compared byte for byte. Adapters are tested against the local fake production, and
+network adapters have contract tests that run only when credentials are present, which the test report states as not
+examined when they are absent.
 
 ## 12. Decisions
 
@@ -415,3 +524,12 @@ phone passkey or a hardware key, policy runs approvals at level 1 and every appr
 | M5 | MCP server with elicitation for policy and rulings, approvals at levels 1 and 3, the init interview, Claude Code plugin packaging | an MCP client completes init and a ruling round trip, and an approval passed as an argument is refused |
 | M6 | static console and the GitHub Action | the console renders from policy and state alone, and the Action posts check runs |
 | M7 | `radius`, `parity`, hook packs for Cursor and Codex | unclassified stops, and the three parity outcomes are tested |
+
+### Changes made while building
+
+M1 moved the event writer into its own `state` package, limited RFC 8785 to seamkit's own events and input digests, gave
+state commits a fixed tool identity (section 7.3), and made `--json` print one document per invocation (section 5.3).
+M2 made four further changes. Sightings come from recorded readback runs rather than from `marker_seen` events (section
+6.4). Adapters report observations, and the core judges them (section 8). A card marker's `url` became optional and may
+be a path, so a card does not name one environment (section 6.1). And cards are read from merge commit messages, which
+makes the repository's merge setting part of the setup (section 6.1).

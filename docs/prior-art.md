@@ -4,7 +4,7 @@ This document records where existing tools stop relative to the harness, so that
 new. It was written from one research pass over public documentation on 2026-10-14. Every claim below carries a source,
 and claims that could not be confirmed from a source are marked unverified. The expected finding, stated in the handoff
 before the research began, was that each piece exists somewhere while the combination does not. The research supports
-that expectation, with the qualifications set out in section 6.
+that expectation, with the qualifications set out in section 7.
 
 ## 1. Deploy and verify
 
@@ -130,7 +130,7 @@ what is live. It is commercial software, with no pull request card and no MCP se
 The most telling result is indirect. Many repositories in 2026 write their own version-endpoint drift check by hand,[^handrolled]
 which suggests that the read-back is a recognised need without a packaged tool.
 
-## 7. MCP elicitation as a channel to a human
+## 6. MCP elicitation as a channel to a human
 
 The harness's design depends on whether MCP elicitation reaches a human, so this question was researched separately.
 The short answer is that elicitation reaches the client's interface, and nothing guarantees that a human answers it.
@@ -159,7 +159,7 @@ because the agent cannot produce the authenticator's signature. WebAuthn works o
 secure context.[^mdn-secure] The architecture's approval levels (section 7.4 of `architecture.md`) are built on these two
 results.
 
-## 6. Synthesis
+## 7. Synthesis
 
 No tool or combination delivers three-valued results, a read-back of production, carry computed before a deploy, and an
 agent-facing surface for a small team without Kubernetes or a hosted service.
@@ -197,12 +197,6 @@ matching rule, applied to a version read from production rather than one pushed 
 inconclusive from errored is the distinction between `examined_nothing` and a configuration error with exit code 2.
 Mergify's rule that skipped and neutral checks are not success is adopted, and a skipped required job is reported as
 examined nothing rather than as a pass.
-
-Several ideas are worth borrowing directly. Kayenta's `mustHaveData` flag and its rule that a majority of no-data metrics
-fails the run are good policy options. Stryker's default refusal to run with no tests is the right default for every
-harness check. LinearB's ancestry test is the right matching rule, applied here to a version read from production
-rather than pushed by CI. Kargo's separation of inconclusive from errored is the distinction the harness draws between
-`examined_nothing` and a configuration error with exit code 2.
 
 ## Sources
 
