@@ -282,7 +282,8 @@ and leaves `dirty` out because it cannot know. `--require-clean` refuses to stam
 gives advice for each gap it found, such as serving a version document, fetching an unknown commit, deepening a shallow
 clone, starting a ledger, or the merge setting that cards need, so that examined nothing becomes a list of next steps.
 Its first run against the dogfood site examined nothing for all 20 changes, because that site serves no version
-document.
+document. After the site added `/api/version`, which returns the commit its host reports for the deployment, and
+switched its merge setting so cards reach the history, the same audit proved 20 of 20 changes live (2026-10-15).
 
 ### 6.5 Parity
 
