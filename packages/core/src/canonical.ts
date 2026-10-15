@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
  * event files and input digests: object keys sorted by UTF-16 code units, no insignificant
  * whitespace, ECMAScript number formatting, and I-JSON strings.
  *
- * This is not a receipt format and never verifies one. Agent-run receipts belong to orcha-sdk.
+ * This is not a receipt format and never verifies one. Agent-run receipts belong to receipt tools.
  *
  * Object properties whose value is `undefined` are omitted, so optional fields can be absent.
  * Anything that is not plain JSON data (functions, symbols, bigints, class instances, dates,

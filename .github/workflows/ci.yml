@@ -33,3 +33,6 @@ jobs:
           tests=$(sed -n 's/^# tests \([0-9]*\)$/\1/p' test-report.txt)
           echo "tests run: ${tests:-0}"
           test "${tests:-0}" -gt 0
+      # The npm package as a user gets it: bundled, packed, installed into an empty project, and run.
+      - run: node scripts/pack-cli.mjs
+      - run: node scripts/smoke-pack.mjs

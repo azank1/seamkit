@@ -2,7 +2,7 @@
 
 This document records where existing tools stop relative to the harness, so that the README can be honest about what is
 new. It was written from one research pass over public documentation on 2026-10-14. Every claim below carries a source,
-and claims that could not be confirmed from a source are marked unverified. The expected finding, stated in the handoff
+and claims that could not be confirmed from a source are marked unverified. The expected finding, stated in the project brief
 before the research began, was that each piece exists somewhere while the combination does not. The research supports
 that expectation, with the qualifications set out in section 7.
 
@@ -184,10 +184,8 @@ What remains uncovered, for a small team that wants a deterministic tool it host
 6. Radius classification in which an unclassified path stops by default.
 7. Approvals that cannot arrive as a tool argument and record what their channel can prove.
 
-The combination is therefore new, while each element has precedent, which is what the handoff expected. The README
-should say so plainly and credit the precedents. The competitive risk is Aviator adding read-back and an MCP-first
-surface, and the defence is the deterministic, self-hosted and three-valued design that a paid service with a model
-fallback is unlikely to adopt.
+The combination is therefore new, while each element has precedent, which is what the project brief expected. The README
+should say so plainly and credit the precedents.
 
 ### Ideas borrowed
 
