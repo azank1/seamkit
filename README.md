@@ -52,7 +52,9 @@ reported as live, because the card's claim is an agent's, and accepting it is a 
 `seamkit audit --url https://your.app` is readback over the last 20 changes with no configuration at all. After the
 verdicts it lists, for every gap it found, the change that would close it, so that "examined nothing" becomes a to-do
 list. Its first run against one of the author's own deployed sites examined 0 of 20 changes, because the site serves no
-version document, which is exactly the finding it exists to surface.
+version document, which is exactly the finding it exists to surface. The site then added a route that returns the
+commit its host reports for the deployment, merged with a card naming that route, and the same audit proved 20 of 20
+changes live.
 
 ## The demo
 
