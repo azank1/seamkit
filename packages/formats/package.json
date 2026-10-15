@@ -1,0 +1,23 @@
+{
+  "name": "@seamkit/formats",
+  "version": "0.0.0",
+  "private": true,
+  "description": "seamkit formats: the scope card and commit-message parsing.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "yaml": "2.9.1"
+  }
+}

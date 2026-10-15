@@ -12,10 +12,13 @@ import {
   digest,
   exitCodeFor,
   parseEventFile,
+  readbackCheck,
+  renderReadback,
   renderSummary,
   renderVerdict,
   replayVerdict,
   runCheck,
+  versionDocText,
   type Actor,
   type CheckRun,
   type Outcome,
@@ -23,6 +26,8 @@ import {
   type Verdict,
 } from '@seamkit/core';
 import { GitStateStore, NotAGitRepository, STATE_BRANCH, type StoredFile } from '@seamkit/state';
+import { auditAdvice, gatherReadback, type ReadbackRequest } from './readback.js';
+import { StampError, makeStamp, writeStamp } from './stamp.js';
 
 export interface Io {
   out(text: string): void;
@@ -42,6 +47,10 @@ export const VERSION: string = (
 const HELP = `seamkit ${VERSION}: deterministic production checks.
 
 Usage:
+  seamkit audit --url <production-url> [--last <n>] [--branch <ref>] [--json]
+  seamkit readback --url <production-url> [--pr <n> | --commit <rev>] [--last <n>]
+                   [--branch <ref>] [--version-url <url>] [--record|--no-record] [--json]
+  seamkit stamp [--out <file>] [--commit <rev>] [--require-clean]
   seamkit check <name> [--input <file>|-] [--record|--no-record] [--json]
   seamkit checks
   seamkit replay [<event-id-prefix>] [--json]
@@ -50,6 +59,11 @@ Usage:
   seamkit state verify [--json]
   seamkit state sync [--remote <name>]
   seamkit version
+
+readback proves whether production holds each merged change: by the commit production says it
+runs (a version document, which "seamkit stamp" writes at build time), and by the markers in a
+change's seamkit-card. audit is readback over the last changes with advice for every gap. The
+production URL can also come from SEAMKIT_URL.
 
 Every command that produces a verdict exits with its outcome:
   0 pass   1 fail   3 examined nothing   4 unclassified (stops for a human)
@@ -72,6 +86,14 @@ type Flags = {
   cwd?: string;
   help?: boolean;
   version?: boolean;
+  url?: string;
+  pr?: string;
+  commit?: string;
+  last?: string;
+  branch?: string;
+  'version-url'?: string;
+  out?: string;
+  'require-clean'?: boolean;
 };
 
 export async function run(argv: readonly string[], io: Io): Promise<number> {
@@ -91,6 +113,14 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         cwd: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
+        url: { type: 'string' },
+        pr: { type: 'string' },
+        commit: { type: 'string' },
+        last: { type: 'string' },
+        branch: { type: 'string' },
+        'version-url': { type: 'string' },
+        out: { type: 'string' },
+        'require-clean': { type: 'boolean' },
       },
     }) as { values: Flags; positionals: string[] });
   } catch (err) {
@@ -117,13 +147,19 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         return await cmdReplay(rest, values, cwd, io);
       case 'state':
         return await cmdState(rest, values, cwd, io);
+      case 'readback':
+        return await cmdReadback(rest, values, cwd, io, false);
+      case 'audit':
+        return await cmdReadback(rest, values, cwd, io, true);
+      case 'stamp':
+        return await cmdStamp(rest, values, cwd, io);
       default:
         throw new UsageError(`unknown command: ${command}`);
     }
   } catch (err) {
     if (err instanceof UsageError) io.err(`seamkit: ${err.message}\nRun "seamkit help" for usage.\n`);
     else if (err instanceof InputError) io.err(`seamkit: input error: ${err.message}\n`);
-    else if (err instanceof NotAGitRepository) io.err(`seamkit: ${err.message}\n`);
+    else if (err instanceof NotAGitRepository || err instanceof StampError) io.err(`seamkit: ${err.message}\n`);
     else io.err(`seamkit: ${(err as Error).message}\n`);
     return EXIT_USAGE;
   }
@@ -182,26 +218,106 @@ async function cmdCheck(args: string[], flags: Flags, cwd: string, io: Io): Prom
   const at = io.now();
   const run = runCheck(def, await readInput(flags, cwd, io), at);
   const outcome = combine(run.verdicts.map((v) => v.outcome));
-
-  let recorded: { id: string; path: string } | undefined;
-  if (!flags['no-record']) {
-    let store: GitStateStore | undefined;
-    try {
-      store = await GitStateStore.open(cwd);
-    } catch (err) {
-      if (!(err instanceof NotAGitRepository) || flags.record) throw err;
-    }
-    if (store !== undefined && (flags.record || (await store.exists()))) {
-      const event: SeamEvent = { v: 1, kind: 'verdict', at, actor: detectActor(io.env), tool: { name: 'seamkit', version: VERSION }, body: { run } };
-      const r = await store.append(event);
-      recorded = { id: r.id, path: r.path };
-    }
-  }
+  const recorded = await recordRun(run, at, flags, cwd, io);
   print(run.verdicts, outcome, io, flags.json === true, recorded ? { recorded } : {});
-  if (!flags.json) {
-    io.err(recorded ? `recorded as event ${recorded.id.slice(0, 12)} on ${STATE_BRANCH}\n` : `not recorded (no ${STATE_BRANCH} branch; run "seamkit state init" or pass --record)\n`);
-  }
+  if (!flags.json) noteRecording(recorded, io);
   return exitCodeFor(outcome);
+}
+
+/** Records a run when the state branch exists, or always with --record; never with --no-record. */
+async function recordRun(run: CheckRun, at: string, flags: Flags, cwd: string, io: Io): Promise<{ id: string; path: string } | undefined> {
+  if (flags.record && flags['no-record']) throw new UsageError('--record and --no-record cannot be combined');
+  if (flags['no-record']) return undefined;
+  let store: GitStateStore | undefined;
+  try {
+    store = await GitStateStore.open(cwd);
+  } catch (err) {
+    if (!(err instanceof NotAGitRepository) || flags.record) throw err;
+  }
+  if (store === undefined || !(flags.record || (await store.exists()))) return undefined;
+  const event: SeamEvent = { v: 1, kind: 'verdict', at, actor: detectActor(io.env), tool: { name: 'seamkit', version: VERSION }, body: { run } };
+  const r = await store.append(event);
+  return { id: r.id, path: r.path };
+}
+
+function noteRecording(recorded: { id: string } | undefined, io: Io): void {
+  io.err(recorded ? `recorded as event ${recorded.id.slice(0, 12)} on ${STATE_BRANCH}\n` : `not recorded (no ${STATE_BRANCH} branch; run "seamkit state init" or pass --record)\n`);
+}
+
+/** The production URL, refused when it carries anything that must not be recorded. */
+function productionUrl(flags: Flags, env: Io['env']): string {
+  const raw = flags.url ?? env['SEAMKIT_URL'];
+  if (raw === undefined || raw === '') throw new UsageError('give the production URL with --url, or set SEAMKIT_URL');
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new UsageError(`--url is not an absolute URL: ${raw}`);
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new UsageError('--url must be an http or https URL');
+  if (url.username !== '' || url.password !== '') throw new UsageError('--url must not contain a user name or password, because URLs are recorded in the ledger');
+  if (url.search !== '') throw new UsageError('--url must not carry a query string, because URLs are recorded in the ledger');
+  url.hash = '';
+  return url.href;
+}
+
+function positive(value: string | undefined, flag: string, fallback: number, max: number): number {
+  if (value === undefined) return fallback;
+  if (!/^[1-9][0-9]*$/.test(value) || Number(value) > max) throw new UsageError(`${flag} must be a whole number from 1 to ${max}`);
+  return Number(value);
+}
+
+async function cmdReadback(args: string[], flags: Flags, cwd: string, io: Io, audit: boolean): Promise<number> {
+  if (args.length > 0) throw new UsageError(`unexpected argument: ${args[0]}`);
+  const command = audit ? 'audit' : 'readback';
+  if (audit && (flags.pr !== undefined || flags.commit !== undefined)) throw new UsageError('audit covers the last changes; use readback for one pull request or commit');
+  if (flags.pr !== undefined && flags.commit !== undefined) throw new UsageError('--pr and --commit cannot be combined');
+  if (flags.record && flags['no-record']) throw new UsageError('--record and --no-record cannot be combined');
+  const req: ReadbackRequest = { url: productionUrl(flags, io.env), last: positive(flags.last, '--last', 20, 1000) };
+  if (flags.pr !== undefined) req.pr = positive(flags.pr, '--pr', 0, Number.MAX_SAFE_INTEGER);
+  if (flags.commit !== undefined) req.commit = flags.commit;
+  if (flags.branch !== undefined) req.branch = flags.branch;
+  if (flags['version-url'] !== undefined) {
+    const v = flags['version-url'];
+    if (!/^https?:\/\//.test(v) || /[?@]/.test(v)) throw new UsageError('--version-url must be an http or https URL without a query string or credentials');
+    req.versionUrl = v;
+  }
+  const { input, context } = await gatherReadback(cwd, req, io.now, { userAgent: `seamkit/${VERSION} (${command})` });
+  const at = io.now();
+  const run = runCheck(readbackCheck, input, at);
+  const outcome = combine(run.verdicts.map((v) => v.outcome));
+  const recorded = await recordRun(run, at, flags, cwd, io);
+  const advice = audit ? auditAdvice(context) : [];
+  if (flags.json) {
+    io.out(`${JSON.stringify({ outcome, exitCode: exitCodeFor(outcome), verdicts: run.verdicts, ...(audit ? { advice } : {}), ...(recorded ? { recorded } : {}) })}\n`);
+    return exitCodeFor(outcome);
+  }
+  io.out(`${renderReadback(run.verdicts)}\n`);
+  if (advice.length > 0) io.out(`\nTo examine more:\n${advice.map((a) => `  - ${a}`).join('\n')}\n`);
+  noteRecording(recorded, io);
+  return exitCodeFor(outcome);
+}
+
+async function cmdStamp(args: string[], flags: Flags, cwd: string, io: Io): Promise<number> {
+  if (args.length > 0) throw new UsageError(`unexpected argument: ${args[0]}`);
+  const req = { requireClean: flags['require-clean'] === true, ...(flags.out ? { out: flags.out } : {}), ...(flags.commit ? { commit: flags.commit } : {}) };
+  const { doc, uncommitted } = await makeStamp(cwd, req, io.env, io.now());
+  const changes = `${uncommitted.length} uncommitted change${uncommitted.length === 1 ? '' : 's'} (such as ${uncommitted[0] ?? ''})`;
+  if (doc.dirty === true && req.requireClean) {
+    io.err(`seamkit: refusing to stamp a build with ${changes}\n`);
+    return 1;
+  }
+  const state = doc.dirty === true ? 'with uncommitted changes' : doc.dirty === false ? 'clean' : 'cleanliness unknown';
+  if (flags.out) {
+    const path = await writeStamp(cwd, flags.out, doc);
+    io.err(`stamped ${path}: ${doc.commit.slice(0, 12)} from ${doc.source}, ${state}\n`);
+  } else {
+    io.out(versionDocText(doc));
+  }
+  if (doc.dirty === true) {
+    io.err(`warning: ${changes}, so this build does not match ${doc.commit.slice(0, 12)}, and readback will not treat its version as proof\n`);
+  }
+  return 0;
 }
 
 function cmdChecks(io: Io): number {
@@ -287,7 +403,7 @@ async function cmdState(args: string[], flags: Flags, cwd: string, io: Io): Prom
         for (const r of rows) {
           io.out(
             r.ok
-              ? `${String(r.at)}  ${(r.id as string).slice(0, 12)}  ${r.kind}  ${r.check ?? ''}  ${(r.outcomes ?? []).join(',')}\n`
+              ? `${String(r.at)}  ${(r.id as string).slice(0, 12)}  ${r.kind}  ${r.check ?? ''}  ${outcomesText(r.outcomes ?? [])}\n`
               : `${r.path}  CORRUPT  ${(r.problems ?? []).join('; ')}\n`,
           );
         }
@@ -320,6 +436,11 @@ async function cmdState(args: string[], flags: Flags, cwd: string, io: Io): Prom
     default:
       throw new UsageError(sub === undefined ? 'state needs a subcommand: init, list, verify or sync' : `unknown state subcommand: ${sub}`);
   }
+}
+
+/** A run's outcomes; a long run is shown by its combined outcome and its size. */
+function outcomesText(outcomes: readonly Outcome[]): string {
+  return outcomes.length <= 3 ? outcomes.join(',') : `${combine(outcomes)} (${outcomes.length} verdicts)`;
 }
 
 /** Checks every event file against its name and its canonical form. */
