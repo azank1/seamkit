@@ -19,10 +19,13 @@
     "build": "tsc -b",
     "clean": "tsc -b --clean",
     "test": "npm run build && node scripts/run-tests.mjs",
-    "demo": "npm run build && node packages/demo/dist/main.js"
+    "demo": "npm run build && node packages/demo/dist/main.js",
+    "pack:cli": "npm run build && node scripts/pack-cli.mjs",
+    "smoke:pack": "node scripts/smoke-pack.mjs"
   },
   "devDependencies": {
     "@types/node": "20.19.43",
+    "esbuild": "0.28.2",
     "typescript": "7.0.2"
   }
 }

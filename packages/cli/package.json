@@ -1,6 +1,6 @@
 {
   "name": "seamkit",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Deterministic production checks for teams whose code is mostly written by AI agents.",
   "license": "Apache-2.0",
