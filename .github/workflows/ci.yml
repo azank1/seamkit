@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      # Action SHAs resolved with `gh api repos/<o>/<r>/commits/<tag>` on 2026-10-14.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # Fails on any failing test, and also when zero tests ran: a green job over nothing is not a pass.
+      - name: test
+        shell: bash
+        run: |
+          node scripts/run-tests.mjs --test-reporter=tap 2>&1 | tee test-report.txt
+          tests=$(sed -n 's/^# tests \([0-9]*\)$/\1/p' test-report.txt)
+          echo "tests run: ${tests:-0}"
+          test "${tests:-0}" -gt 0

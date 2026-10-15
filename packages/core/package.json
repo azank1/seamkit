@@ -1,0 +1,16 @@
+{
+  "name": "@seamkit/core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "seamkit core: the verdict algebra, canonical events and pure checks. No I/O and no runtime dependencies.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "engines": { "node": ">=20" }
+}
