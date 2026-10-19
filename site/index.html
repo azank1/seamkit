@@ -203,6 +203,54 @@ tr:last-child td { border-bottom: 0; }
 th { font: 600 0.72rem var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-2); background: var(--sunk); }
 td:first-child { min-width: 190px; }
 
+/* tracker */
+.stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 860px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.stat { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px; display: grid; gap: 2px; }
+.stat b { font: 750 1.5rem/1.15 var(--display); font-stretch: 85%; font-variant-numeric: tabular-nums; }
+.stat span { font: 500 0.72rem var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-2); }
+.stat.now b { color: var(--accent); }
+.rail { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 4px; margin-top: 18px; }
+.seg { display: grid; gap: 6px; text-decoration: none; color: var(--ink); }
+.seg i { display: block; height: 10px; border-radius: 3px; background: transparent; border: 1.5px dashed var(--ink-2); opacity: .7; }
+.seg.done i { background: var(--ink); border: 1.5px solid var(--ink); opacity: 1; }
+.seg.active i { background: linear-gradient(90deg, var(--accent) var(--p), var(--accent-soft) var(--p)); border: 1.5px solid var(--accent); opacity: 1; }
+.seg span { font: 600 0.78rem var(--mono); font-variant-numeric: tabular-nums; }
+.seg small { font-size: 0.74rem; color: var(--ink-2); line-height: 1.3; }
+@media (max-width: 640px) { .seg small { display: none; } }
+.ms-list { display: grid; gap: 12px; }
+.ms { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 16px 18px; display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 4px 16px; }
+.ms.active { border: 1.5px solid var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.ms .m { font: 800 1.9rem/1 var(--display); font-stretch: 78%; font-variant-numeric: tabular-nums; color: var(--ink-2); grid-row: span 2; }
+.ms.done .m { color: var(--ink); }
+.ms.active .m { color: var(--accent); }
+.ms-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.ms-top h3 { margin: 0; font-size: 1.08rem; }
+.ms-top .when { font: 400 0.76rem var(--mono); color: var(--ink-2); }
+.ms-body { display: grid; gap: 8px; font-size: 0.92rem; }
+.ms-body .lbl { font: 600 0.7rem var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-2); margin-right: 6px; }
+.ms-body p { color: var(--ink-2); }
+.ms-body p b { color: var(--ink); font-weight: 600; }
+.tasks { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 5px; }
+.tasks li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; font-size: 0.9rem; }
+.tasks li::before { content: ""; width: 12px; height: 12px; margin-top: 5px; border-radius: 3px; border: 1.5px solid var(--ink-2); }
+.tasks li.ok { color: var(--ink-2); }
+.tasks li.ok::before { background: var(--ink); border-color: var(--ink); box-shadow: inset 0 0 0 2px var(--surface); }
+.tasks li.wip::before { border-color: var(--accent); background: var(--accent-soft); }
+.ev { display: flex; flex-wrap: wrap; gap: 6px; }
+.ev a, .ev span { font: 500 0.74rem var(--mono); padding: 2px 8px; border-radius: 999px; border: 1px solid var(--rule); color: var(--ink-2); text-decoration: none; background: var(--paper); }
+.ev a:hover { color: var(--ink); border-color: var(--ink-2); }
+@media (max-width: 560px) { .ms { grid-template-columns: minmax(0, 1fr); } .ms .m { grid-row: auto; } }
+.log { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--rule); display: grid; gap: 14px; }
+.log li { position: relative; padding-left: 18px; font-size: 0.93rem; }
+.log li::before { content: ""; position: absolute; left: -6px; top: 7px; width: 10px; height: 10px; border-radius: 50%; background: var(--paper); border: 2px solid var(--accent); }
+.log time { display: block; font: 600 0.76rem var(--mono); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.state { font: 600 0.7rem/1 var(--mono); text-transform: uppercase; letter-spacing: 0.04em; padding: 4px 7px; border-radius: 4px; white-space: nowrap; }
+.state.done { background: var(--ink); color: var(--paper); }
+.state.active { background: var(--accent); color: #fff; }
+.state.planned { border: 1px dashed var(--ink-2); color: var(--ink-2); }
+.state.wait { background: var(--nothing-soft); color: var(--nothing); }
+
 footer { border-top: 1px solid var(--rule); padding-block: 32px 52px; font-size: var(--s-1); color: var(--ink-2); margin-top: 24px; }
 footer .wrap { display: flex; flex-wrap: wrap; gap: 12px 26px; }
 footer .grow { flex: 1; min-width: 220px; }
@@ -217,7 +265,7 @@ footer a { color: var(--ink-2); }
       <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="1" y="1" width="20" height="20" rx="5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 11h2.2M9.4 11h2.2M13.8 11h2.2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="17" cy="11" r="1.7" fill="currentColor"/></svg>
       seamkit
     </a>
-    <span class="crumb">/ setup guide</span>
+    <span class="crumb">/ build tracker and setup guide</span>
     <div class="right">
       <span class="ver">v0.1.0</span>
       <a href="https://www.npmjs.com/package/seamkit">npm</a>
@@ -253,6 +301,11 @@ footer a { color: var(--ink-2); }
   <div class="wrap">
 
     <nav class="toc" aria-label="Contents">
+      <p>Build</p>
+      <a href="#progress">Progress</a>
+      <a href="#milestones">Milestones</a>
+      <a href="#log">Log</a>
+      <a href="#decisions">Open decisions</a>
       <p>Understand</p>
       <a href="#loop">The shipping loop</a>
       <a href="#inside">Inside one run</a>
@@ -271,10 +324,44 @@ footer a { color: var(--ink-2); }
       <p>Reference</p>
       <a href="#trouble">Troubleshooting</a>
       <a href="#commands">Commands</a>
-      <a href="#roadmap">What is built</a>
     </nav>
 
     <div class="content">
+
+<!-- ===================== PROGRESS ===================== -->
+<section class="sec" id="progress">
+  <div class="kicker">Build</div>
+  <h2>Where seamkit stands</h2>
+  <p class="lead">Our working view of the build. Milestones, tasks and the log live in one data block at the top of this
+    page's script; update it as work lands, and every view below follows.</p>
+  <div class="stats" id="stats"></div>
+  <nav class="rail" id="rail" aria-label="Milestones"></nav>
+</section>
+
+<section class="sec" id="milestones">
+  <div class="kicker">Build</div>
+  <h2>Milestones</h2>
+  <p class="lead">Each milestone has a "done when" written before it starts, taken from the architecture document. A
+    milestone is done when that sentence is true and shown, not when its code merges.</p>
+  <div class="ms-list" id="ms-list"></div>
+</section>
+
+<section class="sec" id="log">
+  <div class="kicker">Build</div>
+  <h2>Log</h2>
+  <ol class="log" id="log-list"></ol>
+</section>
+
+<section class="sec" id="decisions">
+  <div class="kicker">Build</div>
+  <h2>Open decisions</h2>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Decision</th><th>Recommendation</th><th>Owner</th></tr></thead>
+      <tbody id="dec-list"></tbody>
+    </table>
+  </div>
+</section>
 
 <!-- ===================== THE LOOP ===================== -->
 <section class="sec" id="loop">
@@ -841,24 +928,7 @@ fi</pre></div>
     and runs no model.</p>
 </section>
 
-<!-- ===================== ROADMAP ===================== -->
-<section class="sec" id="roadmap">
-  <div class="kicker">Reference</div>
-  <h2>What is built, and what comes next</h2>
-  <div class="tbl">
-    <table>
-      <thead><tr><th>Milestone</th><th>Scope</th><th>State</th></tr></thead>
-      <tbody>
-        <tr><td>M1 · M2</td><td>Verdict core, ledger, replay; readback, audit, stamp</td><td><span class="tag built">done</span></td></tr>
-        <tr><td>M3</td><td>npm package (published); a GitHub Action that reads back after deploys and posts a check run</td><td><span class="tag">in progress</span></td></tr>
-        <tr><td>M4</td><td>MCP server and Claude Code plugin</td><td><span class="tag planned">planned</span></td></tr>
-        <tr><td>M5</td><td>Carry: what a deploy will ship along with your change, and a block on hand deploys</td><td><span class="tag planned">planned</span></td></tr>
-        <tr><td>M6</td><td>Card and gate: every open pull request judged the way the deploy step will</td><td><span class="tag planned">planned</span></td></tr>
-        <tr><td>M7 · M8</td><td>Approvals an agent cannot forge, policy, a static console; blast radius, sandbox parity, hook packs</td><td><span class="tag planned">planned</span></td></tr>
-      </tbody>
-    </table>
-  </div>
-</section>
+
 
     </div>
   </div>
@@ -877,6 +947,110 @@ fi</pre></div>
 </footer>
 
 <script>
+  // ===== Build data: edit this block as work lands. States: done, active, planned. Task states: ok, wip, todo. =====
+  var BUILD = {
+    updated: '2026-10-20',
+    version: '0.1.0',
+    tests: '117',
+    dogfood: '20 of 20',
+    milestones: [
+      { m: 'M1', title: 'Verdict core and ledger', state: 'done', when: '2026-10-15',
+        scope: 'Repository scaffold, the verdict algebra in core, the event writer for the seamkit/state branch, a CLI skeleton with exit codes, and replay.',
+        doneWhen: 'Unit tests cover every outcome, including zero rows as examined nothing, and a replay test reproduces every verdict.',
+        evidence: [['PR #2', 'https://github.com/azank1/seamkit/pull/2'], ['5c834bc', 'https://github.com/azank1/seamkit/commit/5c834bc']] },
+      { m: 'M2', title: 'Readback, audit and stamp', state: 'done', when: '2026-10-15',
+        scope: 'Readback with the version-document and bundle-marker adapters, version ancestry, the fake production, a zero-configuration audit, and stamp.',
+        doneWhen: 'The demo history sorts into live, not proven, not live and nothing to prove, and the audit runs against commit.city.',
+        result: 'Demo: live 9, not live 3, not proven 5, nothing to prove 3, replayed byte for byte. commit.city: 0 of 20 before it served its commit, 20 of 20 after.',
+        evidence: [['PR #3', 'https://github.com/azank1/seamkit/pull/3'], ['543cef2', 'https://github.com/azank1/seamkit/commit/543cef2'], ['commit-city #16', 'https://github.com/azank1/commit-city/pull/16']] },
+      { m: 'M3', title: 'npm package and GitHub Action', state: 'active',
+        scope: 'The seamkit npm package, and a GitHub Action that reads back after deploys and reports a check run.',
+        doneWhen: 'npx seamkit audit works on a clean machine, and the Action posts a check run on a sample repository.',
+        tasks: [
+          ['ok', 'Bundled npm package with an install smoke test in CI (PR #4)'],
+          ['ok', 'seamkit@0.1.0 published to npm, 2026-10-19, shasum e988fa0f'],
+          ['ok', 'npx seamkit on a clean repository: version, stamp, audit exit 3; commit.city 20 of 20 from npm'],
+          ['ok', 'Setup guide with diagrams (this page, branch docs/site)'],
+          ['todo', 'Test the guide recipes end to end on a sample repository: wait-live.sh, make ship, the Claude Code hook, both workflows'],
+          ['todo', 'Action design: trigger on deployment_status and workflow_run, inputs (url, last, pr), ledger sync'],
+          ['todo', 'packages/action: action.yml and one bundled file, committed'],
+          ['todo', 'Post a check run with the verdict summary (checks: write), named per production URL'],
+          ['todo', 'Sample repository: a deploy that is live, one rolled back, one unreadable; the Action reports each'],
+          ['todo', 'Release 0.2.0 with the Action; tag and marketplace listing at azank\'s go'],
+        ],
+        evidence: [['PR #4', 'https://github.com/azank1/seamkit/pull/4'], ['npm', 'https://www.npmjs.com/package/seamkit']] },
+      { m: 'M4', title: 'MCP server and Claude Code plugin', state: 'planned',
+        scope: 'An MCP server whose read-only tools mirror the CLI, packaged as a Claude Code plugin.',
+        doneWhen: 'An MCP client runs an audit and receives the verdicts and the outcome.' },
+      { m: 'M5', title: 'Carry and the split rule', state: 'planned',
+        scope: 'Before a deploy, the merged pull requests it will also ship; a block on hand deploys; a warning when one pull request is several ships.',
+        doneWhen: 'Given a production version behind main, carry lists the riding pull requests by title, and a hand deploy blocks.' },
+      { m: 'M6', title: 'Card and gate', state: 'planned',
+        scope: 'The GitHub adapter, and a gate that evaluates every open pull request the way the deploy step will.',
+        doneWhen: 'seamkit gate lists each open pull request with its verdict and the exact missing items.' },
+      { m: 'M7', title: 'Approvals, policy and console', state: 'planned',
+        scope: 'Elicitation for policy and rulings, approvals at levels 1 and 3, the init interview, and the static console.',
+        doneWhen: 'An MCP client completes init and a ruling round trip, an approval passed as an argument is refused, and the console renders from policy and state alone.' },
+      { m: 'M8', title: 'Radius, parity and hooks', state: 'planned',
+        scope: 'Blast-radius classification, sandbox parity, and hook packs for Cursor and Codex.',
+        doneWhen: 'Unclassified stops, and the three parity outcomes are tested.' },
+    ],
+    log: [
+      ['2026-10-14', 'M0: architecture and prior-art survey. Name, licence and milestone order decided.'],
+      ['2026-10-15', 'M1 and M2 merged (PRs #2, #3). Found and fixed a merge-message defect: cards reach the history only under "Pull request title and description".'],
+      ['2026-10-15', 'commit.city serves /api/version; its audit goes from 0 of 20 to 20 of 20 live.'],
+      ['2026-10-15', 'Release prep merged (PR #4); the repository goes public. Roadmap re-ordered: usability first.'],
+      ['2026-10-19', 'seamkit@0.1.0 published to npm and verified from a clean repository.'],
+      ['2026-10-20', 'Setup guide with three diagrams and this tracker, on branch docs/site.'],
+    ],
+    decisions: [
+      ['Architecture document status', 'Mark M1 and M2 as accepted and M3 to M8 as proposed, each confirmed when its milestone ships. A small docs PR.', 'azank', 'wait'],
+      ['Push this page and host it', 'Push docs/site; serve site/ from GitHub Pages first, a domain later.', 'azank', 'wait'],
+      ['Repository homepage', 'Point it at the npm page now, at the site once hosted.', 'azank', 'wait'],
+      ['Program readback adapter (requested by an internal project)', 'Accept with changes, scheduled after M4. Notes in the knowledge base.', 'azank', 'wait'],
+      ['Action trigger and permissions', 'deployment_status and workflow_run; contents: write only when a ledger is kept; checks: write for the check run.', 'seamkit', 'active'],
+    ],
+  };
+
+  (function render(b) {
+    var $ = function (id) { return document.getElementById(id); };
+    var esc = function (s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
+    var done = b.milestones.filter(function (x) { return x.state === 'done'; }).length;
+    var active = b.milestones.filter(function (x) { return x.state === 'active'; })[0];
+    var share = function (x) { if (!x.tasks) return 0; var ok = x.tasks.filter(function (t) { return t[0] === 'ok'; }).length; return Math.round(100 * ok / x.tasks.length); };
+    var stateLabel = { done: 'done', active: 'in progress', planned: 'planned' };
+
+    $('stats').innerHTML = [
+      ['now', active ? active.m + ' · ' + share(active) + '%' : 'none', 'current milestone'],
+      ['', done + ' of ' + b.milestones.length, 'milestones done'],
+      ['', b.version, 'on npm'],
+      ['', b.tests, 'tests, Node 20 and 22'],
+      ['', b.dogfood, 'dogfood live'],
+    ].map(function (s) { return '<div class="stat ' + s[0] + '"><b>' + esc(s[1]) + '</b><span>' + esc(s[2]) + '</span></div>'; }).join('');
+
+    $('rail').innerHTML = b.milestones.map(function (x) {
+      return '<a class="seg ' + x.state + '" href="#ms-' + x.m + '" style="--p:' + share(x) + '%"><i></i><span>' + x.m + '</span><small>' + esc(x.title) + '</small></a>';
+    }).join('');
+
+    $('ms-list').innerHTML = b.milestones.map(function (x) {
+      var tasks = x.tasks ? '<div><span class="lbl">Tasks</span>' + x.tasks.filter(function (t) { return t[0] === 'ok'; }).length + ' of ' + x.tasks.length +
+        '<ul class="tasks">' + x.tasks.map(function (t) { return '<li class="' + t[0] + '">' + esc(t[1]) + '</li>'; }).join('') + '</ul></div>' : '';
+      var ev = x.evidence ? '<div class="ev">' + x.evidence.map(function (e) { return '<a href="' + e[1] + '">' + esc(e[0]) + '</a>'; }).join('') + '</div>' : '';
+      return '<article class="ms ' + x.state + '" id="ms-' + x.m + '"><span class="m">' + x.m + '</span>' +
+        '<div class="ms-top"><h3>' + esc(x.title) + '</h3><span class="state ' + x.state + '">' + stateLabel[x.state] + '</span>' +
+        (x.when ? '<span class="when">' + x.when + '</span>' : '') + '</div>' +
+        '<div class="ms-body"><p><span class="lbl">Scope</span>' + esc(x.scope) + '</p>' +
+        '<p><span class="lbl">Done when</span><b>' + esc(x.doneWhen) + '</b></p>' +
+        (x.result ? '<p><span class="lbl">Result</span>' + esc(x.result) + '</p>' : '') + tasks + ev + '</div></article>';
+    }).join('');
+
+    $('log-list').innerHTML = b.log.slice().reverse().map(function (l) { return '<li><time>' + l[0] + '</time>' + esc(l[1]) + '</li>'; }).join('');
+
+    $('dec-list').innerHTML = b.decisions.map(function (d) {
+      return '<tr><td>' + esc(d[0]) + '</td><td>' + esc(d[1]) + '</td><td><span class="state ' + d[3] + '">' + esc(d[2]) + '</span></td></tr>';
+    }).join('');
+  })(BUILD);
+
   // Copy buttons: data-copy holds the text, data-copy-from names a <pre> to copy.
   document.querySelectorAll('[data-copy], [data-copy-from]').forEach(function (btn) {
     btn.addEventListener('click', function () {
