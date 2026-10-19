@@ -1,0 +1,648 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>seamkit</title>
+<meta name="description" content="Deterministic production checks: is your merged change actually live in production? seamkit checks, and answers with an exit code.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: an inspection report. A left rail of section labels, a 1120px measure, and one bold device: the seam,
+   a stitched line between "merged" and "live" that readback crosses. Only pass is ever green. */
+:root {
+  color-scheme: light;
+  --paper: #f1f4f7;
+  --surface: #ffffff;
+  --ink: #111d29;
+  --ink-2: #4b5a69;
+  --rule: #d3dbe3;
+  --accent: #2752c9;
+  --accent-soft: #e3eafb;
+  --term: #0f1922;
+  --term-ink: #d9e3ec;
+  --term-dim: #7d8e9e;
+
+  --pass: #1d7a4b;   --pass-soft: #e0f1e8;
+  --fail: #bf3a30;   --fail-soft: #f9e3e1;
+  --nothing: #9a6a0c; --nothing-soft: #f6ecd6;
+  --unclass: #6d47a8; --unclass-soft: #ece4f7;
+  --usage: #56636f;  --usage-soft: #e6eaee;
+
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+  --s-1: 0.8125rem; --s0: 1rem; --s1: 1.1875rem; --s2: 1.5rem; --s3: 2.125rem; --s4: clamp(2.4rem, 5.2vw, 3.9rem);
+  --measure: 1120px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #0d141b; --surface: #141e28; --ink: #e4ebf1; --ink-2: #9aa9b7; --rule: #253341;
+    --accent: #84a5ff; --accent-soft: #1b2944; --term: #070c11; --term-ink: #d9e3ec; --term-dim: #71839a;
+    --pass: #4cc488; --pass-soft: #12301f; --fail: #f07a70; --fail-soft: #3a1714;
+    --nothing: #e0ac45; --nothing-soft: #33260b; --unclass: #b496ea; --unclass-soft: #2a1d40;
+    --usage: #a4b0bb; --usage-soft: #1e2933;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #0d141b; --surface: #141e28; --ink: #e4ebf1; --ink-2: #9aa9b7; --rule: #253341;
+  --accent: #84a5ff; --accent-soft: #1b2944; --term: #070c11; --term-ink: #d9e3ec; --term-dim: #71839a;
+  --pass: #4cc488; --pass-soft: #12301f; --fail: #f07a70; --fail-soft: #3a1714;
+  --nothing: #e0ac45; --nothing-soft: #33260b; --unclass: #b496ea; --unclass-soft: #2a1d40;
+  --usage: #a4b0bb; --usage-soft: #1e2933;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation: none !important; transition: none !important; } }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font: 400 var(--s0)/1.62 var(--body);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-underline-offset: 3px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+code, pre, kbd { font-family: var(--mono); }
+:not(pre) > code { font-size: 0.9em; background: var(--accent-soft); color: var(--ink); padding: 0.08em 0.36em; border-radius: 4px; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; }
+p { margin: 0; max-width: 66ch; }
+
+.wrap { max-width: var(--measure); margin: 0 auto; padding-left: max(20px, env(safe-area-inset-left, 0px)); padding-right: max(20px, env(safe-area-inset-right, 0px)); }
+
+/* top bar */
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--paper); }
+.bar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: color-mix(in srgb, var(--paper) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--rule); }
+.bar .wrap { display: flex; align-items: center; gap: 24px; min-height: 56px; flex-wrap: wrap; }
+.logo { font-family: var(--display); font-weight: 800; font-stretch: 112%; font-size: 1.2rem; letter-spacing: -0.01em; color: var(--ink); text-decoration: none; display: inline-flex; align-items: center; gap: 10px; }
+.logo svg { display: block; }
+.bar nav { display: flex; gap: 18px; flex-wrap: wrap; font-size: var(--s-1); }
+.bar nav a { color: var(--ink-2); text-decoration: none; }
+.bar nav a:hover { color: var(--ink); }
+.bar .right { margin-left: auto; display: flex; gap: 14px; align-items: center; font-family: var(--mono); font-size: var(--s-1); }
+.bar .right a { color: var(--ink-2); text-decoration: none; }
+.ver { border: 1px solid var(--rule); padding: 2px 8px; border-radius: 999px; color: var(--ink-2); }
+@media (max-width: 760px) { .bar nav { display: none; } }
+
+/* hero */
+.hero { padding-block: 64px 40px; }
+.hero .wrap { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.2fr); gap: 40px; align-items: start; }
+@media (max-width: 920px) { .hero .wrap { grid-template-columns: minmax(0, 1fr); gap: 32px; } }
+.eyebrow { font-family: var(--mono); font-size: var(--s-1); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); }
+.hero h1 { font-size: var(--s4); line-height: 1.02; font-weight: 800; font-stretch: 88%; letter-spacing: -0.02em; margin-top: 14px; }
+.hero h1 em { font-style: normal; color: var(--accent); }
+.hero .lede { font-size: var(--s1); color: var(--ink-2); margin-top: 20px; max-width: 34em; }
+.cmd { margin-top: 28px; display: flex; align-items: stretch; border: 1px solid var(--ink); border-radius: 8px; overflow: hidden; background: var(--surface); max-width: 520px; }
+.cmd code { flex: 1; padding: 13px 16px; font-size: 0.95rem; background: none; overflow-x: auto; white-space: nowrap; }
+.cmd code .p { color: var(--ink-2); user-select: none; }
+.copy { font: 500 var(--s-1) var(--mono); border: 0; border-left: 1px solid var(--ink); background: var(--ink); color: var(--paper); padding: 0 16px; cursor: pointer; }
+.copy:hover { background: var(--accent); }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 22px; font-size: var(--s-1); color: var(--ink-2); font-family: var(--mono); }
+.facts span::before { content: "▪ "; color: var(--accent); }
+
+.term { background: var(--term); color: var(--term-ink); border-radius: 10px; font: 400 0.78rem/1.6 var(--mono); box-shadow: 0 1px 0 rgba(0,0,0,.04), 0 18px 40px -22px rgba(10,20,30,.55); overflow: hidden; }
+.term-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,.07); color: var(--term-dim); }
+.term-head i { width: 9px; height: 9px; border-radius: 50%; background: #2b3946; display: inline-block; }
+.term-head span { margin-left: 8px; }
+.term pre { margin: 0; padding: 16px 18px 18px; overflow-x: auto; }
+.t-dim { color: var(--term-dim); }
+.t-pass { color: #5ad397; font-weight: 600; }
+.t-cmd { color: #ffffff; }
+.t-exit { display: inline-block; margin-top: 4px; padding: 1px 8px; border-radius: 4px; background: #143b28; color: #78e3ad; }
+
+/* the seam */
+.seam { padding-block: 8px 56px; }
+.seam-box { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 28px clamp(18px, 3vw, 36px); }
+.seam-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 18px; }
+.node { font-family: var(--display); font-weight: 700; font-stretch: 95%; font-size: var(--s1); }
+.node small { display: block; font: 400 var(--s-1)/1.4 var(--mono); color: var(--ink-2); }
+.node.end { text-align: right; }
+.stitch { position: relative; height: 44px; }
+.stitch::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; border-top: 2.5px dashed var(--ink-2); opacity: .55; }
+.stitch b { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: var(--accent); color: #fff; font: 600 var(--s-1) var(--mono); padding: 5px 12px; border-radius: 999px; white-space: nowrap; }
+.gaps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-top: 26px; }
+@media (max-width: 900px) { .gaps { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .gaps { grid-template-columns: minmax(0, 1fr); } .seam-row { grid-template-columns: minmax(0,1fr); text-align: left; } .node.end { text-align: left; } }
+.gap { border-top: 2px solid var(--rule); padding-top: 12px; font-size: 0.92rem; }
+.gap strong { display: block; font-family: var(--display); font-weight: 650; font-size: 1rem; margin-bottom: 4px; }
+.gap p { color: var(--ink-2); }
+.gap .who { margin-top: 8px; font: 500 0.74rem var(--mono); }
+
+/* sections */
+section.doc { padding-block: 56px; border-top: 1px solid var(--rule); }
+.doc .wrap { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 40px; }
+@media (max-width: 860px) { .doc .wrap { grid-template-columns: minmax(0, 1fr); gap: 14px; } }
+.label { font-family: var(--mono); font-size: var(--s-1); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); padding-top: 8px; }
+.label a { color: inherit; text-decoration: none; }
+.body > * + * { margin-top: 18px; }
+.body h2 { font-size: var(--s3); font-weight: 750; font-stretch: 92%; letter-spacing: -0.015em; line-height: 1.1; }
+.body h3 { font-size: var(--s1); font-weight: 680; margin-top: 32px; }
+.body .intro { font-size: 1.08rem; color: var(--ink-2); }
+
+/* chips */
+.chip { display: inline-flex; align-items: center; gap: 6px; font: 500 0.7rem/1 var(--mono); letter-spacing: 0.03em; text-transform: uppercase; padding: 4px 7px; border-radius: 4px; white-space: nowrap; vertical-align: middle; }
+.chip.built { background: var(--ink); color: var(--paper); }
+.chip.planned { border: 1px dashed var(--ink-2); color: var(--ink-2); }
+
+/* exit codes */
+.codes { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 900px) { .codes { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 420px) { .codes { grid-template-columns: minmax(0, 1fr); } }
+.code { border-radius: 10px; padding: 16px 16px 18px; background: var(--c-soft); color: var(--ink); display: flex; flex-direction: column; gap: 6px; }
+.code .n { font: 800 2.6rem/1 var(--display); font-stretch: 80%; color: var(--c); font-variant-numeric: tabular-nums; }
+.code .o { font: 600 0.82rem var(--mono); color: var(--c); text-transform: uppercase; letter-spacing: 0.04em; }
+.code p { font-size: 0.88rem; color: var(--ink-2); }
+.c0 { --c: var(--pass); --c-soft: var(--pass-soft); }
+.c1 { --c: var(--fail); --c-soft: var(--fail-soft); }
+.c2 { --c: var(--usage); --c-soft: var(--usage-soft); }
+.c3 { --c: var(--nothing); --c-soft: var(--nothing-soft); }
+.c4 { --c: var(--unclass); --c-soft: var(--unclass-soft); }
+.note { border-left: 3px solid var(--accent); padding: 4px 0 4px 16px; color: var(--ink-2); font-size: 0.95rem; }
+
+/* architecture */
+.arch { display: grid; gap: 10px; }
+.layer { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 0; border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); overflow: hidden; }
+@media (max-width: 640px) { .layer { grid-template-columns: minmax(0, 1fr); } }
+.layer-name { padding: 16px; border-right: 1px solid var(--rule); background: color-mix(in srgb, var(--surface) 60%, var(--paper)); }
+@media (max-width: 640px) { .layer-name { border-right: 0; border-bottom: 1px solid var(--rule); } }
+.layer-name strong { display: block; font-family: var(--display); font-weight: 700; font-size: 1.02rem; }
+.layer-name span { font-size: 0.8rem; color: var(--ink-2); line-height: 1.4; display: block; margin-top: 4px; }
+.layer-items { padding: 14px 16px; display: flex; flex-wrap: wrap; gap: 8px; align-content: center; }
+.item { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--rule); border-radius: 6px; padding: 6px 10px; font: 500 0.82rem var(--mono); background: var(--paper); }
+.item.is-planned { border-style: dashed; color: var(--ink-2); background: transparent; }
+.item .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink); }
+.item.is-planned .dot { background: transparent; border: 1px solid var(--ink-2); }
+.layer.core { border: 1.5px solid var(--ink); }
+.layer.core .layer-name { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.layer.core .layer-name span { color: color-mix(in srgb, var(--paper) 75%, transparent); }
+.flowline { display: flex; justify-content: center; gap: 46px; font: 500 0.72rem var(--mono); color: var(--ink-2); }
+.flowline span::before { content: "↓ "; }
+.flowline span.up::before { content: "↑ "; }
+.legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: var(--s-1); color: var(--ink-2); }
+.legend > span { display: inline-flex; align-items: center; gap: 8px; }
+
+/* tables */
+.tbl { overflow-x: auto; border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+th { font: 600 0.74rem var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-2); background: color-mix(in srgb, var(--surface) 60%, var(--paper)); }
+td code { white-space: nowrap; }
+.pill { display: inline-block; font: 600 0.74rem var(--mono); padding: 2px 8px; border-radius: 999px; background: var(--c-soft); color: var(--c); white-space: nowrap; }
+
+/* steps */
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; counter-reset: s; }
+.steps li { counter-increment: s; display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--rule); }
+.steps li:last-child { border-bottom: 0; }
+.steps li::before { content: counter(s); font: 700 1.25rem/1.3 var(--display); font-stretch: 80%; color: var(--accent); font-variant-numeric: tabular-nums; }
+.steps strong { font-weight: 600; }
+.steps .where { font: 500 0.74rem var(--mono); color: var(--ink-2); margin-left: 6px; }
+.steps p { color: var(--ink-2); font-size: 0.93rem; margin-top: 2px; }
+
+/* recipes */
+.recipes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+@media (max-width: 960px) { .recipes { grid-template-columns: minmax(0, 1fr); } }
+.recipe { border: 1px solid var(--rule); border-radius: 12px; background: var(--surface); padding: 20px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.recipe h3 { margin: 0; font-size: 1.12rem; }
+.recipe .who { font: 500 0.74rem var(--mono); color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.05em; }
+.recipe p { font-size: 0.93rem; color: var(--ink-2); }
+pre.block { margin: 0; background: var(--term); color: var(--term-ink); border-radius: 8px; padding: 14px 16px; font-size: 0.78rem; line-height: 1.6; overflow-x: auto; position: relative; }
+pre.block .c { color: var(--term-dim); }
+pre.block .k { color: #9cc0ff; }
+pre.block .s { color: #a8e0b8; }
+.block-wrap { position: relative; }
+.block-wrap .copy-sm { position: absolute; top: 8px; right: 8px; font: 500 0.68rem var(--mono); background: rgba(255,255,255,.08); color: var(--term-ink); border: 1px solid rgba(255,255,255,.14); border-radius: 5px; padding: 3px 8px; cursor: pointer; }
+.block-wrap .copy-sm:hover { background: rgba(255,255,255,.18); }
+
+/* roadmap */
+.road { display: grid; gap: 0; border: 1px solid var(--rule); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.ms { display: grid; grid-template-columns: 64px minmax(0, 1fr) 110px; gap: 16px; padding: 14px 18px; border-bottom: 1px solid var(--rule); align-items: baseline; }
+.ms:last-child { border-bottom: 0; }
+.ms .m { font: 700 1.05rem var(--display); font-stretch: 85%; font-variant-numeric: tabular-nums; }
+.ms .what strong { font-weight: 600; }
+.ms .what p { font-size: 0.88rem; color: var(--ink-2); margin-top: 2px; }
+.ms .st { text-align: right; }
+.ms.done .m { color: var(--ink); }
+.ms.next { background: var(--accent-soft); }
+@media (max-width: 560px) { .ms { grid-template-columns: 48px minmax(0, 1fr); } .ms .st { grid-column: 2; text-align: left; } }
+
+.promises { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px 28px; }
+@media (max-width: 860px) { .promises { grid-template-columns: minmax(0, 1fr); } }
+.promises div { border-top: 2px solid var(--ink); padding-top: 12px; }
+.promises strong { font-family: var(--display); font-weight: 680; display: block; margin-bottom: 4px; }
+.promises p { font-size: 0.92rem; color: var(--ink-2); }
+
+footer { border-top: 1px solid var(--rule); padding-block: 36px 56px; font-size: var(--s-1); color: var(--ink-2); }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 14px 28px; align-items: center; }
+footer .grow { flex: 1; min-width: 220px; }
+footer a { color: var(--ink-2); }
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="wrap">
+    <a class="logo" href="#top" aria-label="seamkit home">
+      <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="1" y="1" width="20" height="20" rx="5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 11h2.2M9.4 11h2.2M13.8 11h2.2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="17" cy="11" r="1.7" fill="currentColor"/></svg>
+      seamkit
+    </a>
+    <nav aria-label="Sections">
+      <a href="#outcomes">Outcomes</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#readback">Readback</a>
+      <a href="#use">Use it</a>
+      <a href="#reference">Reference</a>
+      <a href="#roadmap">Roadmap</a>
+    </nav>
+    <div class="right">
+      <span class="ver">v0.1.0</span>
+      <a href="https://www.npmjs.com/package/seamkit">npm</a>
+      <a href="https://github.com/azank1/seamkit">GitHub</a>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+
+<section class="hero">
+  <div class="wrap">
+    <div>
+      <div class="eyebrow">Deterministic production checks</div>
+      <h1>Merged is not shipped. <em>Read production back.</em></h1>
+      <p class="lede">seamkit asks production which commit it runs, compares that with your git history, and tells you
+        which merged changes are actually live. It answers with an exit code that an agent, a CI step and a person all read
+        the same way. No model runs inside it.</p>
+      <div class="cmd">
+        <code id="hero-cmd"><span class="p">$ </span>npx seamkit audit --url https://your.app</code>
+        <button class="copy" type="button" data-copy="npx seamkit audit --url https://your.app" id="copy-hero">Copy</button>
+      </div>
+      <div class="facts">
+        <span>read-only GET</span><span>zero configuration</span><span>Node 20+</span><span>Apache-2.0</span>
+      </div>
+    </div>
+
+    <figure class="term" style="margin:0" aria-label="A real audit of commit.city">
+      <div class="term-head"><i></i><i></i><i></i><span>commit-city · a real run, 2026-10-19</span></div>
+<pre><span class="t-cmd">$ npx seamkit@0.1.0 audit --url https://commit.city</span>
+
+<span class="t-pass">LIVE  20 of 20  (20 pass)</span>
+  pr#16                api: /api/version names the deployed commit
+                       <span class="t-dim">production at https://commit.city/api/version
+                       runs 492378ccca80, which contains this change</span>
+  19 changes, each for the same reason:
+      <span class="t-dim">production's version 492378ccca80 contains this change</span>
+    commit:5d37aae6a218  home: show "Made to be shown off" before ...
+    commit:1f5a66920a97  builder: copy pack bytes into blocks as ...
+    <span class="t-dim">...</span>
+
+<span class="t-pass">PASS</span>  readback  origin/main
+  proven live 20 of 20 changes
+  production at https://commit.city/api/version runs 492378ccca80 (pr#16)
+  <span class="t-dim">not examined: changes before the last 20 on origin/main (outside --last)</span>
+
+<span class="t-exit">exit 0</span></pre>
+    </figure>
+  </div>
+</section>
+
+<section class="seam" aria-label="The gap seamkit checks">
+  <div class="wrap">
+    <div class="seam-box">
+      <div class="seam-row">
+        <div class="node">merged<small>a green pull request</small></div>
+        <div class="stitch" aria-hidden="true"><b>seamkit readback</b></div>
+        <div class="node end">live<small>what production serves</small></div>
+      </div>
+      <div class="gaps">
+        <div class="gap"><strong>Merged, never deployed</strong><p>An agent reports a change as shipped because the pull request merged.</p><div class="who"><span class="chip built">readback</span></div></div>
+        <div class="gap"><strong>Deployed, then rolled back</strong><p>A change was live yesterday and is gone today, and nobody noticed.</p><div class="who"><span class="chip built">readback + ledger</span></div></div>
+        <div class="gap"><strong>A check that looked at nothing</strong><p>A step passes because it had nothing to inspect. seamkit says "examined nothing" instead.</p><div class="who"><span class="chip built">every check</span></div></div>
+        <div class="gap"><strong>A deploy that carries extra changes</strong><p>A deploy ships merged work nobody chose to ship with it.</p><div class="who"><span class="chip planned">carry · M5</span></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="doc" id="outcomes">
+  <div class="wrap">
+    <div class="label"><a href="#outcomes">Outcomes</a></div>
+    <div class="body">
+      <h2>Four outcomes, one exit code each</h2>
+      <p class="intro">Every check returns one of four outcomes. The exit code says which, so a script or an agent
+        chaining commands with <code>&amp;&amp;</code> can never proceed on a result it misread. Every non-zero code means
+        "not a pass".</p>
+      <div class="codes" role="list">
+        <div class="code c0" role="listitem"><span class="n">0</span><span class="o">pass</span><p>Something was examined, and everything held.</p></div>
+        <div class="code c1" role="listitem"><span class="n">1</span><span class="o">fail</span><p>A change is not live or not proven.</p></div>
+        <div class="code c3" role="listitem"><span class="n">3</span><span class="o">examined nothing</span><p>seamkit could not look, so it claims nothing.</p></div>
+        <div class="code c4" role="listitem"><span class="n">4</span><span class="o">unclassified</span><p>No rule covers the case. It stops for a human.</p></div>
+        <div class="code c2" role="listitem"><span class="n">2</span><span class="o">usage error</span><p>Bad arguments or configuration. No verdict was produced.</p></div>
+      </div>
+      <p class="note">Only a pass is ever shown in green. Every count carries its denominator, as in "proven live 10 of 21
+        merged changes", and every verdict lists what it did not examine, with a reason. A check over zero items is
+        examined nothing, never a pass.</p>
+    </div>
+  </div>
+</section>
+
+<section class="doc" id="architecture">
+  <div class="wrap">
+    <div class="label"><a href="#architecture">Architecture</a></div>
+    <div class="body">
+      <h2>A pure judge, a thin shell, read-only adapters</h2>
+      <p class="intro">seamkit follows the functional-core, imperative-shell pattern. Adapters observe the world, the
+        core judges the observations, and the shell records both. Because a verdict is a pure function of recorded
+        inputs, any past verdict can be recomputed from the ledger with <code>seamkit replay</code>, and one that comes
+        out differently is a defect.</p>
+
+      <div class="legend"><span><span class="chip built">built</span> in 0.1.0</span><span><span class="chip planned">planned</span> on the roadmap</span></div>
+
+      <div class="arch">
+        <div class="layer">
+          <div class="layer-name"><strong>Surfaces</strong><span>how agents, CI and people call it</span></div>
+          <div class="layer-items">
+            <span class="item"><span class="dot"></span>CLI <code style="background:none;padding:0">seamkit</code></span>
+            <span class="item is-planned"><span class="dot"></span>GitHub Action · M3</span>
+            <span class="item is-planned"><span class="dot"></span>MCP server · M4</span>
+            <span class="item is-planned"><span class="dot"></span>agent hooks · M8</span>
+            <span class="item is-planned"><span class="dot"></span>static console · M7</span>
+          </div>
+        </div>
+        <div class="flowline" aria-hidden="true"><span>arguments</span><span class="up">exit code + JSON</span></div>
+        <div class="layer">
+          <div class="layer-name"><strong>Shell</strong><span>all I/O lives here</span></div>
+          <div class="layer-items">
+            <span class="item"><span class="dot"></span>reads history and configuration</span>
+            <span class="item"><span class="dot"></span>calls adapters</span>
+            <span class="item"><span class="dot"></span>passes in the time</span>
+            <span class="item"><span class="dot"></span>writes events</span>
+            <span class="item is-planned"><span class="dot"></span>asks humans · M7</span>
+          </div>
+        </div>
+        <div class="flowline" aria-hidden="true"><span>observations</span><span class="up">verdicts</span></div>
+        <div class="layer core">
+          <div class="layer-name"><strong>Core</strong><span>pure functions, no I/O, no dependencies</span></div>
+          <div class="layer-items">
+            <span class="item"><span class="dot"></span>verdict algebra</span>
+            <span class="item"><span class="dot"></span>readback</span>
+            <span class="item"><span class="dot"></span>card parser</span>
+            <span class="item"><span class="dot"></span>replay</span>
+            <span class="item is-planned"><span class="dot"></span>carry · M5</span>
+            <span class="item is-planned"><span class="dot"></span>gate · M6</span>
+            <span class="item is-planned"><span class="dot"></span>approvals · M7</span>
+            <span class="item is-planned"><span class="dot"></span>radius · M8</span>
+            <span class="item is-planned"><span class="dot"></span>parity · M8</span>
+          </div>
+        </div>
+        <div class="flowline" aria-hidden="true"><span>read-only requests</span></div>
+        <div class="layer">
+          <div class="layer-name"><strong>Adapters</strong><span>report what they read, never a verdict</span></div>
+          <div class="layer-items">
+            <span class="item"><span class="dot"></span>git history</span>
+            <span class="item"><span class="dot"></span>version document</span>
+            <span class="item"><span class="dot"></span>served bundle</span>
+            <span class="item"><span class="dot"></span>fake production</span>
+            <span class="item is-planned"><span class="dot"></span>GitHub · M6</span>
+            <span class="item is-planned"><span class="dot"></span>hosting platforms · M5</span>
+            <span class="item is-planned"><span class="dot"></span>databases</span>
+          </div>
+        </div>
+        <div class="flowline" aria-hidden="true"><span>events</span></div>
+        <div class="layer">
+          <div class="layer-name"><strong>Ledger</strong><span>in your own repository</span></div>
+          <div class="layer-items">
+            <span class="item"><span class="dot"></span><code style="background:none;padding:0">seamkit/state</code> branch</span>
+            <span class="item"><span class="dot"></span>one file per event, named by its SHA-256</span>
+            <span class="item"><span class="dot"></span>canonical JSON (RFC 8785)</span>
+            <span class="item"><span class="dot"></span>written with git plumbing</span>
+          </div>
+        </div>
+      </div>
+
+      <h3>Packages</h3>
+      <div class="tbl">
+        <table>
+          <thead><tr><th>Package</th><th>Holds</th><th>Runtime dependencies</th></tr></thead>
+          <tbody>
+            <tr><td><code>core</code></td><td>types, the verdict algebra, every check as a pure function, canonical JSON, replay</td><td>none</td></tr>
+            <tr><td><code>formats</code></td><td>scope card and merge commit message parsing</td><td><code>yaml</code> 2.9.1, pinned</td></tr>
+            <tr><td><code>state</code></td><td>the event store on the <code>seamkit/state</code> branch</td><td>none (runs the <code>git</code> binary)</td></tr>
+            <tr><td><code>adapters</code></td><td>git history, version documents, served bundles, the local fake production</td><td>none (global <code>fetch</code>)</td></tr>
+            <tr><td><code>cli</code></td><td>the <code>seamkit</code> command</td><td>none beyond the above</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>The npm package bundles all of this into one file, with <code>yaml</code>'s licence in its notices. HTTP reads are
+        bounded: 10 seconds and 5 MiB per response, 64 KiB for a version document, and 100 files or 25 MiB for a whole
+        crawl of a site's bundle.</p>
+    </div>
+  </div>
+</section>
+
+<section class="doc" id="readback">
+  <div class="wrap">
+    <div class="label"><a href="#readback">Readback</a></div>
+    <div class="body">
+      <h2>What happens in one readback</h2>
+      <ol class="steps">
+        <li><div><strong>Walk the history</strong><span class="where">git adapter</span><p>Take the first-parent history of the default branch: one change per merged pull request or direct commit, the last 20 by default.</p></div></li>
+        <li><div><strong>Ask production which commit it runs</strong><span class="where">version adapter</span><p>Read a version document from <code>/version.json</code>, <code>/api/version</code> or <code>/version</code>. A dirty build, a commit the repository lacks, or a web page served in its place is unreadable, never trusted.</p></div></li>
+        <li><div><strong>Search the served build</strong><span class="where">bundle adapter</span><p>For changes whose scope card names markers, read the page and the same-origin scripts, styles and chunks it loads, and look for each marker's text. The adapter records what it read, never content.</p></div></li>
+        <li><div><strong>Judge</strong><span class="where">core</span><p>A change is contained when its commit is an ancestor of the running commit (<code>git merge-base --is-ancestor</code>). Markers are present, absent, contradicted or unreadable, decided from the recorded observation.</p></div></li>
+        <li><div><strong>Compare with earlier runs</strong><span class="where">ledger</span><p>A marker that a recorded run saw and that is missing now makes the change not live, as after a rollback, rather than merely not proven.</p></div></li>
+        <li><div><strong>Answer and record</strong><span class="where">shell</span><p>Print verdicts grouped with problems first, exit with the outcome, and record the run as an event that <code>seamkit replay</code> can recompute.</p></div></li>
+      </ol>
+
+      <h3>Readback states</h3>
+      <div class="tbl">
+        <table>
+          <thead><tr><th>State</th><th>When</th><th>Outcome</th></tr></thead>
+          <tbody>
+            <tr><td><code>live</code></td><td>every marker is present</td><td><span class="pill c0">pass</span></td></tr>
+            <tr><td><code>not_live</code></td><td>a marker that an earlier recorded run saw is absent now</td><td><span class="pill c1">fail</span></td></tr>
+            <tr><td><code>not_proven</code></td><td>a marker is absent and was never seen, or production's version contradicts it</td><td><span class="pill c1">fail</span></td></tr>
+            <tr><td><code>not_proven</code></td><td>nothing is absent, but some marker could not be read</td><td><span class="pill c3">examined nothing</span></td></tr>
+            <tr><td><code>nothing_to_prove</code></td><td>the change's card declares that nothing deployed changes</td><td><span class="pill c3">examined nothing</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>A change with nothing to prove is never reported as live. That claim is the author's, and accepting it is a
+        human's call.</p>
+    </div>
+  </div>
+</section>
+
+<section class="doc" id="use">
+  <div class="wrap">
+    <div class="label"><a href="#use">Use it</a></div>
+    <div class="body">
+      <h2>Six ways in, from one minute to a full ledger</h2>
+      <div class="recipes">
+
+        <article class="recipe">
+          <div class="who">Any developer · 1 minute</div>
+          <h3>Audit a site you already run</h3>
+          <p>From your repository, with no configuration. It takes the last 20 merged changes and gives advice for every
+            gap it finds, so "examined nothing" becomes a list of next steps.</p>
+          <div class="block-wrap"><pre class="block">cd your-repo
+npx seamkit audit --url https://your.app</pre><button class="copy-sm" type="button" id="copy-audit" data-copy="cd your-repo&#10;npx seamkit audit --url https://your.app">Copy</button></div>
+        </article>
+
+        <article class="recipe">
+          <div class="who">Build engineer</div>
+          <h3>Make production say what it runs</h3>
+          <p>Write a version document at build time, or answer <code>/api/version</code> from a server function with the
+            commit your host provides, such as <code>VERCEL_GIT_COMMIT_SHA</code>.</p>
+          <div class="block-wrap"><pre class="block"><span class="c"># before the build; bundlers copy public/ into the output</span>
+npx seamkit stamp --out public/version.json --require-clean</pre><button class="copy-sm" type="button" id="copy-stamp" data-copy="npx seamkit stamp --out public/version.json --require-clean">Copy</button></div>
+          <div class="block-wrap"><pre class="block">{ <span class="k">"schema"</span>: <span class="s">"seamkit.version/1"</span>, <span class="k">"commit"</span>: <span class="s">"&lt;full commit id&gt;"</span>,
+  <span class="k">"dirty"</span>: false, <span class="k">"source"</span>: <span class="s">"git"</span>, <span class="k">"ref"</span>: <span class="s">"main"</span> }</pre></div>
+        </article>
+
+        <article class="recipe">
+          <div class="who">CI · GitHub Actions</div>
+          <h3>Fail the pipeline when a change is not live</h3>
+          <p>Run readback as a step once the deploy is live. It needs the full history, because containment is decided by
+            commit ancestry. A packaged Action is next on the roadmap.</p>
+          <div class="block-wrap"><pre class="block"><span class="k">- uses</span>: actions/checkout@v7
+  <span class="k">with</span>: { <span class="k">fetch-depth</span>: 0 }
+<span class="k">- uses</span>: actions/setup-node@v7
+  <span class="k">with</span>: { <span class="k">node-version</span>: 22 }
+<span class="k">- run</span>: npx --yes seamkit@0.1 readback --url https://your.app --last 20</pre><button class="copy-sm" type="button" id="copy-ci" data-copy="- uses: actions/checkout@v7&#10;  with: { fetch-depth: 0 }&#10;- uses: actions/setup-node@v7&#10;  with: { node-version: 22 }&#10;- run: npx --yes seamkit@0.1 readback --url https://your.app --last 20">Copy</button></div>
+        </article>
+
+        <article class="recipe">
+          <div class="who">Coding agents · Claude Code, Cursor, Codex</div>
+          <h3>Give the agent one rule</h3>
+          <p>The exit code is the contract, so one instruction in <code>AGENTS.md</code> or <code>CLAUDE.md</code> stops an
+            agent calling a change done because it merged.</p>
+          <div class="block-wrap"><pre class="block">After a deploy, run
+`npx seamkit readback --url https://your.app --pr &lt;number&gt; --json`.
+The change is shipped only when it exits 0. Exit 1 means it is not
+live or not proven, and exit 3 means production could not be examined.
+Report the reasons; never call a change done on any other exit code.</pre><button class="copy-sm" type="button" id="copy-agent" data-copy="After a deploy, run `npx seamkit readback --url https://your.app --pr <number> --json`. The change is shipped only when it exits 0. Exit 1 means it is not live or not proven, and exit 3 means production could not be examined. Report the reasons; never call a change done on any other exit code.">Copy</button></div>
+        </article>
+
+        <article class="recipe">
+          <div class="who">Pull request authors</div>
+          <h3>Prove more than the version with a scope card</h3>
+          <p>A fenced block in the pull request description names text the built output must contain. It reaches the
+            history only when the repository's merge message is "Pull request title and description".</p>
+          <div class="block-wrap"><pre class="block">```seamkit-card
+card: 1
+intent: Show a saved indicator after a note is synced.
+layers: [frontend]
+targets: [web]
+markers:
+  - kind: bundle
+    text: "data-sync-state"
+releaseNote: Notes now show when they were last saved.
+```</pre></div>
+          <p>The parser is strict and reports every problem in one pass, each naming the field and the fix. A marker must be
+            text in the built output: a component name or a comment exists only in source and is never found.</p>
+        </article>
+
+        <article class="recipe">
+          <div class="who">Teams · rollbacks and audits</div>
+          <h3>Keep a ledger in the repository</h3>
+          <p>With a ledger, a later run can say a change was live and has left production. Events are content-addressed,
+            and every recorded verdict can be recomputed byte for byte.</p>
+          <div class="block-wrap"><pre class="block">npx seamkit state init      <span class="c"># create the seamkit/state branch</span>
+npx seamkit readback --url https://your.app
+npx seamkit state verify    <span class="c"># every file matches its name</span>
+npx seamkit replay          <span class="c"># recompute every recorded verdict</span>
+npx seamkit state sync      <span class="c"># merge and push, never forced</span></pre><button class="copy-sm" type="button" id="copy-ledger" data-copy="npx seamkit state init&#10;npx seamkit readback --url https://your.app&#10;npx seamkit state verify&#10;npx seamkit replay&#10;npx seamkit state sync">Copy</button></div>
+        </article>
+
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="doc" id="reference">
+  <div class="wrap">
+    <div class="label"><a href="#reference">Reference</a></div>
+    <div class="body">
+      <h2>Commands in 0.1.0</h2>
+      <div class="tbl">
+        <table>
+          <thead><tr><th>Command</th><th>Does</th></tr></thead>
+          <tbody>
+            <tr><td><code>seamkit audit --url &lt;url&gt;</code></td><td>Readback over the last 20 changes, with advice for every gap. Options: <code>--last</code>, <code>--branch</code>, <code>--json</code>.</td></tr>
+            <tr><td><code>seamkit readback --url &lt;url&gt;</code></td><td>Prove whether production holds each change, or one with <code>--pr N</code> or <code>--commit C</code>. Also <code>--version-url</code>, <code>--record</code> or <code>--no-record</code>.</td></tr>
+            <tr><td><code>seamkit stamp</code></td><td>Write the version document. <code>--out F</code>, <code>--commit C</code>, <code>--require-clean</code>.</td></tr>
+            <tr><td><code>seamkit check &lt;name&gt;</code></td><td>Run one registered check on a recorded input from <code>--input</code>. <code>seamkit checks</code> lists them.</td></tr>
+            <tr><td><code>seamkit replay [&lt;event&gt;]</code></td><td>Recompute recorded verdicts and fail if any comes out differently.</td></tr>
+            <tr><td><code>seamkit state init|list|verify|sync</code></td><td>Create, list, verify and sync the ledger branch.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>The production URL can also come from <code>SEAMKIT_URL</code>. <code>--json</code> prints one document per run, so
+        an agent parses a single object:</p>
+      <div class="block-wrap"><pre class="block">{
+  <span class="k">"outcome"</span>: <span class="s">"pass"</span>, <span class="k">"exitCode"</span>: 0,
+  <span class="k">"verdicts"</span>: [{
+    <span class="k">"check"</span>: <span class="s">"readback"</span>, <span class="k">"subject"</span>: <span class="s">"origin/main"</span>, <span class="k">"outcome"</span>: <span class="s">"pass"</span>,
+    <span class="k">"reasons"</span>: [<span class="s">"proven live 3 of 3 changes"</span>, <span class="s">"production at https://commit.city/api/version runs 492378ccca80 (pr#16)"</span>],
+    <span class="k">"examined"</span>: [ ... ], <span class="k">"notExamined"</span>: [ ... ], <span class="k">"evidence"</span>: [ ... ],
+    <span class="k">"inputs"</span>: <span class="s">"&lt;digest of everything the verdict used&gt;"</span>, <span class="k">"at"</span>: <span class="s">"&lt;time&gt;"</span>
+  }],
+  <span class="k">"advice"</span>: [ ... ]
+}</pre></div>
+
+      <h3>What seamkit touches</h3>
+      <div class="promises">
+        <div><strong>Production, read-only</strong><p>HTTP <code>GET</code> only, bounded in time and size, never with credentials. URLs that carry credentials or a query string are refused, because URLs are recorded.</p></div>
+        <div><strong>Your repository, one branch</strong><p>It reads your history and writes only <code>seamkit/state</code>, with git plumbing that never touches your working tree, index or HEAD.</p></div>
+        <div><strong>No model, no content</strong><p>No model runs inside it. The ledger holds URLs, commit ids, marker texts and digests, never what production served.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="doc" id="roadmap">
+  <div class="wrap">
+    <div class="label"><a href="#roadmap">Roadmap</a></div>
+    <div class="body">
+      <h2>Usable by strangers first, then the rest of the checks</h2>
+      <div class="road">
+        <div class="ms done"><span class="m">M1</span><div class="what"><strong>Core</strong><p>Verdict algebra, the event ledger, exit codes, replay.</p></div><span class="st"><span class="chip built">done</span></span></div>
+        <div class="ms done"><span class="m">M2</span><div class="what"><strong>Readback, audit, stamp</strong><p>Version ancestry, bundle markers, the demo, the commit.city dogfood at 20 of 20.</p></div><span class="st"><span class="chip built">done</span></span></div>
+        <div class="ms next"><span class="m">M3</span><div class="what"><strong>npm package and GitHub Action</strong><p>The package is published. The Action reads back after each deploy and posts a check run.</p></div><span class="st"><span class="chip planned">next</span></span></div>
+        <div class="ms"><span class="m">M4</span><div class="what"><strong>MCP server and Claude Code plugin</strong><p>The read-only checks as tools for any MCP client.</p></div><span class="st"><span class="chip planned">planned</span></span></div>
+        <div class="ms"><span class="m">M5</span><div class="what"><strong>Carry</strong><p>Before a deploy, the merged pull requests it will also ship, and a block on hand deploys.</p></div><span class="st"><span class="chip planned">planned</span></span></div>
+        <div class="ms"><span class="m">M6</span><div class="what"><strong>Card and gate</strong><p>Every open pull request evaluated the way the deploy step will, with the exact missing items.</p></div><span class="st"><span class="chip planned">planned</span></span></div>
+        <div class="ms"><span class="m">M7</span><div class="what"><strong>Approvals, policy, console</strong><p>Approvals an agent cannot forge, rulings asked of a human, a static console.</p></div><span class="st"><span class="chip planned">planned</span></span></div>
+        <div class="ms"><span class="m">M8</span><div class="what"><strong>Radius, parity, hooks</strong><p>Blast-radius classification, sandbox parity, hook packs for coding agents.</p></div><span class="st"><span class="chip planned">planned</span></span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span class="grow">seamkit 0.1.0 · Apache-2.0 · tested on Node 20 and 22</span>
+    <a href="https://github.com/azank1/seamkit">Source</a>
+    <a href="https://github.com/azank1/seamkit/blob/main/docs/architecture.md">Architecture document</a>
+    <a href="https://github.com/azank1/seamkit/blob/main/CONTRIBUTING.md">Contributing</a>
+    <a href="https://github.com/azank1/seamkit/security">Security</a>
+  </div>
+</footer>
+
+<script>
+  document.querySelectorAll('[data-copy]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var text = btn.getAttribute('data-copy');
+      var done = function () { var old = btn.textContent; btn.textContent = 'Copied'; setTimeout(function () { btn.textContent = old; }, 1400); };
+      if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, function () {});
+      else { var t = document.createElement('textarea'); t.value = text; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); done(); } catch (e) {} t.remove(); }
+    });
+  });
+</script>
+</body>
+</html>
