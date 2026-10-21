@@ -79,7 +79,7 @@ commit the CI system provides (`VERCEL_GIT_COMMIT_SHA`, `GITHUB_SHA`, `CF_PAGES_
 
 The seamkit Action reads production back once a deploy succeeds and posts the verdict as a check run on the deployed
 commit. Hosts that report deployments to GitHub fire `deployment_status`; Vercel does, and names the production
-environment `Production`, or `Production – <project>` when one repository feeds several projects:
+environment `Production`:
 
 ```yaml
 # .github/workflows/readback.yml
@@ -88,12 +88,12 @@ on: deployment_status
 permissions:
   contents: write   # to record verdicts on the seamkit/state branch
   checks: write     # to post the check run
-concurrency:
-  group: seamkit-ledger   # runs take turns pushing the ledger
-  cancel-in-progress: false
 jobs:
   readback:
-    if: github.event.deployment_status.state == 'success' && startsWith(github.event.deployment.environment, 'Production')
+    if: github.event.deployment_status.state == 'success' && github.event.deployment.environment == 'Production'
+    concurrency:
+      group: seamkit-readback   # one readback at a time; a newer deploy replaces one still waiting
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -106,16 +106,29 @@ jobs:
           ledger: 'true'   # start the ledger on the first run, so a rollback shows as not live
 ```
 
-The check covers the last 20 changes on the default branch. A change merged after the deployed commit that production
-does not show yet is listed as not examined and left to the next deploy, so a merge landing while this deploy builds
-does not fail it. A change an earlier run saw live is still judged, so a deploy that drops it fails as not live. The
-Action keeps reading production for up to `wait` seconds until it runs a version containing the deployed commit, then
-records the run that counts and pushes the ledger.
+The concurrency group sits on the job, so a deploy to another environment, which the `if` skips, never takes a place
+in it. GitHub runs one job of the group at a time and keeps at most one more waiting, and a newer deploy replaces the
+one waiting, whose build production no longer runs. When one repository feeds several Vercel projects, each production
+environment is named `Production – <project>`; give each project its own job, with that exact name in its `if` and its
+own `url`.
 
-Only a pass posts a success. A change that is not live or not proven fails the check, production that cannot be read
-fails it as examined nothing, and an unclassified result is marked action required. Every change in the window counts,
-so a change that cannot be proven fails each deploy until it is fixed or leaves the window; fix its card, lower `last`,
-or read back one pull request with `pr`. The step exits with seamkit's own code, so a later step that reads
+The check covers the last 20 changes on the default branch. The Action keeps reading production for up to `wait`
+seconds until production's version document reports the deployed commit, then records the run that counts and pushes
+the ledger. When production still runs another commit at the end of the wait, the summary says which. If that commit
+does not contain the deployed one, the deploy is not live at this address, and a pass is reported as a fail.
+
+With a ledger, a change merged after the deployed commit that no earlier run saw live at this address is listed as not
+examined and left to the next deploy, so a merge landing while this deploy builds does not fail it. A change an earlier
+run saw live is still judged, so a deploy that drops it, as a rollback does, fails as not live. Without a ledger
+seamkit cannot tell a change still on its way from one a rollback removed, so it judges every change: a merge landing
+during the build fails the deploy as not proven until the next deploy carries it, and a rollback fails as not proven
+rather than not live.
+
+Only a pass posts a success. A change that is not live or not proven fails the check, and an unclassified result is
+marked action required. Examined nothing fails it too, whether production could not be read, a marker could not be
+read, or a change's card says it has nothing to prove (`kind: none`), a claim a human has to accept. Every change in
+the window counts, so such a change fails each deploy until it is fixed or leaves the window; fix its card, lower
+`last`, or read back one pull request with `pr`. The step exits with seamkit's own code, so a later step that reads
 `steps.readback.outputs.outcome` needs `if: always()`.
 
 When you deploy from a workflow of your own, trigger on it finishing, from the default branch:
@@ -129,15 +142,17 @@ on:
 ```
 
 The check run then goes on the commit that workflow ran on. A run that failed, or that ran for a pull request, is
-skipped. To catch a rollback or a hand deploy that no workflow saw, run the same step on a schedule as well; it reads
-the default branch, so it also fails while a merged change waits for its deploy.
+skipped, as is any `deployment_status` other than success. To catch a rollback or a hand deploy that no workflow saw,
+run the same step on a `schedule` as well, such as hourly with `cron: '17 * * * *'`. The watch reads the default
+branch, so it also fails while a merged change waits for its deploy, and it needs no concurrency group, because a
+ledger push that meets another run's is merged and tried again.
 
 | Input | Default | |
 |---|---|---|
 | `url` | required | the production address |
 | `last` | `20` | how many of the latest changes to examine |
 | `pr` | | read back one merged pull request instead |
-| `wait` | `60` | after a deploy, seconds (up to 1800) to wait for production to run it; nothing is recorded meanwhile |
+| `wait` | `60` | after a deploy, seconds (up to 1800) to keep reading until production reports the deployed commit; nothing is recorded meanwhile |
 | `ledger` | `auto` | `auto` records when a `seamkit/state` branch exists, `true` starts one, `false` never records |
 | `check-name` | `seamkit readback (<host>)` | one check per production address |
 | `sha` | the deployed commit | where the check goes, and what counts as deployed |
@@ -146,7 +161,7 @@ the default branch, so it also fails while a merged change waits for its deploy.
 The Action runs on GitHub-hosted runners, and on self-hosted runners that support the `node24` runtime. Recording
 pushes with the checkout's credentials, so keep `actions/checkout`'s default `persist-credentials`.
 
-Anywhere else, run readback as a step once your deploy is live, naming the deployed commit:
+Anywhere else, run readback as a step of the job that deploys, once the deploy is live, naming the commit it shipped:
 
 ```yaml
 - uses: actions/checkout@v7
@@ -155,11 +170,19 @@ Anywhere else, run readback as a step once your deploy is live, naming the deplo
 - uses: actions/setup-node@v7
   with:
     node-version: 22
-- run: npx --yes seamkit@0.2 readback --url https://your.app --last 20 --deployed "$DEPLOYED_COMMIT"
+# … your deploy steps …
+- run: |
+    npx --yes seamkit@0.2 state sync   # fetch the ledger, when there is one
+    status=0
+    npx --yes seamkit@0.2 readback --url https://your.app --last 20 --deployed "$DEPLOYED_COMMIT" || status=$?
+    npx --yes seamkit@0.2 state sync   # push the run readback recorded
+    exit $status
+  env:
+    DEPLOYED_COMMIT: ${{ github.sha }}   # the commit this job deployed
 ```
 
-The step fails when a change is not live or not proven, and exits 3 when production could not be read, so a broken
-read never passes silently.
+The step fails when a change is not live or not proven, and exits 3 when nothing could be examined, so a broken read
+never passes silently. Readback records the run when the checkout has a ledger; `seamkit state init` starts one.
 
 ## Use it from an agent
 
@@ -167,8 +190,9 @@ The exit code is the contract, so an agent needs one instruction, for example in
 
 ```markdown
 After a deploy, run `npx seamkit readback --url https://your.app --pr <number> --json`.
-The change is shipped only when it exits 0. Exit 1 means it is not live or not proven, and exit 3 means
-production could not be examined. Report the reasons; never call a change done on any other exit code.
+The change is shipped only when it exits 0. Exit 1 means it is not live or not proven. Exit 3 means nothing
+was proven: production or a marker could not be read, the card says there is nothing to prove, or the pull
+request was not found. Report the reasons; never call a change done on any other exit code.
 ```
 
 An MCP server with the same checks as tools is on the roadmap.
@@ -256,7 +280,8 @@ machine, and its test pins every state.
 ## What works today, and what is next
 
 seamkit 0.1 is the command line tool: `audit`, `readback`, `stamp`, `replay` and `state`. 0.2 adds the GitHub Action,
-which reads back after every deploy and reports a check run. Both are tested on Node 20, 22 and 24 on Linux.
+which reads back after every deploy and reports a check run, and `readback --deployed`, which judges a deploy by the
+commit it shipped. Both are tested on Node 20, 22 and 24 on Linux.
 
 Next, in order:
 
@@ -275,7 +300,7 @@ cover, is in [`docs/prior-art.md`](docs/prior-art.md).
 
 ```sh
 npm ci
-npm test             # 145 tests, using temporary repositories and a local fake production
+npm test             # 159 tests, using temporary repositories and a local fake production
 npm run demo         # add -- --keep to keep the demo repository
 npm run pack:cli     # builds the npm package into release/seamkit
 npm run smoke:pack   # installs that package into an empty project and runs it

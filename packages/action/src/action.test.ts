@@ -7,11 +7,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import type { Verdict } from '@seamkit/core';
 import { FakeProduction } from '@seamkit/adapters';
 import { git } from '@seamkit/state';
 import { runAction, type ActionDeps } from './action.js';
 import { CONCLUSIONS, errorReport, readbackReport } from './report.js';
-import { deployedCommit, headSha, readInputs, skipReason, type GitHubContext } from './github.js';
+import { defaultBranchOf, deployedCommit, displayUrl, headSha, plainText, readInputs, skipReason, type GitHubContext } from './github.js';
 
 const AT = '2026-10-21T09:00:00.000Z';
 const ID = ['-c', 'user.name=dev', '-c', 'user.email=dev@example.invalid'];
@@ -124,6 +125,8 @@ async function act(
   for (const [k, v] of Object.entries(inputs)) env[`INPUT_${k.toUpperCase()}`] = v;
   const ran: Ran = { code: -1, logs: [], warnings: [], sleeps: [], outputs: '', summary: '' };
   let clock = 0;
+  // A test's own sleep runs as well, never instead: the clock always moves, so a wait always ends.
+  const { sleep: alsoSleep, ...rest } = extra;
   ran.code = await runAction({
     env,
     now: () => AT,
@@ -131,11 +134,12 @@ async function act(
     sleep: async (ms) => {
       ran.sleeps.push(ms);
       clock += ms;
+      await alsoSleep?.(ms);
     },
     fetch: (url, init) => fetch(url, init),
     log: (line) => ran.logs.push(line),
     warn: (line) => ran.warnings.push(line),
-    ...extra,
+    ...rest,
   });
   ran.outputs = await readFile(outputPath, 'utf8');
   ran.summary = await readFile(summaryPath, 'utf8');
@@ -197,7 +201,7 @@ describe('the seamkit action', () => {
       sleep: async () => deploy(commits[2]),
     });
     assert.equal(ran.code, 0);
-    assert.ok(ran.logs.some((l) => new RegExp(`production does not show ${(commits[2] as string).slice(0, 12)} yet \\(exit 1\\); reading it again in 10s`).test(l)));
+    assert.ok(ran.logs.some((l) => new RegExp(`production reports ${(commits[1] as string).slice(0, 12)}, not the deployed commit ${(commits[2] as string).slice(0, 12)} yet \\(exit 1\\); reading it again in 10s`).test(l)));
     // One recorded run: the attempts while waiting are not written to the ledger.
     const events = await git(['ls-tree', '-r', '--name-only', 'seamkit/state', 'events/'], { cwd: ci });
     assert.equal(events.split('\n').filter((l) => l.length > 0).length, 1);
@@ -234,11 +238,12 @@ describe('the seamkit action', () => {
   it('judges a deploy by the commit it deployed, not by a change merged while it was building', async () => {
     const { ci, commits } = await project();
     deploy(commits[1]);
-    const ran = await act(ci, {}, success(commits[1] as string));
+    // The ledger tells a change on its way from one a rollback removed, so it scopes the deploy.
+    const ran = await act(ci, { ledger: 'true' }, success(commits[1] as string));
     assert.equal(ran.code, 0, ran.warnings.join('\n'));
     assert.equal(lastPost()['head_sha'], commits[1]);
     assert.equal((lastPost()['output'] as { title: string }).title, 'PASS: 2 live of 2');
-    assert.match((lastPost()['output'] as { text: string }).text, new RegExp(`not examined: pr#2 \\(merged after the deployed commit ${(commits[1] as string).slice(0, 12)} and not shown by production yet`));
+    assert.match((lastPost()['output'] as { summary: string }).summary, new RegExp(`not examined: 1 change merged after the deployed commit ${(commits[1] as string).slice(0, 7)}`));
     // The scheduled watch reads the default branch, where the newer change is not proven yet.
     const watch = await act(ci, {}, {}, {}, { eventName: 'schedule' });
     assert.equal(watch.code, 1);
@@ -273,13 +278,16 @@ describe('the seamkit action', () => {
     assert.equal(await git(['rev-parse', '--is-shallow-repository'], { cwd: ci }), 'false');
   });
 
-  it('skips a deployment that has not succeeded, without a check run', async () => {
+  it('skips a deployment that has not succeeded, without a check run, before reading the inputs', async () => {
     const { ci, commits } = await project();
     const before = api.posts.length;
-    const ran = await act(ci, {}, { deployment: { sha: commits[2] }, deployment_status: { state: 'in_progress' } });
+    const ran = await act(ci, { url: '' }, { deployment: { sha: commits[2] }, deployment_status: { state: 'in_progress' } });
     assert.equal(ran.code, 0);
     assert.equal(api.posts.length, before);
+    assert.deepEqual(ran.warnings, []);
     assert.equal(output(ran, 'outcome'), 'skipped');
+    assert.equal(output(ran, 'exit-code'), '0');
+    assert.match(output(ran, 'title') ?? '', /^Skipped: /);
   });
 
   it('keeps the verdict when GitHub refuses the check run, and says which permission is missing', async () => {
@@ -296,13 +304,23 @@ describe('the seamkit action', () => {
     }
   });
 
-  it('reports a usage error as no verdict', async () => {
+  it('reports a usage error as no verdict, without the secret the refused url carried', async () => {
     const { ci, commits } = await project();
-    const ran = await act(ci, { url: `${prod.url}?token=abc` }, success(commits[2] as string));
+    const ran = await act(ci, { url: `${prod.url}?token=s3cr3t#s3cr3t` }, success(commits[2] as string));
     assert.equal(ran.code, 2);
     assert.equal(lastPost()['conclusion'], 'failure');
     assert.match((lastPost()['output'] as { title: string }).title, /^No verdict: --url must not carry a query string/);
     assert.equal(output(ran, 'outcome'), 'error');
+    for (const shown of [JSON.stringify(lastPost()), ran.summary, ran.outputs, ...ran.logs, ...ran.warnings]) assert.ok(!shown.includes('s3cr3t'), shown);
+  });
+
+  it('keeps a secret in the url out of the report of a misconfigured step', async () => {
+    const { ci, commits } = await project();
+    const ran = await act(ci, { url: 'https://dev:s3cr3t@app.example/?key=s3cr3t', wait: 'soon' }, success(commits[2] as string));
+    assert.equal(ran.code, 2);
+    assert.equal(lastPost()['name'], 'seamkit readback (app.example)');
+    assert.match((lastPost()['output'] as { summary: string }).summary, /for https:\/\/app\.example\/:/);
+    for (const shown of [JSON.stringify(lastPost()), ran.summary, ran.outputs, ...ran.logs, ...ran.warnings]) assert.ok(!shown.includes('s3cr3t'), shown);
   });
 
   it('needs the url input, and shows a misconfigured step on the commit', async () => {
@@ -320,12 +338,12 @@ describe('the seamkit action', () => {
   it('keeps the deployed commit as the bound when the branch input is set', async () => {
     const { ci, commits } = await project();
     deploy(commits[1]);
-    const ran = await act(ci, { branch: 'main' }, success(commits[1] as string));
+    const ran = await act(ci, { branch: 'main', ledger: 'true' }, success(commits[1] as string));
     assert.equal(ran.code, 0, ran.logs.join('\n'));
     assert.equal((lastPost()['output'] as { title: string }).title, 'PASS: 2 live of 2');
   });
 
-  it('reads the default branch the event names, not a stale main', async () => {
+  it('reads the default branch a schedule runs on, not the stale one a cached checkout points at', async () => {
     const { remote, commits } = await project();
     // The default branch is trunk, one change ahead of a main nobody merges into any more.
     const dev = join(root, `dev-trunk-${++counter}`);
@@ -335,11 +353,13 @@ describe('the seamkit action', () => {
     await git(['add', 'c.txt'], { cwd: dev });
     await git([...ID, 'commit', '-q', '-m', 'Add the chart (#3)'], { cwd: dev });
     await git(['push', '-q', 'origin', 'trunk'], { cwd: dev });
+    // The clone's origin/HEAD still names main. A schedule's payload names no repository; GitHub
+    // runs it on the default branch, which GITHUB_REF_NAME names.
     const ci = join(root, `ci-trunk-${++counter}`);
     await git(['clone', '-q', `file://${remote}`, ci], { cwd: root });
-    await git(['remote', 'set-head', 'origin', '--delete'], { cwd: ci });   // as actions/checkout leaves it
+    assert.equal(await git(['symbolic-ref', 'refs/remotes/origin/HEAD'], { cwd: ci }), 'refs/remotes/origin/main');
     deploy(commits[2]);
-    const ran = await act(ci, {}, { repository: { default_branch: 'trunk' } }, {}, { eventName: 'schedule' });
+    const ran = await act(ci, {}, { schedule: '*/30 * * * *' }, {}, { eventName: 'schedule', env: { GITHUB_REF_NAME: 'trunk' } });
     assert.equal(ran.code, 1);
     assert.equal((lastPost()['output'] as { title: string }).title, 'FAIL: 1 not proven, 3 live of 4');
   });
@@ -350,11 +370,85 @@ describe('the seamkit action', () => {
     const ran = await act(ci, { wait: '60' }, success(commits[2] as string));
     assert.equal(ran.code, 1);
     assert.deepEqual(ran.sleeps, []);
-    assert.ok(ran.logs.some((l) => /waiting longer would not change the result/.test(l)));
+    assert.ok(ran.logs.some((l) => /production runs the deployed commit/.test(l)));
+  });
+
+  it('keeps reading while production still runs the build a rollback replaces, and fails it once it lands', async () => {
+    const { ci, commits } = await project();
+    deploy(commits[2]);
+    assert.equal((await act(ci, { ledger: 'true' }, success(commits[2] as string))).code, 0);
+    // The rollback to #1 succeeded, but production serves the old build on the first read.
+    const ran = await act(ci, { wait: '60' }, success(commits[1] as string), { sleep: async () => deploy(commits[1]) });
+    assert.equal(ran.code, 1);
+    assert.deepEqual(ran.sleeps, [10000]);
+    assert.equal((lastPost()['output'] as { title: string }).title, 'FAIL: 1 not live, 2 live of 3');
+    assert.ok(ran.logs.some((l) => new RegExp(`production reports ${(commits[2] as string).slice(0, 12)}, not the deployed commit`).test(l)));
+  });
+
+  it('says so when a rollback has not landed by the end of the wait, and judges what production runs', async () => {
+    const { ci, commits } = await project();
+    deploy(commits[2]);
+    assert.equal((await act(ci, { ledger: 'true' }, success(commits[2] as string))).code, 0);
+    const ran = await act(ci, { wait: '20' }, success(commits[1] as string));
+    assert.equal(ran.code, 0);
+    assert.deepEqual(ran.sleeps, [10000, 10000]);
+    assert.match((lastPost()['output'] as { summary: string }).summary, new RegExp(`Production runs ${(commits[2] as string).slice(0, 12)}, which comes after the deployed commit .* if this deploy is a rollback, it has not landed yet`));
+  });
+
+  it('fails a deploy of a commit that production does not contain, even when every change is live', async () => {
+    const { remote, ci, commits } = await project();
+    // A preview built from a branch reports success too, when the job's environment filter is wrong.
+    const dev = join(root, `dev-preview-${++counter}`);
+    await git(['clone', '-q', `file://${remote}`, dev], { cwd: root });
+    await git(['switch', '-q', '-c', 'preview'], { cwd: dev });
+    await writeFile(join(dev, 'p.txt'), 'p\n');
+    await git(['add', 'p.txt'], { cwd: dev });
+    await git([...ID, 'commit', '-q', '-m', 'Try the new header'], { cwd: dev });
+    await git(['push', '-q', 'origin', 'preview'], { cwd: dev });
+    const preview = await git(['rev-parse', 'HEAD'], { cwd: dev });
+    await git(['fetch', '-q', 'origin'], { cwd: ci });
+    deploy(commits[2]);
+    const ran = await act(ci, { wait: '10' }, success(preview));
+    assert.equal(ran.code, 1);
+    assert.equal(lastPost()['conclusion'], 'failure');
+    assert.equal(lastPost()['head_sha'], preview);
+    const out = lastPost()['output'] as { title: string; summary: string };
+    assert.equal(out.title, `FAIL: production does not run the deployed commit ${preview.slice(0, 12)}`);
+    assert.match(out.summary, /which does not contain the deployed commit .* after waiting 10s/);
+    assert.equal(output(ran, 'outcome'), 'fail');
+    assert.equal(output(ran, 'exit-code'), '1');
+  });
+
+  it('does not wait when production reports no commit and the markers prove the change', async () => {
+    const { ci, commits } = await project({ card: true });
+    prod.deploy({ 'index.html': '<!doctype html><script src="/app.js"></script>', 'app.js': 'const badge = "badge-v2-marker";' });
+    const ran = await act(ci, { wait: '60', pr: '2' }, success(commits[2] as string));
+    assert.equal(ran.code, 0, ran.logs.join('\n'));
+    assert.deepEqual(ran.sleeps, []);
+    assert.match((lastPost()['output'] as { summary: string }).summary, /gave no commit, so whether it runs the deployed commit .* is not known/);
+  });
+
+  it('puts the check run on the full commit when the sha input is abbreviated', async () => {
+    const { ci, commits } = await project();
+    deploy(commits[2]);
+    const ran = await act(ci, { sha: (commits[2] as string).slice(0, 9) }, {}, {}, { eventName: 'workflow_dispatch' });
+    assert.equal(ran.code, 0, ran.warnings.join('\n'));
+    assert.equal(lastPost()['head_sha'], commits[2]);
+    assert.deepEqual(ran.sleeps, []);
+  });
+
+  it('keeps the verdict and the check run when the step outputs cannot be written', async () => {
+    const { ci, commits } = await project();
+    deploy(commits[2]);
+    const ran = await act(ci, {}, success(commits[2] as string), {}, { env: { GITHUB_OUTPUT: root } });
+    assert.equal(ran.code, 0);
+    assert.equal(lastPost()['conclusion'], 'success');
+    assert.ok(ran.warnings.some((w) => /could not write the step outputs or summary/.test(w)));
   });
 });
 
 describe('action inputs and reports', () => {
+  const readbackSummary: Verdict = { check: 'readback', subject: 'readback', outcome: 'fail', examined: [], notExamined: [], evidence: [], reasons: ['1 of 1 changes not live'], inputs: 'sha256:0', at: AT };
   const ctx = (eventName: string): GitHubContext => ({
     apiUrl: '',
     serverUrl: '',
@@ -363,6 +457,7 @@ describe('action inputs and reports', () => {
     eventName,
     eventPath: '',
     sha: 'job-sha',
+    refName: 'trunk',
     workspace: '',
     outputPath: '',
     summaryPath: '',
@@ -383,6 +478,29 @@ describe('action inputs and reports', () => {
     assert.match(skipReason(ctx('workflow_run'), { workflow_run: { conclusion: 'success', event: 'pull_request' } }) ?? '', /ran for a pull request/);
     assert.equal(skipReason(ctx('workflow_run'), { workflow_run: { conclusion: 'success' } }), undefined);
     assert.equal(skipReason(ctx('schedule'), {}), undefined);
+  });
+
+  it('finds the default branch in the payload, or for a schedule in the ref it runs on', () => {
+    assert.equal(defaultBranchOf(ctx('deployment_status'), { repository: { default_branch: 'main' } }), 'main');
+    assert.equal(defaultBranchOf(ctx('schedule'), { schedule: '0 * * * *' }), 'trunk');
+    assert.equal(defaultBranchOf(ctx('push'), {}), undefined);
+  });
+
+  it('shows a url without its user name, password, query or fragment', () => {
+    assert.equal(displayUrl('https://u:p@a.example/app?k=v#f'), 'https://a.example/app');
+    assert.equal(displayUrl('not a url'), 'the url input');
+  });
+
+  it('fences log text that would run as a workflow command', () => {
+    assert.equal(plainText('LIVE 3 of 3', 'tok'), 'LIVE 3 of 3\n');
+    assert.equal(plainText('pr#9 ok\n  ::add-mask::x', 'tok'), '::stop-commands::tok\npr#9 ok\n  ::add-mask::x\n::tok::\n');
+  });
+
+  it('keeps a change\'s words on one table row, and puts the action\'s notes first', () => {
+    const verdict = (subject: string, outcome: 'pass' | 'fail'): Verdict => ({ ...readbackSummary, subject, outcome, state: outcome === 'pass' ? 'live' : 'not_live', reasons: ['line one\nline | two'] });
+    const r = readbackReport('fail', [readbackSummary, verdict('pr#1 a\nb', 'fail')], 'https://a.example', ['Production runs abc.']);
+    assert.match(r.summary, /^\*\*FAIL\*\* for https:\/\/a\.example\n\n> Production runs abc\./);
+    assert.match(r.summary, /\| pr#1 a b \| FAIL \| line one line \\\| two \|/);
   });
 
   it('validates wait and ledger', () => {

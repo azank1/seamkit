@@ -14,8 +14,9 @@ inputs:
     required: true
   last:
     description: >-
-      How many of the latest changes on the default branch to examine. After a deploy, changes merged after the
-      deployed commit that production does not show yet are listed as not examined and left to the next deploy.
+      How many of the latest changes on the default branch to examine. After a deploy, with a ledger, changes merged
+      after the deployed commit that no earlier run saw live at this address are listed as not examined and left to the
+      next deploy.
     default: '20'
   pr:
     description: Read back one merged pull request by number instead of the latest changes.
@@ -30,9 +31,9 @@ inputs:
     default: ''
   wait:
     description: >-
-      After a deploy, seconds (0 to 1800) to keep reading production while it does not run a version containing the
-      deployed commit yet. Reading stops as soon as it does, and nothing is recorded while waiting. Without a deployed
-      commit, as on a schedule, there is nothing to wait for.
+      After a deploy, seconds (0 to 1800) to keep reading production until its version document reports the deployed
+      commit. Reading stops as soon as it does, and nothing is recorded while waiting. When production reports no
+      commit, a pass also stops it. Without a deployed commit, as on a schedule, there is nothing to wait for.
     default: '60'
   ledger:
     description: >-
@@ -45,10 +46,10 @@ inputs:
     default: ''
   sha:
     description: >-
-      The deployed commit. The check run goes on it, and a change merged after it is left to the next deploy unless an
-      earlier run saw it live. Defaults to the deployed commit for deployment_status and the other workflow's commit
-      for workflow_run. For other events nothing counts as deployed, and the check goes on the job's commit, or a pull
-      request's head commit.
+      The deployed commit, full or abbreviated. The check run goes on it, and with a ledger a change merged after it is
+      left to the next deploy unless an earlier run saw it live at this address. Defaults to the deployed commit for
+      deployment and deployment_status, and to the other workflow's commit for workflow_run. For other events nothing
+      counts as deployed, and the check goes on the job's commit, or a pull request's head commit.
     default: ''
   token:
     description: Token for posting the check run, which needs checks write.
@@ -56,9 +57,14 @@ inputs:
 
 outputs:
   outcome:
-    description: pass, fail, examined_nothing, unclassified, error (no verdict was produced) or skipped (the deploy had not succeeded).
+    description: >-
+      pass, fail, examined_nothing, unclassified, error (no verdict was produced) or skipped (the event is not a
+      finished production deploy: it did not succeed, or it ran for a pull request).
   exit-code:
-    description: seamkit's exit code. 0 pass, 1 fail, 2 no verdict, 3 examined nothing, 4 unclassified.
+    description: >-
+      The step's exit code, seamkit's own: 0 pass or skipped, 1 fail, 2 no verdict, 3 examined nothing, 4
+      unclassified. After a deploy, a pass while production runs a commit that does not contain the deployed one is
+      reported as 1.
   title:
     description: 'The one-line result, such as "PASS: 20 live of 20".'
   check-run-url:

@@ -1,4 +1,5 @@
 import {
+  markerKey,
   parseEventFile,
   readbackCheck,
   readbackSightings,
@@ -108,12 +109,6 @@ async function loadHistory(cwd: string, commits: ReadonlySet<string>): Promise<S
   return [...latest.values()].sort((a, b) => (a.change + a.marker < b.change + b.marker ? -1 : 1));
 }
 
-/** Whether any of the running versions contains the change, as far as git can tell. */
-async function anyContains(repo: GitRepo, running: readonly string[], change: string): Promise<boolean> {
-  for (const r of running) if ((await repo.contains(r, change)).contains === true) return true;
-  return false;
-}
-
 /**
  * Gathers everything readback judges: the changes and their markers from git, the version
  * documents and served files from production, ancestry from git, and earlier sightings from the
@@ -177,20 +172,38 @@ export async function gatherReadback(
   for (const url of [...markerUrls].sort()) {
     if (url !== primary.url) versions.push(await observeVersion(url, now(), resolve, http));
   }
-  const running = [...new Set(versions.flatMap((v) => (v.status === 'ok' && v.commit !== undefined ? [v.commit] : [])))];
   const history = await loadHistory(cwd, new Set(drafts.map((c) => c.commit)));
 
   if (deployed !== undefined) {
-    // Scoping, not judging: which changes this deploy is answerable for. The check judges the rest.
-    const sighted = new Set((history ?? []).map((s) => s.change));
-    const kept: typeof drafts = [];
-    for (const d of drafts) {
-      const inDeploy = (await repo.contains(deployed, d.commit)).contains;
-      const inProduction = await anyContains(repo, running, d.commit);
-      if (inDeploy !== false || inProduction || sighted.has(d.commit)) kept.push(d);
-      else runGaps.push({ item: d.subject, reason: `merged after the deployed commit ${short(deployed)} and not shown by production yet; the next deploy proves it` });
+    if (history === null) {
+      // Without the ledger a change still on its way looks exactly like one a rollback removed, so
+      // nothing is scoped out: a false fail can be retried, a false pass hides a rollback.
+      runGaps.push({
+        item: 'whether changes merged after the deployed commit are still on their way',
+        reason: 'no ledger was read, so one still on its way cannot be told from one a rollback removed; every change is judged (keep a ledger with seamkit state init)',
+      });
+    } else {
+      // Scoping, not judging: which changes this deploy is answerable for. A change seen live at
+      // this address before stays in, by the same marker match the check uses, so a deploy that
+      // drops it fails as not live. The check judges every change that stays.
+      const seen = new Set(history.map((s) => `${s.change} ${s.marker}`));
+      const kept: typeof drafts = [];
+      const later: string[] = [];
+      for (const d of drafts) {
+        const inDeploy = (await repo.contains(deployed, d.commit)).contains;
+        const seenHere = d.markers.some((m) => seen.has(`${d.commit} ${markerKey(m)}`));
+        if (inDeploy !== false || seenHere) kept.push(d);
+        else later.push(d.subject);
+      }
+      if (later.length > 0) {
+        const listed = later.length > 20 ? `${later.slice(0, 20).join(', ')} and ${later.length - 20} more` : later.join(', ');
+        runGaps.push({
+          item: `${later.length} change${later.length === 1 ? '' : 's'} merged after the deployed commit ${short(deployed)}`,
+          reason: `no recorded run saw ${later.length === 1 ? 'it' : 'them'} live at this address, so the next deploy proves ${later.length === 1 ? 'it' : 'them'}: ${listed}`,
+        });
+      }
+      drafts = kept;
     }
-    drafts = kept;
   }
   const changes: ReadbackChange[] = drafts.map(({ cardFound: _, ...change }) => change);
 
@@ -212,6 +225,7 @@ export async function gatherReadback(
   }
 
   const ancestry: AncestryFact[] = [];
+  const running = [...new Set(versions.flatMap((v) => (v.status === 'ok' && v.commit !== undefined ? [v.commit] : [])))];
   for (const r of running) {
     for (const c of changes) {
       const answer = await repo.contains(r, c.commit);

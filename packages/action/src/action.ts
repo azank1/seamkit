@@ -4,12 +4,15 @@ import { run, type Io } from 'seamkit';
 import {
   ActionInputError,
   appendSummary,
+  checkNameFor,
   defaultBranchOf,
+  displayUrl,
   deployedCommit,
   headSha,
   postCheckRun,
   readContext,
   readEvent,
+  rawInput,
   readInputs,
   setOutput,
   skipReason,
@@ -112,8 +115,8 @@ async function openLedger(inputs: ActionInputs, cli: (args: string[]) => Promise
 
 /**
  * Prepares the checkout as readback expects a clone: the full history, because readback decides by
- * ancestry, and origin/HEAD, which actions/checkout does not set, so the default branch is the one
- * the event names rather than a guess between main and master.
+ * ancestry, and origin/HEAD pointing at the default branch the event names. actions/checkout does
+ * not set origin/HEAD, and a cached or self-hosted checkout may keep a stale one.
  */
 async function prepareCheckout(cwd: string, defaultBranch: string | undefined, deps: ActionDeps): Promise<void> {
   const shallow = await runGit(['rev-parse', '--is-shallow-repository'], { cwd });
@@ -123,33 +126,57 @@ async function prepareCheckout(cwd: string, defaultBranch: string | undefined, d
     if (fetched.code !== 0) deps.warn(`seamkit: could not fetch the full history, so older changes are not examined: ${fetched.stderr.trim()}`);
   }
   if (defaultBranch === undefined || !/^[A-Za-z0-9._/-]+$/.test(defaultBranch)) return;
-  const head = await runGit(['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'], { cwd });
-  if (head.code === 0) return;
   const target = `refs/remotes/origin/${defaultBranch}`;
   if ((await runGit(['rev-parse', '--verify', '--quiet', target], { cwd })).code !== 0) return;
+  const head = await runGit(['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'], { cwd });
+  if (head.code === 0 && head.stdout.toString('utf8').trim() === target) return;
   await runGit(['symbolic-ref', 'refs/remotes/origin/HEAD', target], { cwd });
 }
 
-/** Whether production already runs a version that contains the deployed commit. */
-async function showsDeploy(result: CliResult, deployed: string, cwd: string): Promise<boolean> {
-  let verdicts: Verdict[];
-  try {
-    verdicts = (JSON.parse(result.out) as { verdicts: Verdict[] }).verdicts;
-  } catch {
-    return false;
-  }
-  const running = new Set(verdicts.flatMap((v) => v.evidence.filter((e) => e.kind === 'commit' && e.label === 'running version').map((e) => e.value)));
-  for (const r of running) {
-    if ((await runGit(['merge-base', '--is-ancestor', deployed, r], { cwd })).code === 0) return true;
-  }
-  return false;
+/** The full id of a commit given perhaps abbreviated, or the text unchanged when git does not know it. */
+async function fullCommit(cwd: string, rev: string): Promise<string> {
+  const r = await runGit(['rev-parse', '--verify', '--quiet', `${rev}^{commit}`], { cwd });
+  return r.code === 0 ? r.stdout.toString('utf8').trim() : rev;
+}
+
+/** Production's own version document, the one for the url input, as readback --json reports it. */
+interface Production {
+  status: 'ok' | 'unreadable';
+  reported?: string;
+  commit?: string;
 }
 
 /**
- * Reads production back until the result is final. After a deploy, a fail or examined nothing may
- * only mean that production does not show the deploy yet, so it is read again until production
- * runs a version containing the deployed commit or the wait runs out. Without a deployed commit
- * there is nothing to wait for. Nothing is recorded while waiting.
+ * Where production stands against the deployed commit, from its own version document only: a
+ * card's version marker can name another service, which says nothing about this address.
+ * `runs_it`: it reports the deployed commit. `later`: a commit that contains it, which a later
+ * deploy explains, or a rollback that has not landed. `other`: a commit that does not contain it,
+ * or one this repository does not have. `unknown`: no commit was read.
+ */
+type Landing = 'runs_it' | 'later' | 'other' | 'unknown';
+
+function productionOf(result: CliResult): Production | undefined {
+  try {
+    return (JSON.parse(result.out) as { production?: Production }).production;
+  } catch {
+    return undefined;
+  }
+}
+
+async function landing(prod: Production | undefined, deployed: string, cwd: string): Promise<Landing> {
+  if (prod?.status !== 'ok' || prod.reported === undefined) return 'unknown';
+  if (prod.commit === deployed) return 'runs_it';
+  if (prod.commit !== undefined && (await runGit(['merge-base', '--is-ancestor', deployed, prod.commit], { cwd })).code === 0) return 'later';
+  return 'other';
+}
+
+/**
+ * Reads production back until the result is final. After a deploy, the result is final once
+ * production's version document reports the deployed commit. Until then any result, a pass
+ * included, may describe the build before the deploy, so production is read again until it does
+ * or the wait runs out. When no commit can be read, a pass is final, because nothing would tell
+ * when the deploy landed. Without a deployed commit there is nothing to wait for, and nothing is
+ * recorded while waiting.
  */
 async function waitForLive(
   args: string[],
@@ -164,16 +191,43 @@ async function waitForLive(
   const deadline = clock() + inputs.waitSeconds * 1000;
   for (;;) {
     const r = await cli([...args, '--no-record']);
-    if (r.code === 0 || r.code === EXIT_USAGE || r.code === 4 || deployed === undefined) return r;
-    if (await showsDeploy(r, deployed, cwd)) {
-      deps.log(`seamkit: production runs a version that contains ${deployed.slice(0, 12)}, so waiting longer would not change the result`);
+    if (r.code === EXIT_USAGE || r.code === 4 || deployed === undefined) return r;
+    const prod = productionOf(r);
+    const where = await landing(prod, deployed, cwd);
+    if (where === 'runs_it') {
+      deps.log(`seamkit: production runs the deployed commit ${deployed.slice(0, 12)}`);
       return r;
     }
+    if (where === 'unknown' && r.code === 0) return r;
     const left = deadline - clock();
     if (left <= 0) return r;
-    deps.log(`seamkit: production does not show ${deployed.slice(0, 12)} yet (exit ${r.code}); reading it again in ${Math.round(Math.min(poll, left) / 1000)}s`);
+    const now = where === 'unknown' ? 'gives no commit' : `reports ${(prod?.reported ?? '').slice(0, 12)}`;
+    deps.log(`seamkit: production ${now}, not the deployed commit ${deployed.slice(0, 12)} yet (exit ${r.code}); reading it again in ${Math.round(Math.min(poll, left) / 1000)}s`);
     await deps.sleep(Math.min(poll, left));
   }
+}
+
+/**
+ * What the action adds to a verdict after a deploy: a note when production does not run the
+ * deployed commit, and, when it runs a commit that does not contain it, a fail in place of a pass,
+ * because a check on the deployed commit must not read as success while that commit is not live.
+ */
+async function deployNote(result: CliResult, deployed: string, waited: number, cwd: string): Promise<{ note?: string; notLive: boolean }> {
+  const prod = productionOf(result);
+  const where = await landing(prod, deployed, cwd);
+  const d = deployed.slice(0, 12);
+  const running = (prod?.reported ?? '').slice(0, 12);
+  if (where === 'later') {
+    return { notLive: false, note: `Production runs ${running}, which comes after the deployed commit ${d}. A later deploy has landed, or, if this deploy is a rollback, it has not landed yet. The verdict is for what production runs.` };
+  }
+  if (where === 'other') {
+    const what = prod?.commit === undefined ? 'a commit this repository does not have' : `which does not contain the deployed commit ${d}`;
+    return { notLive: true, note: `Production runs ${running}, ${what}, after waiting ${waited}s. The deploy of ${d} has not landed at this address.` };
+  }
+  if (where === 'unknown') {
+    return { notLive: false, note: `Production's version document gave no commit, so whether it runs the deployed commit ${d} is not known. The verdict rests on the markers that were read.` };
+  }
+  return { notLive: false };
 }
 
 /** Where a run's result goes: the check run, the job summary and the step outputs. */
@@ -187,15 +241,28 @@ async function report(
   code: number,
   deps: ActionDeps,
 ): Promise<void> {
+  // The outputs and the summary go first: the check run is the one place a verdict can read as
+  // success, so nothing that can fail comes after it.
+  await written(deps, () => appendSummary(ctx.summaryPath, jobSummary(name, result)));
+  await written(deps, () => writeOutputs(ctx.outputPath, { outcome, 'exit-code': String(code), title: result.title }));
   const runUrl = ctx.runId === '' ? '' : `${ctx.serverUrl}/${ctx.repository}/actions/runs/${ctx.runId}`;
   const check = sha === '' ? { ok: false, problem: 'no commit to attach a check run to' } : await postCheckRun(deps.fetch, ctx, token, name, sha, result, runUrl);
   if (check.ok) deps.log(`seamkit: posted check run "${name}" on ${sha.slice(0, 12)}${check.url ? `: ${check.url}` : ''}`);
   else deps.warn(`seamkit: ${check.problem ?? 'no check run was posted'}`);
-  await appendSummary(ctx.summaryPath, jobSummary(name, result));
-  await setOutput(ctx.outputPath, 'outcome', outcome);
-  await setOutput(ctx.outputPath, 'exit-code', String(code));
-  await setOutput(ctx.outputPath, 'title', result.title);
-  if (check.ok && check.url) await setOutput(ctx.outputPath, 'check-run-url', check.url);
+  if (check.ok && check.url) await written(deps, () => setOutput(ctx.outputPath, 'check-run-url', check.url as string));
+}
+
+async function writeOutputs(path: string, values: Record<string, string>): Promise<void> {
+  for (const [k, v] of Object.entries(values)) await setOutput(path, k, v);
+}
+
+/** A step output or summary that cannot be written is a warning: the verdict stands without it. */
+async function written(deps: ActionDeps, write: () => Promise<void>): Promise<void> {
+  try {
+    await write();
+  } catch (err) {
+    deps.warn(`seamkit: could not write the step outputs or summary: ${(err as Error).message}`);
+  }
 }
 
 const PERMISSION = /\b403\b|denied|permission|not allowed|authentication/i;
@@ -211,6 +278,14 @@ export async function runAction(deps: ActionDeps): Promise<number> {
     return EXIT_USAGE;
   }
   const event = await readEvent(ctx.eventPath);
+  // An event that is not a finished production deploy is skipped before anything else, so a
+  // misconfigured step does not post a check on a run that would have been skipped.
+  const skip = skipReason(ctx, event);
+  if (skip !== undefined) {
+    deps.log(`seamkit: skipped, because ${skip}`);
+    await written(deps, () => writeOutputs(ctx.outputPath, { outcome: 'skipped', 'exit-code': '0', title: `Skipped: ${skip}` }));
+    return 0;
+  }
   let inputs: ActionInputs;
   try {
     inputs = readInputs(deps.env);
@@ -218,22 +293,19 @@ export async function runAction(deps: ActionDeps): Promise<number> {
     if (!(err instanceof ActionInputError)) throw err;
     // A misconfigured step still shows on the commit, as a check with no verdict.
     deps.warn(`seamkit: ${err.message}`);
-    const raw = (name: string): string => (deps.env[`INPUT_${name}`] ?? '').trim();
-    await report(ctx, raw('CHECK-NAME') || 'seamkit readback', raw('TOKEN'), headSha(ctx, event, raw('SHA')), errorReport(err.message, raw('URL') || 'the url input'), 'error', EXIT_USAGE, deps);
+    const url = rawInput(deps.env, 'url');
+    await report(ctx, checkNameFor(deps.env), rawInput(deps.env, 'token'), headSha(ctx, event, rawInput(deps.env, 'sha')), errorReport(err.message, url === '' ? 'the url input' : displayUrl(url)), 'error', EXIT_USAGE, deps);
     return EXIT_USAGE;
-  }
-  const skip = skipReason(ctx, event);
-  if (skip !== undefined) {
-    deps.log(`seamkit: skipped, because ${skip}`);
-    await setOutput(ctx.outputPath, 'outcome', 'skipped');
-    return 0;
   }
   const cwd = ctx.workspace;
   const cli = cliRunner(cwd, deps);
-  const sha = headSha(ctx, event, inputs.sha);
-  const deployed = deployedCommit(ctx, event, inputs.sha);
+  const given = deployedCommit(ctx, event, inputs.sha);
+  const where = displayUrl(inputs.url);
 
-  await prepareCheckout(cwd, defaultBranchOf(event), deps);
+  await prepareCheckout(cwd, defaultBranchOf(ctx, event), deps);
+  const deployed = given === undefined ? undefined : await fullCommit(cwd, given);
+  let sha = headSha(ctx, event, inputs.sha);
+  if (given !== undefined && sha === given && deployed !== undefined) sha = deployed;
   const recording = await openLedger(inputs, cli, deps);
   const args = readbackArgs(inputs, deployed);
   let result = await waitForLive(args, deployed, inputs, cli, cwd, deps);
@@ -248,14 +320,23 @@ export async function runAction(deps: ActionDeps): Promise<number> {
 
   let out: Report;
   let outcome: Outcome | 'error' = 'error';
+  let code = result.code;
   if (result.code === EXIT_USAGE) {
-    out = errorReport(result.err, inputs.url);
+    out = errorReport(result.err, where);
     deps.warn(result.err.trim());
   } else {
     const parsed = JSON.parse(result.out) as { outcome: Outcome; verdicts: Verdict[]; recorded?: { id: string } };
     outcome = parsed.outcome;
-    out = readbackReport(parsed.outcome, parsed.verdicts, inputs.url);
+    const deploy = deployed === undefined || result.code === 4 ? { notLive: false } : await deployNote(result, deployed, inputs.waitSeconds, cwd);
+    const overruled = deploy.notLive && outcome === 'pass';
+    if (overruled) {
+      outcome = 'fail';
+      code = 1;
+    }
+    out = readbackReport(outcome, parsed.verdicts, where, deploy.note === undefined ? [] : [deploy.note]);
+    if (overruled && deployed !== undefined) out = { ...out, title: `FAIL: production does not run the deployed commit ${deployed.slice(0, 12)}` };
     deps.log(renderReadback(parsed.verdicts));
+    if (deploy.note !== undefined) deps.log(`seamkit: ${deploy.note}`);
     if (parsed.recorded) {
       recorded = true;
       deps.log(`seamkit: recorded as event ${parsed.recorded.id.slice(0, 12)}`);
@@ -268,11 +349,11 @@ export async function runAction(deps: ActionDeps): Promise<number> {
     else {
       const why = PERMISSION.test(pushed.err)
         ? 'give the job "permissions: contents: write"'
-        : 'another run may have pushed at the same moment; give the workflow a concurrency group so runs take turns';
+        : 'other runs kept pushing while this one retried; give the readback job a concurrency group so deploy runs take turns';
       deps.warn(`seamkit: ${recorded ? 'the verdict was recorded here but not pushed, so it is lost with this runner' : 'the ledger could not be pushed'}; ${why}: ${pushed.err.trim()}`);
     }
   }
 
-  await report(ctx, inputs.checkName, inputs.token, sha, out, outcome, result.code, deps);
-  return result.code;
+  await report(ctx, inputs.checkName, inputs.token, sha, out, outcome, code, deps);
+  return code;
 }

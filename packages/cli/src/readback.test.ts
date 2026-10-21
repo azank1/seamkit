@@ -138,17 +138,61 @@ describe('seamkit readback', () => {
     assert.match((await cli(['readback', '--url', prod.url, '--last', '0'], dir)).err, /--last must be a whole number from 1 to 1000/);
   });
 
-  it('leaves changes merged after the deployed commit to the next deploy', async () => {
+  it('leaves changes merged after the deployed commit to the next deploy, when a ledger was read', async () => {
     const { dir, merges } = await repo();
+    assert.equal((await cli(['state', 'init'], dir)).code, 0);
     deploy(merges[0] as string);
     const r = await cli(['readback', '--url', prod.url, '--deployed', merges[0] as string, '--json'], dir);
     assert.equal(r.code, 0, r.err);
-    const [summary, ...parts] = JSON.parse(r.out).verdicts;
-    assert.deepEqual(parts.map((v: { subject: string; state: string }) => `${v.subject} ${v.state}`).slice(0, 1), ['pr#1 live']);
+    const out = JSON.parse(r.out);
+    const [summary, ...parts] = out.verdicts;
+    assert.deepEqual(parts.map((v: { subject: string; state: string }) => `${v.subject} ${v.state}`)[0], 'pr#1 live');
     assert.equal(parts.length, 2);
-    const gaps = summary.notExamined.map((g: { item: string; reason: string }) => `${g.item}: ${g.reason}`);
-    assert.ok(gaps.some((g: string) => g.startsWith(`pr#2: merged after the deployed commit ${(merges[0] as string).slice(0, 12)} and not shown by production yet`)));
-    assert.equal(gaps.filter((g: string) => / merged after the deployed commit /.test(g)).length, 2);
+    const gap = summary.notExamined.find((g: { item: string }) => / merged after the deployed commit /.test(g.item));
+    assert.equal(gap.item, `2 changes merged after the deployed commit ${(merges[0] as string).slice(0, 12)}`);
+    assert.match(gap.reason, /^no recorded run saw them live at this address, so the next deploy proves them: commit:[0-9a-f]{12}, pr#2$/);
+    assert.deepEqual(out.production, { url: `${prod.url}version.json`, status: 'ok', commit: merges[0], reported: merges[0] });
+  });
+
+  it('judges every change when no ledger was read, because a rollback looks the same', async () => {
+    const { dir, merges } = await repo();
+    deploy(merges[0] as string);
+    const r = await cli(['readback', '--url', prod.url, '--deployed', merges[0] as string, '--json'], dir);
+    assert.equal(r.code, 1);
+    const summary = JSON.parse(r.out).verdicts[0];
+    assert.ok(summary.notExamined.some((g: { item: string; reason: string }) => g.item === 'whether changes merged after the deployed commit are still on their way' && /no ledger was read/.test(g.reason)));
+  });
+
+  it('keeps a change in scope only for a sighting at this address', async () => {
+    const { dir, merges, direct } = await repo();
+    assert.equal((await cli(['state', 'init'], dir)).code, 0);
+    const staging = await FakeProduction.start({ spaFallback: true });
+    try {
+      staging.deploy({
+        'index.html': '<!doctype html><script src="/app.js"></script>',
+        'app.js': 'el.id = "sync-badge-v2";',
+        'version.json': JSON.stringify({ schema: 'seamkit.version/1', commit: direct, dirty: false, source: 'git' }),
+      });
+      assert.equal((await cli(['readback', '--url', staging.url], dir)).code, 0);
+    } finally {
+      await staging.close();
+    }
+    deploy(merges[0] as string, '');
+    const r = await cli(['readback', '--url', prod.url, '--deployed', merges[0] as string], dir);
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /not examined: 2 changes merged after the deployed commit/);
+  });
+
+  it('folds any number of changes left to the next deploy into one gap', async () => {
+    const { dir, direct } = await repo();
+    assert.equal((await cli(['state', 'init'], dir)).code, 0);
+    for (let i = 0; i < 150; i++) await git([...ID, 'commit', '-q', '--allow-empty', '-m', `step ${i}`], { cwd: dir });
+    deploy(direct);
+    const r = await cli(['readback', '--url', prod.url, '--last', '200', '--deployed', direct, '--json'], dir);
+    assert.equal(r.code, 0, r.err);
+    const gap = JSON.parse(r.out).verdicts[0].notExamined.find((g: { item: string }) => / merged after the deployed commit /.test(g.item));
+    assert.match(gap.item, /^150 changes merged after/);
+    assert.match(gap.reason, /and 130 more$/);
   });
 
   it('still fails a deploy that drops a change an earlier run saw live', async () => {

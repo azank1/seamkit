@@ -26,6 +26,8 @@ export interface GitHubContext {
   eventName: string;
   eventPath: string;
   sha: string;
+  /** The short ref the job runs on; for a schedule, GitHub runs it on the default branch. */
+  refName: string;
   workspace: string;
   outputPath: string;
   summaryPath: string;
@@ -39,6 +41,30 @@ type Env = Record<string, string | undefined>;
 
 const input = (env: Env, name: string): string => (env[`INPUT_${name.replace(/ /g, '_').toUpperCase()}`] ?? '').trim();
 
+/** The check run's name: the input, else one per production host, so each address has its own check. */
+export function checkNameFor(env: Env): string {
+  const given = input(env, 'check-name');
+  if (given !== '') return given;
+  try {
+    return `seamkit readback (${new URL(input(env, 'url')).host})`;
+  } catch {
+    return 'seamkit readback';
+  }
+}
+
+/**
+ * Text for the job log that must not run as a workflow command. The runner treats a line starting
+ * with :: as one, and the readback report carries merged changes' own words, so text holding such a
+ * line is fenced between stop-commands and a token nobody else knows.
+ */
+export function plainText(text: string, token: string): string {
+  if (!/^\s*::/m.test(text)) return `${text}\n`;
+  return `::stop-commands::${token}\n${text}\n::${token}::\n`;
+}
+
+/** One raw input, as the runner passes it. */
+export const rawInput = input;
+
 export function readInputs(env: Env): ActionInputs {
   const url = input(env, 'url');
   if (url === '') throw new ActionInputError('the url input is required: the production address to read back, such as https://your.app');
@@ -46,12 +72,6 @@ export function readInputs(env: Env): ActionInputs {
   if (!/^[0-9]+$/.test(wait) || Number(wait) > 1800) throw new ActionInputError('wait must be a whole number of seconds from 0 to 1800');
   const ledger = input(env, 'ledger') || 'auto';
   if (ledger !== 'auto' && ledger !== 'true' && ledger !== 'false') throw new ActionInputError('ledger must be auto, true or false');
-  let host = url;
-  try {
-    host = new URL(url).host;
-  } catch {
-    // seamkit itself reports an unusable URL, with the reason, as a usage error.
-  }
   return {
     url,
     last: input(env, 'last'),
@@ -60,7 +80,7 @@ export function readInputs(env: Env): ActionInputs {
     versionUrl: input(env, 'version-url'),
     waitSeconds: Number(wait),
     ledger,
-    checkName: input(env, 'check-name') || `seamkit readback (${host})`,
+    checkName: checkNameFor(env),
     token: input(env, 'token'),
     sha: input(env, 'sha'),
   };
@@ -80,6 +100,7 @@ export function readContext(env: Env): GitHubContext {
     eventName: env['GITHUB_EVENT_NAME'] ?? '',
     eventPath: env['GITHUB_EVENT_PATH'] ?? '',
     sha: env['GITHUB_SHA'] ?? '',
+    refName: env['GITHUB_REF_NAME'] ?? '',
     workspace: env['GITHUB_WORKSPACE'] || process.cwd(),
     outputPath: env['GITHUB_OUTPUT'] ?? '',
     summaryPath: env['GITHUB_STEP_SUMMARY'] ?? '',
@@ -120,9 +141,25 @@ function pullRequestHead(ctx: GitHubContext, event: Record<string, unknown>): st
   return str(field(event, 'pull_request', 'head', 'sha'));
 }
 
-/** The repository's default branch, which every event payload names. */
-export function defaultBranchOf(event: Record<string, unknown>): string | undefined {
-  return str(field(event, 'repository', 'default_branch'));
+/**
+ * The repository's default branch: as the payload names it, or for a schedule, whose payload names
+ * no repository, the branch GitHub runs schedules on, which is the default one.
+ */
+export function defaultBranchOf(ctx: GitHubContext, event: Record<string, unknown>): string | undefined {
+  return str(field(event, 'repository', 'default_branch')) ?? (ctx.eventName === 'schedule' ? str(ctx.refName) : undefined);
+}
+
+/**
+ * An address as it may be shown: no user name, password, query or fragment. The CLI refuses URLs
+ * that carry those, but a refused URL still reaches the report, which a public repository shows.
+ */
+export function displayUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    return `${u.protocol}//${u.host}${u.pathname}`;
+  } catch {
+    return 'the url input';
+  }
 }
 
 /** Why this event is not a finished deploy, or undefined when it should be read back. */

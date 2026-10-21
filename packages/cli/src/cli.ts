@@ -298,7 +298,11 @@ async function cmdReadback(args: string[], flags: Flags, cwd: string, io: Io, au
   const recorded = await recordRun(run, at, flags, cwd, io);
   const advice = audit ? auditAdvice(context) : [];
   if (flags.json) {
-    io.out(`${JSON.stringify({ outcome, exitCode: exitCodeFor(outcome), verdicts: run.verdicts, ...(audit ? { advice } : {}), ...(recorded ? { recorded } : {}) })}\n`);
+    // What production said it runs, from the version document this run read first: the fact a
+    // caller waiting for a deploy needs, whether or not any change was in scope.
+    const v = context.primaryVersion;
+    const production = { url: v.url, status: v.status, ...(v.commit ? { commit: v.commit } : {}), ...(v.reported ? { reported: v.reported } : {}), ...(v.reason ? { reason: v.reason } : {}) };
+    io.out(`${JSON.stringify({ outcome, exitCode: exitCodeFor(outcome), verdicts: run.verdicts, production, ...(audit ? { advice } : {}), ...(recorded ? { recorded } : {}) })}\n`);
     return exitCodeFor(outcome);
   }
   io.out(`${renderReadback(run.verdicts)}\n`);

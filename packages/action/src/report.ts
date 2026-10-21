@@ -45,15 +45,23 @@ export function stateCounts(parts: readonly Verdict[]): { state: ReadbackState; 
   return order.map((state) => ({ state, count: parts.filter((p) => p.state === state).length })).filter((c) => c.count > 0);
 }
 
-/** Builds the check run output for a readback run: its summary verdict first, then one per change. */
-export function readbackReport(outcome: Outcome, verdicts: readonly Verdict[], url: string): Report {
+/** A table cell: one line, with the table's own separator escaped. */
+const cell = (s: string): string => s.replace(/\s*\n\s*/g, ' ').replace(/\|/g, '\\|');
+
+/**
+ * Builds the check run output for a readback run: its summary verdict first, then one per change.
+ * `notes` are the action's own observations, such as production not running the deployed commit.
+ */
+export function readbackReport(outcome: Outcome, verdicts: readonly Verdict[], url: string, notes: readonly string[] = []): Report {
   const [summary, ...parts] = verdicts;
   const label = OUTCOME_LABELS[outcome];
   const counts = stateCounts(parts);
   const tally = counts.map((c) => `${c.count} ${STATE_LABELS[c.state]}`).join(', ');
   const title = parts.length === 0 ? `${label}: no changes examined` : `${label}: ${tally} of ${parts.length}`;
   const lines = [`**${label}** for ${url}`, ''];
-  for (const r of summary?.reasons ?? []) lines.push(`- ${r}`);
+  for (const n of notes) lines.push(`> ${cell(n)}`, '');
+  for (const r of summary?.reasons ?? []) lines.push(`- ${cell(r)}`);
+  for (const g of summary?.notExamined.filter((x) => !parts.some((p) => x.item.startsWith(`${p.subject}: `))) ?? []) lines.push(`- not examined: ${cell(g.item)} (${cell(g.reason)})`);
   if (counts.length > 0) {
     lines.push('', '| State | Changes |', '|---|---|');
     for (const c of counts) lines.push(`| ${STATE_LABELS[c.state]} | ${c.count} of ${parts.length} |`);
@@ -62,8 +70,8 @@ export function readbackReport(outcome: Outcome, verdicts: readonly Verdict[], u
   if (problems.length > 0) {
     lines.push('', '| Change | Outcome | Why |', '|---|---|---|');
     for (const p of problems.slice(0, 50)) {
-      const why = (p.reasons[0] ?? p.notExamined[0]?.reason ?? '').replace(/\|/g, '\\|');
-      lines.push(`| ${p.subject} | ${OUTCOME_LABELS[p.outcome]} | ${why} |`);
+      const why = cell(p.reasons[0] ?? p.notExamined[0]?.reason ?? '');
+      lines.push(`| ${cell(p.subject)} | ${OUTCOME_LABELS[p.outcome]} | ${why} |`);
     }
     if (problems.length > 50) lines.push(`| … | | and ${problems.length - 50} more, in the report below |`);
   }
