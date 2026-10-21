@@ -199,8 +199,10 @@ Next, in order:
 5. Approvals that an agent cannot forge, policy and rulings elicited from a human, and a static console.
 6. Blast-radius classification, sandbox parity, and hook packs for coding agents.
 
-The design is in [`docs/architecture.md`](docs/architecture.md), and the survey of existing tools, with what each one
-does and does not cover, is in [`docs/prior-art.md`](docs/prior-art.md).
+The setup guide, with diagrams, copy-in recipes for agents and CI, and the build tracker, is at
+[azank1.github.io/seamkit](https://azank1.github.io/seamkit/). The design is in
+[`docs/architecture.md`](docs/architecture.md), and the survey of existing tools, with what each one does and does not
+cover, is in [`docs/prior-art.md`](docs/prior-art.md).
 
 ## Development
 

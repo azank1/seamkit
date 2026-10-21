@@ -1,7 +1,9 @@
 # Architecture
 
-Status: draft for review. The product is called seamkit and its command is `seamkit`. This document also calls it
-"the harness", the generic term for what it is.
+Status: M1 and M2 are accepted: they are built, tested and released in 0.1.0, and the sections they cover describe the
+code. M3 to M8 are proposed: each is confirmed, or changed with the change recorded under "Changes made while building",
+when its milestone ships. The product is called seamkit and its command is `seamkit`. This document also calls it "the
+harness", the generic term for what it is.
 
 ## 1. Purpose and design spine
 
@@ -517,18 +519,19 @@ phone passkey or a hardware key, policy runs approvals at level 1 and every appr
 ### Revised milestones
 
 On 2026-10-15, with M1 and M2 done and the repository going public, the maintainer moved the work that makes seamkit
-usable by strangers ahead of the remaining checks: the npm package and the GitHub Action first, then the MCP server.
+usable by strangers ahead of the remaining checks: the npm package and the GitHub Action first, then the MCP server. On
+2026-10-21 the maintainer accepted M1 and M2 as built and kept M3 to M8 as proposals.
 
 | M | Scope | Done when | State |
 |---|---|---|---|
-| M1 | repository scaffold, `core` verdict algebra, event writer for the state branch, CLI skeleton with exit codes, replay | unit tests cover every outcome, including zero rows as `examined_nothing`, and a replay test reproduces every verdict | done |
-| M2 | `readback` with the version-endpoint and bundle-marker adapters, version ancestry, the fake production, `seamkit audit` with zero configuration, `seamkit stamp` | the demo history sorts into live, not proven, not live and nothing to prove, and the audit runs against commit.city | done |
-| M3 | the `seamkit` npm package; a GitHub Action that reads back after deploys and reports a check run | `npx seamkit audit` works on a clean machine, and the Action posts a check run on a sample repository | next |
-| M4 | MCP server with read-only tools mirroring the CLI, Claude Code plugin packaging | an MCP client runs an audit and receives the verdicts and the outcome | |
-| M5 | `carry` and the split rule | given a production version behind main, carry lists the riding pull requests by title, and a hand deploy blocks | |
-| M6 | `card` and `gate` with the GitHub adapter | `seamkit gate` lists each open pull request with its verdict and the exact missing items | |
-| M7 | elicitation for policy and rulings, approvals at levels 1 and 3, the init interview, the static console | an MCP client completes init and a ruling round trip, an approval passed as an argument is refused, and the console renders from policy and state alone | |
-| M8 | `radius`, `parity`, hook packs for Cursor and Codex | unclassified stops, and the three parity outcomes are tested | |
+| M1 | repository scaffold, `core` verdict algebra, event writer for the state branch, CLI skeleton with exit codes, replay | unit tests cover every outcome, including zero rows as `examined_nothing`, and a replay test reproduces every verdict | done, accepted |
+| M2 | `readback` with the version-endpoint and bundle-marker adapters, version ancestry, the fake production, `seamkit audit` with zero configuration, `seamkit stamp` | the demo history sorts into live, not proven, not live and nothing to prove, and the audit runs against commit.city | done, accepted |
+| M3 | the `seamkit` npm package; a GitHub Action that reads back after deploys and reports a check run | `npx seamkit audit` works on a clean machine, and the Action posts a check run on a sample repository | in progress, proposed |
+| M4 | MCP server with read-only tools mirroring the CLI, Claude Code plugin packaging | an MCP client runs an audit and receives the verdicts and the outcome | proposed |
+| M5 | `carry` and the split rule | given a production version behind main, carry lists the riding pull requests by title, and a hand deploy blocks | proposed |
+| M6 | `card` and `gate` with the GitHub adapter | `seamkit gate` lists each open pull request with its verdict and the exact missing items | proposed |
+| M7 | elicitation for policy and rulings, approvals at levels 1 and 3, the init interview, the static console | an MCP client completes init and a ruling round trip, an approval passed as an argument is refused, and the console renders from policy and state alone | proposed |
+| M8 | `radius`, `parity`, hook packs for Cursor and Codex | unclassified stops, and the three parity outcomes are tested | proposed |
 
 ### Changes made while building
 
