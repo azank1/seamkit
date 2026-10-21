@@ -138,6 +138,50 @@ describe('seamkit readback', () => {
     assert.match((await cli(['readback', '--url', prod.url, '--last', '0'], dir)).err, /--last must be a whole number from 1 to 1000/);
   });
 
+  it('leaves changes merged after the deployed commit to the next deploy', async () => {
+    const { dir, merges } = await repo();
+    deploy(merges[0] as string);
+    const r = await cli(['readback', '--url', prod.url, '--deployed', merges[0] as string, '--json'], dir);
+    assert.equal(r.code, 0, r.err);
+    const [summary, ...parts] = JSON.parse(r.out).verdicts;
+    assert.deepEqual(parts.map((v: { subject: string; state: string }) => `${v.subject} ${v.state}`).slice(0, 1), ['pr#1 live']);
+    assert.equal(parts.length, 2);
+    const gaps = summary.notExamined.map((g: { item: string; reason: string }) => `${g.item}: ${g.reason}`);
+    assert.ok(gaps.some((g: string) => g.startsWith(`pr#2: merged after the deployed commit ${(merges[0] as string).slice(0, 12)} and not shown by production yet`)));
+    assert.equal(gaps.filter((g: string) => / merged after the deployed commit /.test(g)).length, 2);
+  });
+
+  it('still fails a deploy that drops a change an earlier run saw live', async () => {
+    const { dir, merges, direct } = await repo();
+    assert.equal((await cli(['state', 'init'], dir)).code, 0);
+    deploy(direct);
+    assert.equal((await cli(['readback', '--url', prod.url], dir)).code, 0);
+    deploy(merges[0] as string, '');
+    const r = await cli(['readback', '--url', prod.url, '--deployed', merges[0] as string], dir);
+    assert.equal(r.code, 1);
+    assert.match(r.out, /NOT LIVE {2}2 of 4/);
+  });
+
+  it('refuses a deployed commit the repository does not have', async () => {
+    const { dir } = await repo();
+    const r = await cli(['readback', '--url', prod.url, '--deployed', 'f'.repeat(40)], dir);
+    assert.equal(r.code, 2);
+    assert.match(r.err, /there is no commit called f{40} in this repository; fetch it/);
+    assert.match((await cli(['readback', '--url', prod.url, '--deployed='], dir)).err, /--deployed needs a commit/);
+  });
+
+  it('finds a branch that a clone has only as origin/<name>', async () => {
+    const { dir, direct } = await repo();
+    await git(['branch', 'release', 'HEAD~1'], { cwd: dir });
+    const clone = join(root, `clone-${++counter}`);
+    await git(['clone', '-q', dir, clone], { cwd: root });
+    deploy(direct);
+    const r = await cli(['readback', '--url', prod.url, '--branch', 'release', '--json'], clone);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(JSON.parse(r.out).verdicts[0].subject, 'release');
+    assert.equal((await cli(['readback', '--url', prod.url, '--branch', 'nope'], clone)).code, 2);
+  });
+
   it('takes the URL from SEAMKIT_URL', async () => {
     const { dir, direct } = await repo();
     deploy(direct);

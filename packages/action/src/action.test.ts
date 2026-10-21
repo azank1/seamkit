@@ -3,14 +3,15 @@ import { after, before, describe, it } from 'node:test';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parse as parseYaml } from 'yaml';
 import { FakeProduction } from '@seamkit/adapters';
 import { git } from '@seamkit/state';
 import { runAction, type ActionDeps } from './action.js';
 import { CONCLUSIONS, errorReport, readbackReport } from './report.js';
-import { headSha, readInputs, skipReason, type GitHubContext } from './github.js';
+import { deployedCommit, headSha, readInputs, skipReason, type GitHubContext } from './github.js';
 
 const AT = '2026-10-21T09:00:00.000Z';
 const ID = ['-c', 'user.name=dev', '-c', 'user.email=dev@example.invalid'];
@@ -51,7 +52,7 @@ after(async () => {
  * A remote with two merged pull requests, and a clone of it as actions/checkout leaves one: the
  * full history, with the deployed commit checked out. `depth` makes the clone shallow.
  */
-async function project(options: { depth?: number } = {}): Promise<{ remote: string; ci: string; commits: string[] }> {
+async function project(options: { depth?: number; card?: boolean } = {}): Promise<{ remote: string; ci: string; commits: string[] }> {
   const n = ++counter;
   const remote = join(root, `remote-${n}.git`);
   const dev = join(root, `dev-${n}`);
@@ -62,7 +63,7 @@ async function project(options: { depth?: number } = {}): Promise<{ remote: stri
   for (const [file, message] of [
     ['README.md', 'Initial commit'],
     ['a.txt', 'Add the list (#1)\n\nThe first change.'],
-    ['b.txt', 'Add the badge (#2)\n\nThe second change.'],
+    ['b.txt', `Add the badge (#2)\n\nThe second change.${options.card ? `\n\n${CARD}` : ''}`],
   ] as const) {
     await writeFile(join(dev, file), `${file}\n`);
     await git(['add', file], { cwd: dev });
@@ -76,6 +77,8 @@ async function project(options: { depth?: number } = {}): Promise<{ remote: stri
   return { remote, ci, commits };
 }
 
+const CARD = '```seamkit-card\ncard: 1\nintent: Add the badge.\nlayers: [frontend]\ntargets: [web]\nmarkers:\n  - kind: bundle\n    text: "badge-v2-marker"\n```';
+
 const deploy = (commit: string | undefined): void =>
   prod.deploy(commit === undefined ? { 'index.html': '<!doctype html><title>app</title>' } : { 'index.html': '<!doctype html>', 'version.json': JSON.stringify({ schema: 'seamkit.version/1', commit, dirty: false, source: 'git' }) });
 
@@ -88,7 +91,13 @@ interface Ran {
   summary: string;
 }
 
-async function act(ci: string, inputs: Record<string, string>, event: Record<string, unknown>, extra: Partial<ActionDeps> = {}): Promise<Ran> {
+async function act(
+  ci: string,
+  inputs: Record<string, string>,
+  event: Record<string, unknown>,
+  extra: Partial<ActionDeps> = {},
+  job: { eventName?: string; env?: Record<string, string> } = {},
+): Promise<Ran> {
   const n = ++counter;
   const eventPath = join(root, `event-${n}.json`);
   const outputPath = join(root, `output-${n}.txt`);
@@ -101,7 +110,7 @@ async function act(ci: string, inputs: Record<string, string>, event: Record<str
     GITHUB_SERVER_URL: 'https://github.example',
     GITHUB_REPOSITORY: 'o/r',
     GITHUB_RUN_ID: '7',
-    GITHUB_EVENT_NAME: 'deployment_status',
+    GITHUB_EVENT_NAME: job.eventName ?? 'deployment_status',
     GITHUB_EVENT_PATH: eventPath,
     GITHUB_SHA: 'f'.repeat(40),
     GITHUB_WORKSPACE: ci,
@@ -110,6 +119,7 @@ async function act(ci: string, inputs: Record<string, string>, event: Record<str
     INPUT_URL: prod.url,
     INPUT_WAIT: '0',
     INPUT_TOKEN: 'test-token',
+    ...job.env,
   };
   for (const [k, v] of Object.entries(inputs)) env[`INPUT_${k.toUpperCase()}`] = v;
   const ran: Ran = { code: -1, logs: [], warnings: [], sleeps: [], outputs: '', summary: '' };
@@ -158,10 +168,10 @@ describe('the seamkit action', () => {
     assert.deepEqual(ran.sleeps, []);
   });
 
-  it('fails a deploy of an older commit, listing the change that is not proven', async () => {
+  it('fails a deploy that production does not run, listing the change that is not proven', async () => {
     const { ci, commits } = await project();
     deploy(commits[1]);
-    const ran = await act(ci, {}, success(commits[1] as string));
+    const ran = await act(ci, {}, success(commits[2] as string));
     assert.equal(ran.code, 1);
     const out = lastPost()['output'] as { title: string; summary: string; text: string };
     assert.equal(lastPost()['conclusion'], 'failure');
@@ -187,7 +197,7 @@ describe('the seamkit action', () => {
       sleep: async () => deploy(commits[2]),
     });
     assert.equal(ran.code, 0);
-    assert.ok(ran.logs.some((l) => /not a pass yet \(exit 1\); reading production again in 10s/.test(l)));
+    assert.ok(ran.logs.some((l) => new RegExp(`production does not show ${(commits[2] as string).slice(0, 12)} yet \\(exit 1\\); reading it again in 10s`).test(l)));
     // One recorded run: the attempts while waiting are not written to the ledger.
     const events = await git(['ls-tree', '-r', '--name-only', 'seamkit/state', 'events/'], { cwd: ci });
     assert.equal(events.split('\n').filter((l) => l.length > 0).length, 1);
@@ -209,7 +219,8 @@ describe('the seamkit action', () => {
     assert.ok(first.logs.some((l) => /recorded as event [0-9a-f]{12}/.test(l)));
     assert.match(await git(['ls-remote', remote, 'refs/heads/seamkit/state'], { cwd: root }), /refs\/heads\/seamkit\/state$/);
 
-    // A fresh checkout, as the next job gets: auto finds the ledger on the remote and uses it.
+    // A fresh checkout, as the next job gets: auto finds the ledger on the remote and uses it. The
+    // deploy of an older commit drops a change that was seen live, so it fails as not live.
     const next = join(root, `ci-next-${++counter}`);
     await git(['clone', '-q', `file://${remote}`, next], { cwd: root });
     deploy(commits[1]);
@@ -218,6 +229,30 @@ describe('the seamkit action', () => {
     assert.match((lastPost()['output'] as { title: string }).title, /1 not live/);
     const events = await git(['ls-tree', '-r', '--name-only', 'refs/heads/seamkit/state', 'events/'], { cwd: remote });
     assert.equal(events.split('\n').length, 2);
+  });
+
+  it('judges a deploy by the commit it deployed, not by a change merged while it was building', async () => {
+    const { ci, commits } = await project();
+    deploy(commits[1]);
+    const ran = await act(ci, {}, success(commits[1] as string));
+    assert.equal(ran.code, 0, ran.warnings.join('\n'));
+    assert.equal(lastPost()['head_sha'], commits[1]);
+    assert.equal((lastPost()['output'] as { title: string }).title, 'PASS: 2 live of 2');
+    assert.match((lastPost()['output'] as { text: string }).text, new RegExp(`not examined: pr#2 \\(merged after the deployed commit ${(commits[1] as string).slice(0, 12)} and not shown by production yet`));
+    // The scheduled watch reads the default branch, where the newer change is not proven yet.
+    const watch = await act(ci, {}, {}, {}, { eventName: 'schedule' });
+    assert.equal(watch.code, 1);
+    assert.equal(lastPost()['head_sha'], 'f'.repeat(40));
+  });
+
+  it('keeps the verdict it read when recording it fails, and says it was not recorded', async () => {
+    const { ci, commits } = await project();
+    deploy(commits[2]);
+    // A handle with an @ is refused only when an event is written, so every read passes and the recording fails.
+    const ran = await act(ci, { ledger: 'true' }, success(commits[2] as string), {}, { env: { SEAMKIT_HANDLE: 'dev@example.invalid' } });
+    assert.equal(ran.code, 0);
+    assert.equal(lastPost()['conclusion'], 'success');
+    assert.ok(ran.warnings.some((w) => /the verdict was not recorded: .*SEAMKIT_HANDLE must be a handle/.test(w)));
   });
 
   it('records nothing when there is no ledger and ledger is auto', async () => {
@@ -270,11 +305,52 @@ describe('the seamkit action', () => {
     assert.equal(output(ran, 'outcome'), 'error');
   });
 
-  it('needs the url input', async () => {
+  it('needs the url input, and shows a misconfigured step on the commit', async () => {
     const { ci, commits } = await project();
     const ran = await act(ci, { url: '' }, success(commits[2] as string));
     assert.equal(ran.code, 2);
     assert.match(ran.warnings[0] ?? '', /the url input is required/);
+    assert.equal(lastPost()['head_sha'], commits[2]);
+    assert.equal(lastPost()['conclusion'], 'failure');
+    assert.match((lastPost()['output'] as { title: string }).title, /^No verdict: the url input is required/);
+    assert.equal(output(ran, 'outcome'), 'error');
+    assert.equal(output(ran, 'exit-code'), '2');
+  });
+
+  it('keeps the deployed commit as the bound when the branch input is set', async () => {
+    const { ci, commits } = await project();
+    deploy(commits[1]);
+    const ran = await act(ci, { branch: 'main' }, success(commits[1] as string));
+    assert.equal(ran.code, 0, ran.logs.join('\n'));
+    assert.equal((lastPost()['output'] as { title: string }).title, 'PASS: 2 live of 2');
+  });
+
+  it('reads the default branch the event names, not a stale main', async () => {
+    const { remote, commits } = await project();
+    // The default branch is trunk, one change ahead of a main nobody merges into any more.
+    const dev = join(root, `dev-trunk-${++counter}`);
+    await git(['clone', '-q', `file://${remote}`, dev], { cwd: root });
+    await git(['switch', '-q', '-c', 'trunk'], { cwd: dev });
+    await writeFile(join(dev, 'c.txt'), 'c\n');
+    await git(['add', 'c.txt'], { cwd: dev });
+    await git([...ID, 'commit', '-q', '-m', 'Add the chart (#3)'], { cwd: dev });
+    await git(['push', '-q', 'origin', 'trunk'], { cwd: dev });
+    const ci = join(root, `ci-trunk-${++counter}`);
+    await git(['clone', '-q', `file://${remote}`, ci], { cwd: root });
+    await git(['remote', 'set-head', 'origin', '--delete'], { cwd: ci });   // as actions/checkout leaves it
+    deploy(commits[2]);
+    const ran = await act(ci, {}, { repository: { default_branch: 'trunk' } }, {}, { eventName: 'schedule' });
+    assert.equal(ran.code, 1);
+    assert.equal((lastPost()['output'] as { title: string }).title, 'FAIL: 1 not proven, 3 live of 4');
+  });
+
+  it('stops waiting once production runs the deployed commit, even when the result is not a pass', async () => {
+    const { ci, commits } = await project({ card: true });
+    deploy(commits[2]);   // the version is right, but the card's marker is not served
+    const ran = await act(ci, { wait: '60' }, success(commits[2] as string));
+    assert.equal(ran.code, 1);
+    assert.deepEqual(ran.sleeps, []);
+    assert.ok(ran.logs.some((l) => /waiting longer would not change the result/.test(l)));
   });
 });
 
@@ -292,15 +368,19 @@ describe('action inputs and reports', () => {
     summaryPath: '',
   });
 
-  it('attaches the check run to the deployed commit, or the other workflow\'s', () => {
+  it('attaches the check run to the deployed commit, the other workflow\'s, or the pull request\'s head', () => {
     assert.equal(headSha(ctx('deployment_status'), { deployment: { sha: 'dep' } }, ''), 'dep');
     assert.equal(headSha(ctx('workflow_run'), { workflow_run: { head_sha: 'wr' } }, ''), 'wr');
     assert.equal(headSha(ctx('push'), {}, ''), 'job-sha');
     assert.equal(headSha(ctx('deployment_status'), { deployment: { sha: 'dep' } }, 'given'), 'given');
+    assert.equal(headSha(ctx('pull_request'), { pull_request: { head: { sha: 'pr-head' } } }, ''), 'pr-head');
+    assert.equal(deployedCommit(ctx('pull_request'), { pull_request: { head: { sha: 'pr-head' } } }, ''), undefined);
+    assert.equal(deployedCommit(ctx('schedule'), {}, 'given'), 'given');
   });
 
-  it('skips a failed deploy workflow', () => {
+  it('skips a failed deploy workflow, and one that ran for a pull request', () => {
     assert.match(skipReason(ctx('workflow_run'), { workflow_run: { conclusion: 'failure' } }) ?? '', /concluded failure/);
+    assert.match(skipReason(ctx('workflow_run'), { workflow_run: { conclusion: 'success', event: 'pull_request' } }) ?? '', /ran for a pull request/);
     assert.equal(skipReason(ctx('workflow_run'), { workflow_run: { conclusion: 'success' } }), undefined);
     assert.equal(skipReason(ctx('schedule'), {}), undefined);
   });
@@ -324,6 +404,25 @@ describe('action inputs and reports', () => {
     assert.ok(r.summary.length <= 65535);
     assert.ok(r.title.length <= 1000);
     assert.match(r.summary, /cut to fit/);
+  });
+
+  it('declares in action.yml exactly the inputs and outputs the code uses, as YAML GitHub can load', () => {
+    const at = (p: string): URL => new URL(`../../../${p}`, import.meta.url);
+    const doc = parseYaml(readFileSync(at('action.yml'), 'utf8')) as {
+      inputs: Record<string, { required?: boolean; default?: string }>;
+      outputs: Record<string, unknown>;
+      runs: { using: string; main: string };
+    };
+    assert.deepEqual(Object.keys(doc.inputs).sort(), ['branch', 'check-name', 'last', 'ledger', 'pr', 'sha', 'token', 'url', 'version-url', 'wait']);
+    assert.deepEqual(Object.keys(doc.outputs).sort(), ['check-run-url', 'exit-code', 'outcome', 'title']);
+    assert.equal(doc.inputs['url']?.required, true);
+    assert.equal(doc.inputs['wait']?.default, '60');
+    assert.equal(doc.runs.using, 'node24');
+    assert.ok(existsSync(at(doc.runs.main)), `${doc.runs.main} exists`);
+    // Every input readInputs reads is declared, so none is silently empty.
+    const source = readFileSync(new URL('../src/github.ts', import.meta.url), 'utf8');
+    const read = [...source.matchAll(/input\(env, '([a-z-]+)'\)/g)].map((m) => m[1]);
+    for (const name of read) assert.ok(name !== undefined && name in doc.inputs, `${name} is declared`);
   });
 
   it('carries seamkit\'s version, which the bundle reports', () => {

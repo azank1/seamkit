@@ -49,7 +49,8 @@ const HELP = `seamkit ${VERSION}: deterministic production checks.
 Usage:
   seamkit audit --url <production-url> [--last <n>] [--branch <ref>] [--json]
   seamkit readback --url <production-url> [--pr <n> | --commit <rev>] [--last <n>]
-                   [--branch <ref>] [--version-url <url>] [--record|--no-record] [--json]
+                   [--branch <ref>] [--deployed <rev>] [--version-url <url>]
+                   [--record|--no-record] [--json]
   seamkit stamp [--out <file>] [--commit <rev>] [--require-clean]
   seamkit check <name> [--input <file>|-] [--record|--no-record] [--json]
   seamkit checks
@@ -63,7 +64,9 @@ Usage:
 readback proves whether production holds each merged change: by the commit production says it
 runs (a version document, which "seamkit stamp" writes at build time), and by the markers in a
 change's seamkit-card. audit is readback over the last changes with advice for every gap. The
-production URL can also come from SEAMKIT_URL.
+production URL can also come from SEAMKIT_URL. After a deploy, --deployed names the commit just
+deployed: changes merged after it that production does not show yet are left to the next deploy,
+while one that an earlier run saw live is still judged, so a rollback fails.
 
 Every command that produces a verdict exits with its outcome:
   0 pass   1 fail   3 examined nothing   4 unclassified (stops for a human)
@@ -92,6 +95,7 @@ type Flags = {
   last?: string;
   branch?: string;
   'version-url'?: string;
+  deployed?: string;
   out?: string;
   'require-clean'?: boolean;
 };
@@ -119,6 +123,7 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         last: { type: 'string' },
         branch: { type: 'string' },
         'version-url': { type: 'string' },
+        deployed: { type: 'string' },
         out: { type: 'string' },
         'require-clean': { type: 'boolean' },
       },
@@ -277,6 +282,10 @@ async function cmdReadback(args: string[], flags: Flags, cwd: string, io: Io, au
   if (flags.pr !== undefined) req.pr = positive(flags.pr, '--pr', 0, Number.MAX_SAFE_INTEGER);
   if (flags.commit !== undefined) req.commit = flags.commit;
   if (flags.branch !== undefined) req.branch = flags.branch;
+  if (flags.deployed !== undefined) {
+    if (flags.deployed === '' || flags.deployed.startsWith('-')) throw new UsageError('--deployed needs a commit, such as the one the host reports for this deploy');
+    req.deployed = flags.deployed;
+  }
   if (flags['version-url'] !== undefined) {
     const v = flags['version-url'];
     if (!/^https?:\/\//.test(v) || /[?@]/.test(v)) throw new UsageError('--version-url must be an http or https URL without a query string or credentials');

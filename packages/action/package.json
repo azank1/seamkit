@@ -1,6 +1,6 @@
 {
   "name": "@seamkit/action",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "seamkit's GitHub Action: reads production back after a deploy and reports a check run. Its version is seamkit's, because the bundle reports it.",
   "license": "Apache-2.0",
@@ -21,6 +21,7 @@
     "@seamkit/adapters": "0.0.0",
     "@seamkit/core": "0.0.0",
     "@seamkit/state": "0.0.0",
-    "seamkit": "0.1.0"
+    "seamkit": "0.2.0",
+    "yaml": "2.9.1"
   }
 }

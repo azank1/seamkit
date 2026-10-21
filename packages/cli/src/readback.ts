@@ -23,6 +23,12 @@ export interface ReadbackRequest {
   last: number;
   branch?: string;
   versionUrl?: string;
+  /**
+   * The commit just deployed. A change merged after it that production does not show, and that no
+   * earlier run saw live, is left to the next deploy and listed as not examined; one an earlier run
+   * saw live is still judged, so a deploy that drops it fails as not live.
+   */
+  deployed?: string;
 }
 
 /** Everything the shell learned while gathering, beyond the check input, for the audit's advice. */
@@ -102,6 +108,12 @@ async function loadHistory(cwd: string, commits: ReadonlySet<string>): Promise<S
   return [...latest.values()].sort((a, b) => (a.change + a.marker < b.change + b.marker ? -1 : 1));
 }
 
+/** Whether any of the running versions contains the change, as far as git can tell. */
+async function anyContains(repo: GitRepo, running: readonly string[], change: string): Promise<boolean> {
+  for (const r of running) if ((await repo.contains(r, change)).contains === true) return true;
+  return false;
+}
+
 /**
  * Gathers everything readback judges: the changes and their markers from git, the version
  * documents and served files from production, ancestry from git, and earlier sightings from the
@@ -148,18 +160,39 @@ export async function gatherReadback(
       }
     }
   }
+  let deployed: string | undefined;
+  if (req.deployed !== undefined) {
+    const d = await repo.commit(req.deployed);
+    if (d === undefined) throw new Error(`there is no commit called ${req.deployed} in this repository; fetch it, or check the --deployed value`);
+    deployed = d.commit;
+  }
   const shallow = await repo.isShallow();
   if (shallow) runGaps.push({ item: 'history beyond the shallow clone', reason: 'the clone is shallow; run git fetch --unshallow to examine older changes' });
 
   const subjects = new Set<string>();
-  const drafts = commits.map((c) => toChange(c, req.url, primary, subjects));
-  const changes: ReadbackChange[] = drafts.map(({ cardFound: _, ...change }) => change);
+  let drafts = commits.map((c) => toChange(c, req.url, primary, subjects));
 
   const versions: VersionObservation[] = [primary];
-  const markerUrls = new Set(changes.flatMap((c) => c.markers.flatMap((m) => (m.kind === 'version' ? [m.url] : []))));
+  const markerUrls = new Set(drafts.flatMap((c) => c.markers.flatMap((m) => (m.kind === 'version' ? [m.url] : []))));
   for (const url of [...markerUrls].sort()) {
     if (url !== primary.url) versions.push(await observeVersion(url, now(), resolve, http));
   }
+  const running = [...new Set(versions.flatMap((v) => (v.status === 'ok' && v.commit !== undefined ? [v.commit] : [])))];
+  const history = await loadHistory(cwd, new Set(drafts.map((c) => c.commit)));
+
+  if (deployed !== undefined) {
+    // Scoping, not judging: which changes this deploy is answerable for. The check judges the rest.
+    const sighted = new Set((history ?? []).map((s) => s.change));
+    const kept: typeof drafts = [];
+    for (const d of drafts) {
+      const inDeploy = (await repo.contains(deployed, d.commit)).contains;
+      const inProduction = await anyContains(repo, running, d.commit);
+      if (inDeploy !== false || inProduction || sighted.has(d.commit)) kept.push(d);
+      else runGaps.push({ item: d.subject, reason: `merged after the deployed commit ${short(deployed)} and not shown by production yet; the next deploy proves it` });
+    }
+    drafts = kept;
+  }
+  const changes: ReadbackChange[] = drafts.map(({ cardFound: _, ...change }) => change);
 
   const texts = new Map<string, Set<string>>();
   for (const m of changes.flatMap((c) => c.markers)) {
@@ -179,7 +212,6 @@ export async function gatherReadback(
   }
 
   const ancestry: AncestryFact[] = [];
-  const running = [...new Set(versions.flatMap((v) => (v.status === 'ok' && v.commit !== undefined ? [v.commit] : [])))];
   for (const r of running) {
     for (const c of changes) {
       const answer = await repo.contains(r, c.commit);
@@ -187,8 +219,8 @@ export async function gatherReadback(
     }
   }
 
-  const history = await loadHistory(cwd, new Set(changes.map((c) => c.commit)));
-  const input: ReadbackInput = { subject, changes, versions, ancestry, bundles, history };
+  const kept = new Set(changes.map((c) => c.commit));
+  const input: ReadbackInput = { subject, changes, versions, ancestry, bundles, history: history === null ? null : history.filter((s) => kept.has(s.change)) };
   if (runGaps.length > 0) input.notExamined = runGaps;
   return {
     input,

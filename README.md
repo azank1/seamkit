@@ -78,44 +78,75 @@ commit the CI system provides (`VERCEL_GIT_COMMIT_SHA`, `GITHUB_SHA`, `CF_PAGES_
 ## Use it in CI
 
 The seamkit Action reads production back once a deploy succeeds and posts the verdict as a check run on the deployed
-commit. Hosts that report deployments to GitHub, as Vercel does, fire `deployment_status`; Vercel names its production environment `Production`:
+commit. Hosts that report deployments to GitHub fire `deployment_status`; Vercel does, and names the production
+environment `Production`, or `Production – <project>` when one repository feeds several projects:
 
 ```yaml
 # .github/workflows/readback.yml
 name: readback
 on: deployment_status
 permissions:
-  contents: write   # to record verdicts on the seamkit/state branch; read is enough without a ledger
+  contents: write   # to record verdicts on the seamkit/state branch
   checks: write     # to post the check run
+concurrency:
+  group: seamkit-ledger   # runs take turns pushing the ledger
+  cancel-in-progress: false
 jobs:
   readback:
-    if: github.event.deployment_status.state == 'success' && github.event.deployment.environment == 'Production'
+    if: github.event.deployment_status.state == 'success' && startsWith(github.event.deployment.environment, 'Production')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # readback decides by commit ancestry, so it needs the history
       - uses: azank1/seamkit@v0.2.0
+        id: readback
         with:
           url: https://your.app
+          ledger: 'true'   # start the ledger on the first run, so a rollback shows as not live
 ```
 
+The check covers the last 20 changes on the default branch. A change merged after the deployed commit that production
+does not show yet is listed as not examined and left to the next deploy, so a merge landing while this deploy builds
+does not fail it. A change an earlier run saw live is still judged, so a deploy that drops it fails as not live. The
+Action keeps reading production for up to `wait` seconds until it runs a version containing the deployed commit, then
+records the run that counts and pushes the ledger.
+
 Only a pass posts a success. A change that is not live or not proven fails the check, production that cannot be read
-fails it as examined nothing, and an unclassified result asks for a human. The step exits with seamkit's own code, and
-the outcome, exit code and title are step outputs. When you deploy from a workflow of your own, trigger on
-`workflow_run` of that workflow instead; the check run then goes on the commit it deployed.
+fails it as examined nothing, and an unclassified result is marked action required. Every change in the window counts,
+so a change that cannot be proven fails each deploy until it is fixed or leaves the window; fix its card, lower `last`,
+or read back one pull request with `pr`. The step exits with seamkit's own code, so a later step that reads
+`steps.readback.outputs.outcome` needs `if: always()`.
+
+When you deploy from a workflow of your own, trigger on it finishing, from the default branch:
+
+```yaml
+on:
+  workflow_run:
+    workflows: [deploy]   # your deploy workflow's name; this file must be on the default branch
+    types: [completed]
+    branches: [main]
+```
+
+The check run then goes on the commit that workflow ran on. A run that failed, or that ran for a pull request, is
+skipped. To catch a rollback or a hand deploy that no workflow saw, run the same step on a schedule as well; it reads
+the default branch, so it also fails while a merged change waits for its deploy.
 
 | Input | Default | |
 |---|---|---|
 | `url` | required | the production address |
 | `last` | `20` | how many of the latest changes to examine |
 | `pr` | | read back one merged pull request instead |
-| `wait` | `60` | seconds to keep reading while production does not show the deploy yet; nothing is recorded meanwhile |
+| `wait` | `60` | after a deploy, seconds (up to 1800) to wait for production to run it; nothing is recorded meanwhile |
 | `ledger` | `auto` | `auto` records when a `seamkit/state` branch exists, `true` starts one, `false` never records |
 | `check-name` | `seamkit readback (<host>)` | one check per production address |
-| `version-url`, `branch`, `sha`, `token` | | for unusual layouts |
+| `sha` | the deployed commit | where the check goes, and what counts as deployed |
+| `branch`, `version-url`, `token` | | for unusual layouts |
 
-Anywhere else, run readback as a step once your deploy is live:
+The Action runs on GitHub-hosted runners, and on self-hosted runners that support the `node24` runtime. Recording
+pushes with the checkout's credentials, so keep `actions/checkout`'s default `persist-credentials`.
+
+Anywhere else, run readback as a step once your deploy is live, naming the deployed commit:
 
 ```yaml
 - uses: actions/checkout@v7
@@ -124,7 +155,7 @@ Anywhere else, run readback as a step once your deploy is live:
 - uses: actions/setup-node@v7
   with:
     node-version: 22
-- run: npx --yes seamkit@0.1 readback --url https://your.app --last 20
+- run: npx --yes seamkit@0.2 readback --url https://your.app --last 20 --deployed "$DEPLOYED_COMMIT"
 ```
 
 The step fails when a change is not live or not proven, and exits 3 when production could not be read, so a broken
@@ -225,7 +256,7 @@ machine, and its test pins every state.
 ## What works today, and what is next
 
 seamkit 0.1 is the command line tool: `audit`, `readback`, `stamp`, `replay` and `state`. 0.2 adds the GitHub Action,
-which reads back after every deploy and reports a check run. Both are tested on Node 20 and 22 on Linux.
+which reads back after every deploy and reports a check run. Both are tested on Node 20, 22 and 24 on Linux.
 
 Next, in order:
 
@@ -244,7 +275,7 @@ cover, is in [`docs/prior-art.md`](docs/prior-art.md).
 
 ```sh
 npm ci
-npm test             # 135 tests, using temporary repositories and a local fake production
+npm test             # 145 tests, using temporary repositories and a local fake production
 npm run demo         # add -- --keep to keep the demo repository
 npm run pack:cli     # builds the npm package into release/seamkit
 npm run smoke:pack   # installs that package into an empty project and runs it

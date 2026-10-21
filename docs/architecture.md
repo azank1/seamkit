@@ -470,9 +470,9 @@ milestones that need them.
 
 | Surface | Commands or tools | Notes |
 |---|---|---|
-| CLI | built: `seamkit readback [--pr N \| --commit C] [--last N]`, `seamkit audit`, `seamkit stamp [--out F] [--require-clean]`, `seamkit check`, `seamkit checks`, `seamkit replay [<event>]`, `seamkit state init\|list\|verify\|sync`; planned: `seamkit init`, `seamkit gate [--pr N]`, `seamkit carry <target>`, `seamkit parity`, `seamkit radius [<range>]`, `seamkit rule`, `seamkit approve <action>`, `seamkit console` | exit codes per 5.3; `seamkit approve` opens the channel itself and never reads the answer from its arguments |
+| CLI | built: `seamkit readback [--pr N \| --commit C] [--last N] [--deployed C]`, `seamkit audit`, `seamkit stamp [--out F] [--require-clean]`, `seamkit check`, `seamkit checks`, `seamkit replay [<event>]`, `seamkit state init\|list\|verify\|sync`; planned: `seamkit init`, `seamkit gate [--pr N]`, `seamkit carry <target>`, `seamkit parity`, `seamkit radius [<range>]`, `seamkit rule`, `seamkit approve <action>`, `seamkit console` | exit codes per 5.3; `seamkit approve` opens the channel itself and never reads the answer from its arguments |
 | MCP server | tools mirroring the read-only commands, plus `request_ruling` and `request_approval`, which take the question and the action but never the answer | human answers arrive only through the channel the server opens; the result of `request_approval` is a link or a level, never a yes the agent supplied |
-| GitHub Action | runs `gate` on pull requests and `readback` after merges or deploys | posts one check run per pull request; read-only token scopes are documented |
+| GitHub Action | built: `readback` after a deploy (`deployment_status`, or `workflow_run` of a deploy workflow) and on a schedule; planned: `gate` on pull requests (M6) | one check run per production address on the deployed commit; `checks: write` to post it, `contents: write` only when a ledger is kept |
 | Hooks | copy-in examples for Claude Code and Cursor that refuse a deploy command unless `gate` and `carry` pass for the exact head | shipped as examples, not installed silently |
 | Console | a static HTML page generated from the policy and the events | no server, no model, no network at view time |
 
@@ -543,4 +543,9 @@ be a path, so a card does not name one environment (section 6.1). And cards are 
 makes the repository's merge setting part of the setup (section 6.1). M3 put the GitHub Action's metadata at the
 repository root, so it is used as `azank1/seamkit@<tag>`, with its code in `packages/action` and one committed bundle
 that CI rebuilds and compares. The Action posts examined nothing as a failed check, not a neutral one, because GitHub
-counts a neutral check as passing for required checks, and unclassified as action required.
+counts a neutral check as passing for required checks, and unclassified as action required. Readback gained
+`--deployed`, the commit a deploy put out. A change merged after it that production does not show and that no recorded
+run saw live is scoped out as not examined, left to the next deploy, so a merge landing during a build does not fail a
+healthy deploy, while a change seen live before is still judged, so a deploy that drops it fails as not live. This is
+scoping in the shell, like `--last`; the check and its version are unchanged. The Action sets `origin/HEAD` from the
+event's default branch, which `actions/checkout` leaves unset, and a bare `--branch` name also finds `origin/<name>`.

@@ -1183,8 +1183,8 @@ var require_stringifyString = __commonJS({
             case "u":
               {
                 str3 += json.slice(start, i);
-                const code2 = json.substr(i + 2, 4);
-                switch (code2) {
+                const code = json.substr(i + 2, 4);
+                switch (code) {
                   case "0000":
                     str3 += "\\0";
                     break;
@@ -1210,8 +1210,8 @@ var require_stringifyString = __commonJS({
                     str3 += "\\P";
                     break;
                   default:
-                    if (code2.substr(0, 2) === "00")
-                      str3 += "\\x" + code2.substr(2);
+                    if (code.substr(0, 2) === "00")
+                      str3 += "\\x" + code.substr(2);
                     else
                       str3 += json.substr(i, 6);
                 }
@@ -3710,22 +3710,22 @@ var require_errors = __commonJS({
   "node_modules/yaml/dist/errors.js"(exports) {
     "use strict";
     var YAMLError = class extends Error {
-      constructor(name, pos, code2, message) {
+      constructor(name, pos, code, message) {
         super();
         this.name = name;
-        this.code = code2;
+        this.code = code;
         this.message = message;
         this.pos = pos;
       }
     };
     var YAMLParseError = class extends YAMLError {
-      constructor(pos, code2, message) {
-        super("YAMLParseError", pos, code2, message);
+      constructor(pos, code, message) {
+        super("YAMLParseError", pos, code, message);
       }
     };
     var YAMLWarning = class extends YAMLError {
-      constructor(pos, code2, message) {
-        super("YAMLWarning", pos, code2, message);
+      constructor(pos, code, message) {
+        super("YAMLWarning", pos, code, message);
       }
     };
     var prettifyError = (src, lc) => (error) => {
@@ -4634,7 +4634,7 @@ var require_resolve_flow_scalar = __commonJS({
       const { offset, type, source, end } = scalar;
       let _type;
       let value;
-      const _onError = (rel, code2, msg) => onError(offset + rel, code2, msg);
+      const _onError = (rel, code, msg) => onError(offset + rel, code, msg);
       switch (type) {
         case "scalar":
           _type = Scalar.Scalar.PLAIN;
@@ -4832,9 +4832,9 @@ var require_resolve_flow_scalar = __commonJS({
     function parseCharCode(source, offset, length, onError) {
       const cc = source.substr(offset, length);
       const ok = cc.length === length && /^[0-9a-fA-F]+$/.test(cc);
-      const code2 = ok ? parseInt(cc, 16) : NaN;
+      const code = ok ? parseInt(cc, 16) : NaN;
       try {
-        return String.fromCodePoint(code2);
+        return String.fromCodePoint(code);
       } catch {
         const raw = source.substr(offset - 2, length + 2);
         onError(offset - 2, "BAD_DQ_ESCAPE", `Invalid escape sequence ${raw}`);
@@ -5156,12 +5156,12 @@ var require_composer = __commonJS({
         this.prelude = [];
         this.errors = [];
         this.warnings = [];
-        this.onError = (source, code2, message, warning) => {
+        this.onError = (source, code, message, warning) => {
           const pos = getErrorPos(source);
           if (warning)
-            this.warnings.push(new errors.YAMLWarning(pos, code2, message));
+            this.warnings.push(new errors.YAMLWarning(pos, code, message));
           else
-            this.errors.push(new errors.YAMLParseError(pos, code2, message));
+            this.errors.push(new errors.YAMLParseError(pos, code, message));
         };
         this.directives = new directives.Directives({ version: options.version || "1.2" });
         this.options = options;
@@ -5323,12 +5323,12 @@ var require_cst_scalar = __commonJS({
     var stringifyString = require_stringifyString();
     function resolveAsScalar(token, strict = true, onError) {
       if (token) {
-        const _onError = (pos, code2, message) => {
+        const _onError = (pos, code, message) => {
           const offset = typeof pos === "number" ? pos : Array.isArray(pos) ? pos[0] : pos.offset;
           if (onError)
-            onError(offset, code2, message);
+            onError(offset, code, message);
           else
-            throw new errors.YAMLParseError([offset, offset + 1], code2, message);
+            throw new errors.YAMLParseError([offset, offset + 1], code, message);
         };
         switch (token.type) {
           case "scalar":
@@ -8715,7 +8715,7 @@ function runGit(args, opts) {
     child.stdout.on("data", (b) => out.push(b));
     child.stderr.on("data", (b) => err.push(b));
     child.on("error", reject);
-    child.on("close", (code2) => resolve3({ code: code2 ?? 1, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString("utf8") }));
+    child.on("close", (code) => resolve3({ code: code ?? 1, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString("utf8") }));
     child.stdin.on("error", () => void 0);
     child.stdin.end(opts.input ?? "");
   });
@@ -8866,6 +8866,7 @@ var GitStateStore = class _GitStateStore {
         return { status, remote, local: toPush, attempts: attempt };
       if (attempt === MAX_SYNC_ATTEMPTS)
         throw new GitError(["push", remote, STATE_REF], pushed);
+      await new Promise((resolve3) => setTimeout(resolve3, attempt * 250 + Math.floor(Math.random() * 250)));
     }
     throw new Error(`could not synchronise ${STATE_BRANCH} with ${remote} after ${MAX_SYNC_ATTEMPTS} attempts`);
   }
@@ -8961,8 +8962,8 @@ function networkReason(err, timeoutMs) {
   const e = err;
   if (e?.name === "TimeoutError" || e?.name === "AbortError")
     return `no response within ${timeoutMs / 1e3} s`;
-  const code2 = e?.cause?.code;
-  return code2 ? `could not connect (${code2})` : "could not connect";
+  const code = e?.cause?.code;
+  return code ? `could not connect (${code})` : "could not connect";
 }
 async function fetchLimited(url2, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -9229,10 +9230,15 @@ var GitRepo = class _GitRepo {
    */
   async resolveBranch(name) {
     if (name !== void 0) {
-      const head2 = name.startsWith("-") ? void 0 : await this.rev(name);
-      if (head2 === void 0)
+      if (name.startsWith("-"))
         throw new Error(`there is no branch or commit called ${name}`);
-      return { name, head: head2 };
+      const head2 = await this.rev(name);
+      if (head2 !== void 0)
+        return { name, head: head2 };
+      const remote = /^[A-Za-z0-9._/-]+$/.test(name) ? await this.rev(`refs/remotes/origin/${name}`) : void 0;
+      if (remote === void 0)
+        throw new Error(`there is no branch or commit called ${name}`);
+      return { name, head: remote };
     }
     const originHead = await runGit(["symbolic-ref", "-q", "refs/remotes/origin/HEAD"], { cwd: this.cwd });
     const candidates = [
@@ -9610,6 +9616,12 @@ async function loadHistory(cwd, commits) {
   }
   return [...latest.values()].sort((a, b) => a.change + a.marker < b.change + b.marker ? -1 : 1);
 }
+async function anyContains(repo, running, change) {
+  for (const r of running)
+    if ((await repo.contains(r, change)).contains === true)
+      return true;
+  return false;
+}
 async function gatherReadback(cwd, req, now, http) {
   const repo = await GitRepo.open(cwd);
   const branch = await repo.resolveBranch(req.branch);
@@ -9644,18 +9656,40 @@ async function gatherReadback(cwd, req, now, http) {
       }
     }
   }
+  let deployed;
+  if (req.deployed !== void 0) {
+    const d = await repo.commit(req.deployed);
+    if (d === void 0)
+      throw new Error(`there is no commit called ${req.deployed} in this repository; fetch it, or check the --deployed value`);
+    deployed = d.commit;
+  }
   const shallow = await repo.isShallow();
   if (shallow)
     runGaps.push({ item: "history beyond the shallow clone", reason: "the clone is shallow; run git fetch --unshallow to examine older changes" });
   const subjects = /* @__PURE__ */ new Set();
-  const drafts = commits.map((c) => toChange(c, req.url, primary, subjects));
-  const changes = drafts.map(({ cardFound: _, ...change }) => change);
+  let drafts = commits.map((c) => toChange(c, req.url, primary, subjects));
   const versions = [primary];
-  const markerUrls = new Set(changes.flatMap((c) => c.markers.flatMap((m) => m.kind === "version" ? [m.url] : [])));
+  const markerUrls = new Set(drafts.flatMap((c) => c.markers.flatMap((m) => m.kind === "version" ? [m.url] : [])));
   for (const url2 of [...markerUrls].sort()) {
     if (url2 !== primary.url)
       versions.push(await observeVersion(url2, now(), resolve3, http));
   }
+  const running = [...new Set(versions.flatMap((v) => v.status === "ok" && v.commit !== void 0 ? [v.commit] : []))];
+  const history = await loadHistory(cwd, new Set(drafts.map((c) => c.commit)));
+  if (deployed !== void 0) {
+    const sighted = new Set((history ?? []).map((s) => s.change));
+    const kept2 = [];
+    for (const d of drafts) {
+      const inDeploy = (await repo.contains(deployed, d.commit)).contains;
+      const inProduction = await anyContains(repo, running, d.commit);
+      if (inDeploy !== false || inProduction || sighted.has(d.commit))
+        kept2.push(d);
+      else
+        runGaps.push({ item: d.subject, reason: `merged after the deployed commit ${short2(deployed)} and not shown by production yet; the next deploy proves it` });
+    }
+    drafts = kept2;
+  }
+  const changes = drafts.map(({ cardFound: _, ...change }) => change);
   const texts = /* @__PURE__ */ new Map();
   for (const m of changes.flatMap((c) => c.markers)) {
     if (m.kind !== "bundle")
@@ -9674,15 +9708,14 @@ async function gatherReadback(cwd, req, now, http) {
     bundles.push(obs);
   }
   const ancestry = [];
-  const running = [...new Set(versions.flatMap((v) => v.status === "ok" && v.commit !== void 0 ? [v.commit] : []))];
   for (const r of running) {
     for (const c of changes) {
       const answer = await repo.contains(r, c.commit);
       ancestry.push(answer.reason === void 0 ? { change: c.commit, running: r, contains: answer.contains } : { change: c.commit, running: r, contains: answer.contains, reason: answer.reason });
     }
   }
-  const history = await loadHistory(cwd, new Set(changes.map((c) => c.commit)));
-  const input2 = { subject, changes, versions, ancestry, bundles, history };
+  const kept = new Set(changes.map((c) => c.commit));
+  const input2 = { subject, changes, versions, ancestry, bundles, history: history === null ? null : history.filter((s) => kept.has(s.change)) };
   if (runGaps.length > 0)
     input2.notExamined = runGaps;
   return {
@@ -9806,7 +9839,8 @@ var HELP = `seamkit ${VERSION}: deterministic production checks.
 Usage:
   seamkit audit --url <production-url> [--last <n>] [--branch <ref>] [--json]
   seamkit readback --url <production-url> [--pr <n> | --commit <rev>] [--last <n>]
-                   [--branch <ref>] [--version-url <url>] [--record|--no-record] [--json]
+                   [--branch <ref>] [--deployed <rev>] [--version-url <url>]
+                   [--record|--no-record] [--json]
   seamkit stamp [--out <file>] [--commit <rev>] [--require-clean]
   seamkit check <name> [--input <file>|-] [--record|--no-record] [--json]
   seamkit checks
@@ -9820,7 +9854,9 @@ Usage:
 readback proves whether production holds each merged change: by the commit production says it
 runs (a version document, which "seamkit stamp" writes at build time), and by the markers in a
 change's seamkit-card. audit is readback over the last changes with advice for every gap. The
-production URL can also come from SEAMKIT_URL.
+production URL can also come from SEAMKIT_URL. After a deploy, --deployed names the commit just
+deployed: changes merged after it that production does not show yet are left to the next deploy,
+while one that an earlier run saw live is still judged, so a rollback fails.
 
 Every command that produces a verdict exits with its outcome:
   0 pass   1 fail   3 examined nothing   4 unclassified (stops for a human)
@@ -9855,6 +9891,7 @@ async function run(argv, io) {
         last: { type: "string" },
         branch: { type: "string" },
         "version-url": { type: "string" },
+        deployed: { type: "string" },
         out: { type: "string" },
         "require-clean": { type: "boolean" }
       }
@@ -10048,6 +10085,11 @@ async function cmdReadback(args, flags, cwd, io, audit) {
     req.commit = flags.commit;
   if (flags.branch !== void 0)
     req.branch = flags.branch;
+  if (flags.deployed !== void 0) {
+    if (flags.deployed === "" || flags.deployed.startsWith("-"))
+      throw new UsageError("--deployed needs a commit, such as the one the host reports for this deploy");
+    req.deployed = flags.deployed;
+  }
   if (flags["version-url"] !== void 0) {
     const v = flags["version-url"];
     if (!/^https?:\/\//.test(v) || /[?@]/.test(v))
@@ -10341,13 +10383,24 @@ async function readEvent(path) {
 var field = (o, ...keys) => keys.reduce((v, k) => v !== null && typeof v === "object" ? v[k] : void 0, o);
 var str2 = (v) => typeof v === "string" && v !== "" ? v : void 0;
 function headSha(ctx, event, explicit) {
+  return deployedCommit(ctx, event, explicit) ?? pullRequestHead(ctx, event) ?? ctx.sha;
+}
+function deployedCommit(ctx, event, explicit) {
   if (explicit !== "")
     return explicit;
   if (ctx.eventName === "deployment_status" || ctx.eventName === "deployment")
-    return str2(field(event, "deployment", "sha")) ?? ctx.sha;
+    return str2(field(event, "deployment", "sha"));
   if (ctx.eventName === "workflow_run")
-    return str2(field(event, "workflow_run", "head_sha")) ?? ctx.sha;
-  return ctx.sha;
+    return str2(field(event, "workflow_run", "head_sha"));
+  return void 0;
+}
+function pullRequestHead(ctx, event) {
+  if (ctx.eventName !== "pull_request" && ctx.eventName !== "pull_request_target")
+    return void 0;
+  return str2(field(event, "pull_request", "head", "sha"));
+}
+function defaultBranchOf(event) {
+  return str2(field(event, "repository", "default_branch"));
 }
 function skipReason(ctx, event) {
   if (ctx.eventName === "deployment_status") {
@@ -10359,16 +10412,19 @@ function skipReason(ctx, event) {
     const conclusion = str2(field(event, "workflow_run", "conclusion"));
     if (conclusion !== "success")
       return `the deploy workflow concluded ${conclusion ?? "without a conclusion"}, not success`;
+    const trigger = str2(field(event, "workflow_run", "event"));
+    if (trigger === "pull_request" || trigger === "pull_request_target")
+      return "the deploy workflow ran for a pull request, which does not change production";
   }
   return void 0;
 }
-async function postCheckRun(fetchFn, ctx, token, name, sha, report, detailsUrl) {
+async function postCheckRun(fetchFn, ctx, token, name, sha, report2, detailsUrl) {
   if (token === "")
     return { ok: false, problem: "no token was given, so no check run was posted" };
-  const output = { title: report.title, summary: report.summary };
-  if (report.text !== "")
-    output["text"] = report.text;
-  const body = { name, head_sha: sha, status: "completed", conclusion: report.conclusion, ...detailsUrl ? { details_url: detailsUrl } : {}, output };
+  const output = { title: report2.title, summary: report2.summary };
+  if (report2.text !== "")
+    output["text"] = report2.text;
+  const body = { name, head_sha: sha, status: "completed", conclusion: report2.conclusion, ...detailsUrl ? { details_url: detailsUrl } : {}, output };
   let res;
   try {
     res = await fetchFn(`${ctx.apiUrl}/repos/${ctx.repository}/check-runs`, {
@@ -10385,7 +10441,12 @@ async function postCheckRun(fetchFn, ctx, token, name, sha, report, detailsUrl) 
   } catch (err) {
     return { ok: false, problem: `the check run could not be posted: ${err.message}` };
   }
-  const text = await res.text();
+  let text;
+  try {
+    text = await res.text();
+  } catch (err) {
+    return { ok: false, problem: `the answer to the check run could not be read: ${err.message}` };
+  }
   if (res.status === 201) {
     let url2;
     try {
@@ -10484,10 +10545,10 @@ ${message.trim()}
     text: ""
   };
 }
-function jobSummary(name, report) {
-  return [`### ${name}: ${report.title}`, "", report.summary, "", report.text ? `<details><summary>Full report</summary>
+function jobSummary(name, report2) {
+  return [`### ${name}: ${report2.title}`, "", report2.summary, "", report2.text ? `<details><summary>Full report</summary>
 
-${report.text}
+${report2.text}
 
 </details>` : "", ""].join("\n");
 }
@@ -10510,7 +10571,7 @@ function cliRunner(cwd, deps) {
     return { code: await run(args, io), out, err };
   };
 }
-function readbackArgs(inputs) {
+function readbackArgs(inputs, deployed) {
   const args = ["readback", "--url", inputs.url, "--json"];
   if (inputs.last !== "")
     args.push("--last", inputs.last);
@@ -10518,6 +10579,8 @@ function readbackArgs(inputs) {
     args.push("--pr", inputs.pr);
   if (inputs.branch !== "")
     args.push("--branch", inputs.branch);
+  if (deployed !== void 0)
+    args.push("--deployed", deployed);
   if (inputs.versionUrl !== "")
     args.push("--version-url", inputs.versionUrl);
   return args;
@@ -10551,35 +10614,75 @@ async function openLedger(inputs, cli, deps) {
   deps.log(`seamkit: ${init.out.trim()}`);
   return true;
 }
-async function unshallow(cwd, deps) {
+async function prepareCheckout(cwd, defaultBranch, deps) {
   const shallow = await runGit(["rev-parse", "--is-shallow-repository"], { cwd });
-  if (shallow.stdout.toString("utf8").trim() !== "true")
+  if (shallow.stdout.toString("utf8").trim() === "true") {
+    deps.log("seamkit: the checkout is shallow; fetching the full history (set fetch-depth: 0 on actions/checkout to skip this)");
+    const fetched = await runGit(["fetch", "--quiet", "--unshallow", "--no-tags", "origin"], { cwd });
+    if (fetched.code !== 0)
+      deps.warn(`seamkit: could not fetch the full history, so older changes are not examined: ${fetched.stderr.trim()}`);
+  }
+  if (defaultBranch === void 0 || !/^[A-Za-z0-9._/-]+$/.test(defaultBranch))
     return;
-  deps.log("seamkit: the checkout is shallow; fetching the full history (set fetch-depth: 0 on actions/checkout to skip this)");
-  const fetched = await runGit(["fetch", "--quiet", "--unshallow", "--no-tags", "origin"], { cwd });
-  if (fetched.code !== 0)
-    deps.warn(`seamkit: could not fetch the full history, so older changes are not examined: ${fetched.stderr.trim()}`);
+  const head = await runGit(["symbolic-ref", "-q", "refs/remotes/origin/HEAD"], { cwd });
+  if (head.code === 0)
+    return;
+  const target = `refs/remotes/origin/${defaultBranch}`;
+  if ((await runGit(["rev-parse", "--verify", "--quiet", target], { cwd })).code !== 0)
+    return;
+  await runGit(["symbolic-ref", "refs/remotes/origin/HEAD", target], { cwd });
 }
-async function waitForLive(args, inputs, cli, deps) {
+async function showsDeploy(result, deployed, cwd) {
+  let verdicts;
+  try {
+    verdicts = JSON.parse(result.out).verdicts;
+  } catch {
+    return false;
+  }
+  const running = new Set(verdicts.flatMap((v) => v.evidence.filter((e) => e.kind === "commit" && e.label === "running version").map((e) => e.value)));
+  for (const r of running) {
+    if ((await runGit(["merge-base", "--is-ancestor", deployed, r], { cwd })).code === 0)
+      return true;
+  }
+  return false;
+}
+async function waitForLive(args, deployed, inputs, cli, cwd, deps) {
   const poll = (deps.pollSeconds ?? 10) * 1e3;
   const clock = deps.clock ?? Date.now;
   const deadline = clock() + inputs.waitSeconds * 1e3;
   for (; ; ) {
     const r = await cli([...args, "--no-record"]);
-    if (r.code === 0 || r.code === EXIT_USAGE2 || r.code === 4)
+    if (r.code === 0 || r.code === EXIT_USAGE2 || r.code === 4 || deployed === void 0)
       return r;
+    if (await showsDeploy(r, deployed, cwd)) {
+      deps.log(`seamkit: production runs a version that contains ${deployed.slice(0, 12)}, so waiting longer would not change the result`);
+      return r;
+    }
     const left = deadline - clock();
     if (left <= 0)
       return r;
-    deps.log(`seamkit: not a pass yet (exit ${r.code}); reading production again in ${Math.round(Math.min(poll, left) / 1e3)}s`);
+    deps.log(`seamkit: production does not show ${deployed.slice(0, 12)} yet (exit ${r.code}); reading it again in ${Math.round(Math.min(poll, left) / 1e3)}s`);
     await deps.sleep(Math.min(poll, left));
   }
 }
+async function report(ctx, name, token, sha, result, outcome, code, deps) {
+  const runUrl = ctx.runId === "" ? "" : `${ctx.serverUrl}/${ctx.repository}/actions/runs/${ctx.runId}`;
+  const check = sha === "" ? { ok: false, problem: "no commit to attach a check run to" } : await postCheckRun(deps.fetch, ctx, token, name, sha, result, runUrl);
+  if (check.ok)
+    deps.log(`seamkit: posted check run "${name}" on ${sha.slice(0, 12)}${check.url ? `: ${check.url}` : ""}`);
+  else
+    deps.warn(`seamkit: ${check.problem ?? "no check run was posted"}`);
+  await appendSummary(ctx.summaryPath, jobSummary(name, result));
+  await setOutput(ctx.outputPath, "outcome", outcome);
+  await setOutput(ctx.outputPath, "exit-code", String(code));
+  await setOutput(ctx.outputPath, "title", result.title);
+  if (check.ok && check.url)
+    await setOutput(ctx.outputPath, "check-run-url", check.url);
+}
+var PERMISSION = /\b403\b|denied|permission|not allowed|authentication/i;
 async function runAction(deps) {
-  let inputs;
   let ctx;
   try {
-    inputs = readInputs(deps.env);
     ctx = readContext(deps.env);
   } catch (err) {
     if (!(err instanceof ActionInputError))
@@ -10588,6 +10691,17 @@ async function runAction(deps) {
     return EXIT_USAGE2;
   }
   const event = await readEvent(ctx.eventPath);
+  let inputs;
+  try {
+    inputs = readInputs(deps.env);
+  } catch (err) {
+    if (!(err instanceof ActionInputError))
+      throw err;
+    deps.warn(`seamkit: ${err.message}`);
+    const raw = (name) => (deps.env[`INPUT_${name}`] ?? "").trim();
+    await report(ctx, raw("CHECK-NAME") || "seamkit readback", raw("TOKEN"), headSha(ctx, event, raw("SHA")), errorReport(err.message, raw("URL") || "the url input"), "error", EXIT_USAGE2, deps);
+    return EXIT_USAGE2;
+  }
   const skip = skipReason(ctx, event);
   if (skip !== void 0) {
     deps.log(`seamkit: skipped, because ${skip}`);
@@ -10597,58 +10711,74 @@ async function runAction(deps) {
   const cwd = ctx.workspace;
   const cli = cliRunner(cwd, deps);
   const sha = headSha(ctx, event, inputs.sha);
-  await unshallow(cwd, deps);
+  const deployed = deployedCommit(ctx, event, inputs.sha);
+  await prepareCheckout(cwd, defaultBranchOf(event), deps);
   const recording = await openLedger(inputs, cli, deps);
-  const args = readbackArgs(inputs);
-  let result = await waitForLive(args, inputs, cli, deps);
+  const args = readbackArgs(inputs, deployed);
+  let result = await waitForLive(args, deployed, inputs, cli, cwd, deps);
+  let recorded = false;
   if (recording && result.code !== EXIT_USAGE2) {
-    result = await cli(args);
+    const again = await cli(args);
+    if (again.code === EXIT_USAGE2)
+      deps.warn(`seamkit: the verdict was not recorded: ${again.err.trim()}`);
+    else
+      result = again;
   }
-  let report;
+  let out;
   let outcome = "error";
   if (result.code === EXIT_USAGE2) {
-    report = errorReport(result.err, inputs.url);
+    out = errorReport(result.err, inputs.url);
     deps.warn(result.err.trim());
   } else {
     const parsed = JSON.parse(result.out);
     outcome = parsed.outcome;
-    report = readbackReport(parsed.outcome, parsed.verdicts, inputs.url);
+    out = readbackReport(parsed.outcome, parsed.verdicts, inputs.url);
     deps.log(renderReadback(parsed.verdicts));
-    if (parsed.recorded)
+    if (parsed.recorded) {
+      recorded = true;
       deps.log(`seamkit: recorded as event ${parsed.recorded.id.slice(0, 12)}`);
+    }
   }
   if (recording) {
     const pushed = await cli(["state", "sync"]);
-    if (pushed.code !== 0)
-      deps.warn(`seamkit: the verdict was recorded here but not pushed; give the job "permissions: contents: write": ${pushed.err.trim()}`);
-    else
+    if (pushed.code === 0)
       deps.log(`seamkit: ${pushed.out.trim()}`);
+    else {
+      const why = PERMISSION.test(pushed.err) ? 'give the job "permissions: contents: write"' : "another run may have pushed at the same moment; give the workflow a concurrency group so runs take turns";
+      deps.warn(`seamkit: ${recorded ? "the verdict was recorded here but not pushed, so it is lost with this runner" : "the ledger could not be pushed"}; ${why}: ${pushed.err.trim()}`);
+    }
   }
-  const runUrl = ctx.runId === "" ? "" : `${ctx.serverUrl}/${ctx.repository}/actions/runs/${ctx.runId}`;
-  const check = sha === "" ? { ok: false, problem: "no commit to attach a check run to" } : await postCheckRun(deps.fetch, ctx, inputs.token, inputs.checkName, sha, report, runUrl);
-  if (check.ok)
-    deps.log(`seamkit: posted check run "${inputs.checkName}" on ${sha.slice(0, 12)}${check.url ? `: ${check.url}` : ""}`);
-  else
-    deps.warn(`seamkit: ${check.problem ?? "no check run was posted"}`);
-  await appendSummary(ctx.summaryPath, jobSummary(inputs.checkName, report));
-  await setOutput(ctx.outputPath, "outcome", outcome);
-  await setOutput(ctx.outputPath, "exit-code", String(result.code));
-  await setOutput(ctx.outputPath, "title", report.title);
-  if (check.ok && check.url)
-    await setOutput(ctx.outputPath, "check-run-url", check.url);
+  await report(ctx, inputs.checkName, inputs.token, sha, out, outcome, result.code, deps);
   return result.code;
 }
 
 // packages/action/dist/main.js
 var escape = (s) => s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
-var code = await runAction({
-  env: process.env,
-  now: () => (/* @__PURE__ */ new Date()).toISOString(),
-  sleep: (ms) => new Promise((resolve3) => setTimeout(resolve3, ms)),
-  fetch: (url2, init) => fetch(url2, init),
-  log: (line) => process.stdout.write(`${line}
+try {
+  process.exitCode = await runAction({
+    env: process.env,
+    now: () => (/* @__PURE__ */ new Date()).toISOString(),
+    sleep: (ms) => new Promise((resolve3) => setTimeout(resolve3, ms)),
+    fetch: (url2, init) => fetch(url2, init),
+    log: (line) => process.stdout.write(`${line}
 `),
-  warn: (line) => process.stdout.write(`::warning title=seamkit::${escape(line)}
+    warn: (line) => process.stdout.write(`::warning title=seamkit::${escape(line)}
 `)
-});
-process.exitCode = code;
+  });
+} catch (err) {
+  const message = `seamkit: the action failed: ${err.stack ?? String(err)}`;
+  process.stdout.write(`::error title=seamkit::${escape(message)}
+`);
+  process.exitCode = 2;
+  try {
+    await setOutput(process.env["GITHUB_OUTPUT"] ?? "", "outcome", "error");
+    await setOutput(process.env["GITHUB_OUTPUT"] ?? "", "exit-code", "2");
+    await appendSummary(process.env["GITHUB_STEP_SUMMARY"] ?? "", `### seamkit: the action failed
+
+\`\`\`text
+${message}
+\`\`\`
+`);
+  } catch {
+  }
+}

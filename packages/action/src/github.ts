@@ -103,10 +103,26 @@ const str = (v: unknown): string | undefined => (typeof v === 'string' && v !== 
  * workflow ran on for workflow_run, else the job's own commit. An explicit sha input wins.
  */
 export function headSha(ctx: GitHubContext, event: Record<string, unknown>, explicit: string): string {
+  return deployedCommit(ctx, event, explicit) ?? pullRequestHead(ctx, event) ?? ctx.sha;
+}
+
+/** The commit a deploy event names, or an explicit sha input; undefined for every other event. */
+export function deployedCommit(ctx: GitHubContext, event: Record<string, unknown>, explicit: string): string | undefined {
   if (explicit !== '') return explicit;
-  if (ctx.eventName === 'deployment_status' || ctx.eventName === 'deployment') return str(field(event, 'deployment', 'sha')) ?? ctx.sha;
-  if (ctx.eventName === 'workflow_run') return str(field(event, 'workflow_run', 'head_sha')) ?? ctx.sha;
-  return ctx.sha;
+  if (ctx.eventName === 'deployment_status' || ctx.eventName === 'deployment') return str(field(event, 'deployment', 'sha'));
+  if (ctx.eventName === 'workflow_run') return str(field(event, 'workflow_run', 'head_sha'));
+  return undefined;
+}
+
+/** On a pull request, GITHUB_SHA is a merge commit GitHub made, which the pull request never shows. */
+function pullRequestHead(ctx: GitHubContext, event: Record<string, unknown>): string | undefined {
+  if (ctx.eventName !== 'pull_request' && ctx.eventName !== 'pull_request_target') return undefined;
+  return str(field(event, 'pull_request', 'head', 'sha'));
+}
+
+/** The repository's default branch, which every event payload names. */
+export function defaultBranchOf(event: Record<string, unknown>): string | undefined {
+  return str(field(event, 'repository', 'default_branch'));
 }
 
 /** Why this event is not a finished deploy, or undefined when it should be read back. */
@@ -118,6 +134,8 @@ export function skipReason(ctx: GitHubContext, event: Record<string, unknown>): 
   if (ctx.eventName === 'workflow_run') {
     const conclusion = str(field(event, 'workflow_run', 'conclusion'));
     if (conclusion !== 'success') return `the deploy workflow concluded ${conclusion ?? 'without a conclusion'}, not success`;
+    const trigger = str(field(event, 'workflow_run', 'event'));
+    if (trigger === 'pull_request' || trigger === 'pull_request_target') return 'the deploy workflow ran for a pull request, which does not change production';
   }
   return undefined;
 }
@@ -152,7 +170,12 @@ export async function postCheckRun(fetchFn: Fetch, ctx: GitHubContext, token: st
   } catch (err) {
     return { ok: false, problem: `the check run could not be posted: ${(err as Error).message}` };
   }
-  const text = await res.text();
+  let text: string;
+  try {
+    text = await res.text();
+  } catch (err) {
+    return { ok: false, problem: `the answer to the check run could not be read: ${(err as Error).message}` };
+  }
   if (res.status === 201) {
     let url: string | undefined;
     try {

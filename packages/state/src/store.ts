@@ -174,6 +174,9 @@ export class GitStateStore {
       const pushed = await runGit(['push', '--quiet', remote, `${toPush}:${STATE_REF}`], { cwd: this.cwd });
       if (pushed.code === 0) return { status, remote, local: toPush, attempts: attempt };
       if (attempt === MAX_SYNC_ATTEMPTS) throw new GitError(['push', remote, STATE_REF], pushed);
+      // Another writer pushed first. Wait a little, longer each time and by a different amount for
+      // each writer, so two runs that keep colliding stop colliding.
+      await new Promise((resolve) => setTimeout(resolve, attempt * 250 + Math.floor(Math.random() * 250)));
     }
     throw new Error(`could not synchronise ${STATE_BRANCH} with ${remote} after ${MAX_SYNC_ATTEMPTS} attempts`);
   }

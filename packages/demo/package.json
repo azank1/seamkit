@@ -10,6 +10,6 @@
     "@seamkit/adapters": "0.0.0",
     "@seamkit/core": "0.0.0",
     "@seamkit/state": "0.0.0",
-    "seamkit": "0.1.0"
+    "seamkit": "0.2.0"
   }
 }
