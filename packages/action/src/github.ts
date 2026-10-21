@@ -53,12 +53,12 @@ export function checkNameFor(env: Env): string {
 }
 
 /**
- * Text for the job log that must not run as a workflow command. The runner treats a line starting
- * with :: as one, and the readback report carries merged changes' own words, so text holding such a
- * line is fenced between stop-commands and a token nobody else knows.
+ * Text for the job log that must not run as a workflow command. The readback report carries merged
+ * changes' own words, and the runner finds commands in more forms than a pattern here would catch
+ * (a line starting with :: after any whitespace it trims, or ##[ anywhere), so every write is
+ * fenced between stop-commands and a token nobody else knows.
  */
 export function plainText(text: string, token: string): string {
-  if (!/^\s*::/m.test(text)) return `${text}\n`;
   return `::stop-commands::${token}\n${text}\n::${token}::\n`;
 }
 
@@ -156,10 +156,19 @@ export function defaultBranchOf(ctx: GitHubContext, event: Record<string, unknow
 export function displayUrl(raw: string): string {
   try {
     const u = new URL(raw);
+    // Anything else, such as user:token@host read as a scheme, is not shown at all.
+    if ((u.protocol !== 'http:' && u.protocol !== 'https:') || u.host === '') return 'the url input';
     return `${u.protocol}//${u.host}${u.pathname}`;
   } catch {
     return 'the url input';
   }
+}
+
+/** A message with every appearance of the given raw values replaced by how they may be shown. */
+export function scrub(message: string, raws: readonly string[]): string {
+  let out = message;
+  for (const raw of raws) if (raw !== '') out = out.split(raw).join(displayUrl(raw));
+  return out;
 }
 
 /** Why this event is not a finished deploy, or undefined when it should be read back. */

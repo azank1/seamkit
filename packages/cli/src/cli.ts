@@ -65,8 +65,10 @@ readback proves whether production holds each merged change: by the commit produ
 runs (a version document, which "seamkit stamp" writes at build time), and by the markers in a
 change's seamkit-card. audit is readback over the last changes with advice for every gap. The
 production URL can also come from SEAMKIT_URL. After a deploy, --deployed names the commit just
-deployed: changes merged after it that production does not show yet are left to the next deploy,
-while one that an earlier run saw live is still judged, so a rollback fails.
+deployed. When the ledger holds a run that read this address, a change merged after it that no
+recorded run saw live here, and that production does not run, is left to the next deploy; one seen
+live here is still judged, so a rollback fails as not live. Without such a run every change is
+judged. --last counts the changes judged.
 
 Every command that produces a verdict exits with its outcome:
   0 pass   1 fail   3 examined nothing   4 unclassified (stops for a human)
@@ -257,7 +259,8 @@ function productionUrl(flags: Flags, env: Io['env']): string {
   try {
     url = new URL(raw);
   } catch {
-    throw new UsageError(`--url is not an absolute URL: ${raw}`);
+    // Not echoed: a malformed URL can still hold a token, and this message reaches reports.
+    throw new UsageError('--url is not an absolute URL; give one such as https://your.app');
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new UsageError('--url must be an http or https URL');
   if (url.username !== '' || url.password !== '') throw new UsageError('--url must not contain a user name or password, because URLs are recorded in the ledger');

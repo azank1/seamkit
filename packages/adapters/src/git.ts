@@ -32,12 +32,13 @@ export class GitRepo {
   async resolveBranch(name?: string): Promise<{ name: string; head: string }> {
     if (name !== undefined) {
       if (name.startsWith('-')) throw new Error(`there is no branch or commit called ${name}`);
+      // A bare branch name means the remote's branch: a CI checkout often has it only as
+      // origin/<name>, and its local branch of that name sits at the commit the job was given.
+      const remote = /^[A-Za-z0-9._/-]+$/.test(name) && !name.startsWith('refs/') ? await this.rev(`refs/remotes/origin/${name}`) : undefined;
+      if (remote !== undefined) return { name, head: remote };
       const head = await this.rev(name);
-      if (head !== undefined) return { name, head };
-      // A CI checkout has the remote's branches only as origin/<name>.
-      const remote = /^[A-Za-z0-9._/-]+$/.test(name) ? await this.rev(`refs/remotes/origin/${name}`) : undefined;
-      if (remote === undefined) throw new Error(`there is no branch or commit called ${name}`);
-      return { name, head: remote };
+      if (head === undefined) throw new Error(`there is no branch or commit called ${name}`);
+      return { name, head };
     }
     const originHead = await runGit(['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'], { cwd: this.cwd });
     const candidates = [

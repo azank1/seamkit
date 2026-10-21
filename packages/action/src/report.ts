@@ -45,8 +45,16 @@ export function stateCounts(parts: readonly Verdict[]): { state: ReadbackState; 
   return order.map((state) => ({ state, count: parts.filter((p) => p.state === state).length })).filter((c) => c.count > 0);
 }
 
-/** A table cell: one line, with the table's own separator escaped. */
-const cell = (s: string): string => s.replace(/\s*\n\s*/g, ' ').replace(/\|/g, '\\|');
+/** A table cell: one line, whatever ends it (Markdown ends a line at a lone CR too), with the table's own separator escaped. */
+const cell = (s: string): string => s.replace(/\s*[\r\n]\s*/g, ' ').replace(/\|/g, '\\|');
+
+/** A fenced block that the text cannot close: its fence is longer than any run of backticks in it. */
+function fenced(text: string): string {
+  let longest = 0;
+  for (const m of text.matchAll(/`+/g)) longest = Math.max(longest, m[0].length);
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+  return `${fence}text\n${text}\n${fence}`;
+}
 
 /**
  * Builds the check run output for a readback run: its summary verdict first, then one per change.
@@ -79,7 +87,7 @@ export function readbackReport(outcome: Outcome, verdicts: readonly Verdict[], u
     conclusion: CONCLUSIONS[outcome],
     title: clip(title, 1000),
     summary: clip(lines.join('\n'), OUTPUT_LIMIT),
-    text: clip(`\`\`\`text\n${renderReadback(verdicts)}\n\`\`\``, OUTPUT_LIMIT),
+    text: clip(fenced(renderReadback(verdicts)), OUTPUT_LIMIT),
   };
 }
 
@@ -89,7 +97,7 @@ export function errorReport(message: string, url: string): Report {
   return {
     conclusion: 'failure',
     title: clip(`No verdict: ${first.replace(/^seamkit: /, '')}`, 1000),
-    summary: clip(`**No verdict** for ${url}: seamkit could not run, so nothing was proven.\n\n\`\`\`text\n${message.trim()}\n\`\`\``, OUTPUT_LIMIT),
+    summary: clip(`**No verdict** for ${url}: seamkit could not run, so nothing was proven.\n\n${fenced(message.trim())}`, OUTPUT_LIMIT),
     text: '',
   };
 }

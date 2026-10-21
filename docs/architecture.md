@@ -544,14 +544,19 @@ makes the repository's merge setting part of the setup (section 6.1). M3 put the
 repository root, so it is used as `azank1/seamkit@<tag>`, with its code in `packages/action` and one committed bundle
 that CI rebuilds and compares. The Action posts examined nothing as a failed check, not a neutral one, because GitHub
 counts a neutral check as passing for required checks, and unclassified as action required. Readback gained
-`--deployed`, the commit a deploy put out. When a ledger was read, a change merged after it that no recorded run saw
-live at this address is scoped out, folded into one not-examined gap and left to the next deploy, so a merge landing
-during a build does not fail a healthy deploy, while a change seen live there before is still judged, so a deploy that
-drops it fails as not live. Without a ledger nothing is scoped out, because a change on its way cannot be told from one
-a rollback removed, and the gap says so. This is scoping in the shell, like `--last`; the check and its version are
-unchanged, and a contradicted marker on a scoped-out change shows on the next run that judges it, such as the scheduled
-watch. `readback --json` reports production's own version document as `production`, and the Action waits on that
-document alone: a read is final once it reports the deployed commit. A pass while production runs a commit that does
-not contain the deployed one is reported as a fail, because the deploy is not live at that address. The Action points
-`origin/HEAD` at the event's default branch, which `actions/checkout` leaves unset, and for a schedule, whose payload
-names none, at the branch the schedule runs on; a bare `--branch` name also finds `origin/<name>`.
+`--deployed`, the commit a deploy put out. Once the ledger holds a recorded run that read this address's version
+document, a change merged after it that no recorded run saw live there, and that production's own version document does
+not contain, is scoped out, folded into one not-examined gap and left to the next deploy, so a merge landing during a
+build does not fail a healthy deploy. A change seen live there before is still judged, so a deploy that drops it fails
+as not live, and one production runs is judged, so the run records the sighting. Without such a run, whether there is no
+ledger, a ledger just started, or one kept for another address, nothing is scoped out, because a change on its way
+cannot be told from one a rollback removed, and the gap says so. `--last` counts the changes judged. This is scoping in
+the shell, like `--last`; the check and its version are unchanged, and a contradicted marker on a scoped-out change
+shows on the next run that judges it, such as the scheduled watch. `readback --json` reports production's own version
+document as `production`, and the Action waits on that document alone: a read is final once it reports the deployed
+commit, and once a read has named a commit, a read that names none is a failed read rather than an answer. A pass while
+production runs a commit that does not contain the deployed one is reported as a fail, because the deploy is not live at
+that address. Before reading, the Action fetches the branch it reads, because `actions/checkout` points
+`origin/<branch>` at the job's commit when the branch has moved on, and a bare `--branch` name now prefers
+`origin/<name>` over a local branch of that name. It points `origin/HEAD` at the event's default branch, which
+`actions/checkout` leaves unset, and for a schedule, whose payload names none, at the branch the schedule runs on.

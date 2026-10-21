@@ -67,6 +67,18 @@ describe('scope card', () => {
     ]);
   });
 
+  it('never prints card text as a warning, which a CI log would read as a command', () => {
+    const emitted: unknown[] = [];
+    const original = process.emitWarning;
+    process.emitWarning = ((w: unknown) => void emitted.push(w)) as typeof process.emitWarning;
+    try {
+      parseCard('card: 1\nintent: x\nlayers: []\ntargets: []\nmarkers: []\n? [ "##[error]forged" ]: x');
+    } finally {
+      process.emitWarning = original;
+    }
+    assert.deepEqual(emitted, []);
+  });
+
   it('enforces the marker rules', () => {
     const base = 'card: 1\nintent: x\nlayers: []\ntargets: []\nmarkers:\n';
     assert.match(problemsOf(`${base}  - kind: none\n    reason: tests only\n  - kind: version`).join('\n'), /a none marker must be the only marker/);

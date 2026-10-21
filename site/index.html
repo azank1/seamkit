@@ -837,8 +837,10 @@ fi</pre></div>
   <p>Two workflows cover CI. The first runs when your host reports a successful production deployment to GitHub, as
     Vercel does for connected repositories, and posts the verdict as a check run on the deployed commit. The second runs
     on a schedule, so a rollback or a hand deploy is caught even when nobody deployed through CI. Both keep the ledger, so
-    "not live" means the change really left production. The deploy job has a concurrency group; the watch needs none,
-    because a ledger push that meets another run's is merged and tried again.</p>
+    "not live" means the change really left production. The deploy job has a concurrency group per environment; the
+    watch needs none, because a ledger push that meets another run's is merged and tried again. GitHub keeps at most one
+    readback waiting per group and cancels an older one waiting, so a deploy whose readback was cancelled is covered by
+    the next deploy and by the watch, which is why the watch is part of the setup.</p>
   <div class="two">
     <div class="code"><div class="file"><span>.github/workflows/readback.yml</span><button class="copy" type="button" id="cp-8a" data-copy-from="wf-deploy">Copy</button></div><pre id="wf-deploy"><span class="k">name</span>: readback
 <span class="k">on</span>: deployment_status
@@ -850,7 +852,9 @@ fi</pre></div>
     <span class="k">if</span>: &gt;-
       github.event.deployment_status.state == 'success' &amp;&amp;
       github.event.deployment.environment == 'Production'
-    <span class="k">concurrency</span>: { <span class="k">group</span>: seamkit-readback, <span class="k">cancel-in-progress</span>: false }
+    <span class="k">concurrency</span>:
+      <span class="k">group</span>: seamkit-readback-${{ github.event.deployment.environment }}
+      <span class="k">cancel-in-progress</span>: false
     <span class="k">runs-on</span>: ubuntu-latest
     <span class="k">steps</span>:
       - <span class="k">uses</span>: actions/checkout@v7
@@ -881,31 +885,38 @@ fi</pre></div>
     deployed commit, recording nothing meanwhile, then records the run that counts and pushes the ledger, merging rather
     than forcing. When production still runs another commit at the end of the wait, the summary says which, and if that
     commit does not contain the deployed one, a pass is reported as a fail: the deploy is not live at this address.</p>
-  <p>With a ledger, a change merged after the deployed commit that no earlier run saw live at this address is listed as
-    not examined and left to the next deploy, so a merge landing mid-build does not fail a healthy deploy; a change an
-    earlier run saw live is still judged, so a deploy that drops it, as a rollback does, fails as not live. Without a
-    ledger every change is judged, so a merge landing mid-build fails the deploy as not proven until the next deploy
-    carries it.</p>
+  <p>Once the ledger holds a run at this address, a change merged after the deployed commit that no recorded run saw
+    live there, and that production's own version document does not contain, is listed as not examined and left to the
+    next deploy, so a merge landing mid-build does not fail a healthy deploy; a change a recorded run saw live is still
+    judged, so a deploy that drops it, as a rollback does, fails as not live. Without a ledger, and on the first run at an
+    address, every change is judged, so a merge landing mid-build fails the deploy as not proven until the next deploy
+    carries it. <code>last</code> counts the changes judged. Before reading, the Action fetches the branch it reads, because
+    <code>actions/checkout</code> leaves <code>origin/&lt;branch&gt;</code> at the job's commit when the branch has moved
+    on.</p>
   <p>Only a pass posts a success: not live and not proven fail the check, and unclassified is marked action required.
     Examined nothing fails it too, whether production could not be read, a marker could not be read, or a card declares
-    <code>kind: none</code>, a claim a human has to accept; such a change fails each deploy until it leaves the window, so
-    lower <code>last</code> or read back one pull request with <code>pr</code>. The step exits with seamkit's own code; its
+    <code>kind: none</code>, a claim a human has to accept. Such a change fails each deploy until it leaves the window,
+    because a merged card cannot be changed and accepting the claim is not built yet; lower <code>last</code> or read back
+    one pull request with <code>pr</code> meanwhile. The step exits with seamkit's own code; its
     <code>outcome</code>, <code>exit-code</code> and <code>title</code> outputs need <code>if: always()</code> on the
     step that reads them. Without <code>checks: write</code> the verdict still stands and the step says which permission
     is missing. The watch reads the default branch with nothing counted as deployed, so it also fails while a merged
     change waits for its deploy, or after a deploy that failed.</p>
   <p>When you deploy from a workflow of your own, trigger on <code>workflow_run</code> of that workflow with
-    <code>types: [completed]</code> and <code>branches: [main]</code>; the check run then goes on the commit it ran on, and
-    a run that failed or ran for a pull request is skipped, as is any <code>deployment_status</code> other than success.
-    When one repository feeds several Vercel projects, each production environment is named
+    <code>types: [completed]</code> and <code>branches: [main]</code>, and drop the job's <code>if</code>, which only a
+    <code>deployment_status</code> event can satisfy. The Action itself skips a run that failed or ran for a pull request,
+    as it skips any <code>deployment_status</code> other than success, and the check run goes on the commit that workflow
+    ran on. When one repository feeds several Vercel projects, each production environment is named
     <code>Production – &lt;project&gt;</code>; give each project its own job, with that exact name and its own
-    <code>url</code>.</p>
+    <code>url</code>; the group, keyed by environment, keeps them from cancelling each other.</p>
   <p class="note">Other CI systems run the CLI: Node 20 or later, the full history (no shallow clone), and push access to
-    the <code>seamkit/state</code> branch if you keep the ledger there. Run <code>npx --yes seamkit@0.2 state sync</code>,
-    then <code>npx --yes seamkit@0.2 readback --url https://your.app --last 20 --deployed &lt;deployed commit&gt;</code>
+    the <code>seamkit/state</code> branch if you keep the ledger there. Fetch the branch as it is now
+    (<code>git fetch origin '+refs/heads/main:refs/remotes/origin/main'</code>), run
+    <code>npx --yes seamkit@0.2 state sync</code>, then
+    <code>npx --yes seamkit@0.2 readback --url https://your.app --last 20 --deployed &lt;deployed commit&gt;</code>
     in the job that deployed, where the deployed commit is usually <code>$GITHUB_SHA</code> or your CI's equivalent,
-    then <code>state sync</code> again whatever the result. Pass <code>--branch</code> when the default branch is not
-    checked out as <code>origin/HEAD</code>.</p>
+    then <code>state sync</code> again whatever the result, and exit with readback's code even when that last push
+    fails. Pass <code>--branch</code> when the default branch is not checked out as <code>origin/HEAD</code>.</p>
 </section>
 
 <!-- ===================== TROUBLE ===================== -->
@@ -975,7 +986,7 @@ fi</pre></div>
   var BUILD = {
     updated: '2026-10-22',
     version: '0.2.0',
-    tests: '159',
+    tests: '172',
     dogfood: '20 of 20',
     milestones: [
       { m: 'M1', title: 'Verdict core and ledger', state: 'done', when: '2026-10-15',
@@ -1030,6 +1041,7 @@ fi</pre></div>
       ['2026-10-21', 'GitHub Action built (branch feat/m3-action): a bundle smoke run in CI, check runs where only a pass is a success. Guide step 8 now uses it.'],
       ['2026-10-22', 'Two review rounds (one reviewer, then 19 agents with skeptics) found an action.yml that GitHub could not load and a false pass after a rollback deploy; both fixed and tested. Readback gains --deployed; 0.2.0 candidate, 145 tests, Node 20, 22 and 24.'],
       ['2026-10-22', 'Third review round (a workflow with skeptics): the Action now waits on production\'s own version document, scopes a deploy only when a ledger was read, keeps secrets in a refused URL out of reports, and fences workflow commands in the log. 159 tests; the bundle smoke now covers a fail and a ledger push.'],
+      ['2026-10-22', 'Fourth review round (52 agents): a deploy is scoped only once the ledger holds a run at that address, changes production runs stay in scope, --last counts the changes judged, a failed read no longer ends the wait, and the Action fetches the branch it reads because actions/checkout pins it. 172 tests.'],
     ],
     decisions: [
       ['Program readback adapter (requested by an internal project)', 'Accept with changes, scheduled after M4. Notes in the knowledge base.', 'azank', 'wait'],

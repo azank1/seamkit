@@ -92,7 +92,8 @@ const describe = (v: unknown): string => (v === null ? 'null' : Array.isArray(v)
 /** Parses the YAML inside a card block. */
 export function parseCard(yamlText: string): CardParse {
   if (Buffer.byteLength(yamlText, 'utf8') > MAX_CARD_BYTES) return { ok: false, problems: [`the card is larger than ${MAX_CARD_BYTES / 1024} KiB`] };
-  const doc = parseDocument(yamlText, { version: '1.2', schema: 'core', uniqueKeys: true, strict: true });
+  // logLevel error: yaml would otherwise print some warnings, card text included, on stderr.
+  const doc = parseDocument(yamlText, { version: '1.2', schema: 'core', uniqueKeys: true, strict: true, logLevel: 'error' });
   const yamlProblems = [...doc.errors, ...doc.warnings].map((e) => `the card is not valid YAML: ${(e.message.split('\n')[0] as string).replace(/:$/, '')}`);
   if (yamlProblems.length > 0) return { ok: false, problems: yamlProblems };
   let raw: unknown;
