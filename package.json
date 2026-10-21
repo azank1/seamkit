@@ -10,6 +10,7 @@
     "packages/state",
     "packages/adapters",
     "packages/cli",
+    "packages/action",
     "packages/demo"
   ],
   "engines": {
@@ -21,7 +22,8 @@
     "test": "npm run build && node scripts/run-tests.mjs",
     "demo": "npm run build && node packages/demo/dist/main.js",
     "pack:cli": "npm run build && node scripts/pack-cli.mjs",
-    "smoke:pack": "node scripts/smoke-pack.mjs"
+    "smoke:pack": "node scripts/smoke-pack.mjs",
+    "pack:action": "npm run build && node scripts/pack-action.mjs"
   },
   "devDependencies": {
     "@types/node": "20.19.43",

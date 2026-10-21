@@ -1,0 +1,52 @@
+name: seamkit readback
+description: Proves each merged change is live in production after a deploy, and reports the verdict as a check run.
+author: azank1
+branding:
+  icon: check-circle
+  color: blue
+
+inputs:
+  url:
+    description: The production address to read back, such as https://your.app. Its version document is looked for at /version.json, /api/version and /version.
+    required: true
+  last:
+    description: How many of the latest changes on the default branch to examine.
+    default: '20'
+  pr:
+    description: Read back one merged pull request by number instead of the latest changes.
+    default: ''
+  branch:
+    description: The branch changes are merged into. Defaults to the remote's default branch.
+    default: ''
+  version-url:
+    description: Where production's version document is, when it is not at one of the usual paths.
+    default: ''
+  wait:
+    description: Seconds to keep reading production while it does not pass yet, because a deploy can take a moment to show. Nothing is recorded while waiting.
+    default: '60'
+  ledger:
+    description: auto records the verdict when a seamkit/state branch exists here or on the remote; true creates one when there is none; false never records. Recording needs contents write.
+    default: auto
+  check-name:
+    description: The check run's name. Defaults to "seamkit readback (<host>)", so each production address gets its own check.
+    default: ''
+  sha:
+    description: The commit to attach the check run to. Defaults to the deployed commit for deployment_status, the other workflow's commit for workflow_run, and the job's commit otherwise.
+    default: ''
+  token:
+    description: Token for posting the check run, which needs checks write.
+    default: ${{ github.token }}
+
+outputs:
+  outcome:
+    description: pass, fail, examined_nothing, unclassified, error (seamkit could not run) or skipped (the deploy had not succeeded).
+  exit-code:
+    description: seamkit's exit code. 0 pass, 1 fail, 2 usage or configuration error, 3 examined nothing, 4 unclassified.
+  title:
+    description: The one-line result, such as "PASS: 20 live of 20".
+  check-run-url:
+    description: The posted check run, when GitHub accepted it.
+
+runs:
+  using: node24
+  main: packages/action/bundle/index.js

@@ -77,8 +77,45 @@ commit the CI system provides (`VERCEL_GIT_COMMIT_SHA`, `GITHUB_SHA`, `CF_PAGES_
 
 ## Use it in CI
 
-A GitHub Action is next on the roadmap. Until it ships, run readback as a step once your deploy is live. It needs the
-full history, because it decides whether production contains a change by commit ancestry:
+The seamkit Action reads production back once a deploy succeeds and posts the verdict as a check run on the deployed
+commit. Hosts that report deployments to GitHub, as Vercel does, fire `deployment_status`; Vercel names its production environment `Production`:
+
+```yaml
+# .github/workflows/readback.yml
+name: readback
+on: deployment_status
+permissions:
+  contents: write   # to record verdicts on the seamkit/state branch; read is enough without a ledger
+  checks: write     # to post the check run
+jobs:
+  readback:
+    if: github.event.deployment_status.state == 'success' && github.event.deployment.environment == 'Production'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # readback decides by commit ancestry, so it needs the history
+      - uses: azank1/seamkit@v0.2.0
+        with:
+          url: https://your.app
+```
+
+Only a pass posts a success. A change that is not live or not proven fails the check, production that cannot be read
+fails it as examined nothing, and an unclassified result asks for a human. The step exits with seamkit's own code, and
+the outcome, exit code and title are step outputs. When you deploy from a workflow of your own, trigger on
+`workflow_run` of that workflow instead; the check run then goes on the commit it deployed.
+
+| Input | Default | |
+|---|---|---|
+| `url` | required | the production address |
+| `last` | `20` | how many of the latest changes to examine |
+| `pr` | | read back one merged pull request instead |
+| `wait` | `60` | seconds to keep reading while production does not show the deploy yet; nothing is recorded meanwhile |
+| `ledger` | `auto` | `auto` records when a `seamkit/state` branch exists, `true` starts one, `false` never records |
+| `check-name` | `seamkit readback (<host>)` | one check per production address |
+| `version-url`, `branch`, `sha`, `token` | | for unusual layouts |
+
+Anywhere else, run readback as a step once your deploy is live:
 
 ```yaml
 - uses: actions/checkout@v7
@@ -187,17 +224,16 @@ machine, and its test pins every state.
 
 ## What works today, and what is next
 
-seamkit 0.1 is the command line tool: `audit`, `readback`, `stamp`, `replay` and `state`. It is tested on Node 20 and
-22 on Linux.
+seamkit 0.1 is the command line tool: `audit`, `readback`, `stamp`, `replay` and `state`. 0.2 adds the GitHub Action,
+which reads back after every deploy and reports a check run. Both are tested on Node 20 and 22 on Linux.
 
 Next, in order:
 
-1. A GitHub Action that reads back after every deploy and reports a check run.
-2. An MCP server with the same checks as tools, and a Claude Code plugin.
-3. Carry: before a deploy, the merged pull requests it will also ship, and a block on hand deploys.
-4. Cards and a gate that evaluates every open pull request the way the deploy step will.
-5. Approvals that an agent cannot forge, policy and rulings elicited from a human, and a static console.
-6. Blast-radius classification, sandbox parity, and hook packs for coding agents.
+1. An MCP server with the same checks as tools, and a Claude Code plugin.
+2. Carry: before a deploy, the merged pull requests it will also ship, and a block on hand deploys.
+3. Cards and a gate that evaluates every open pull request the way the deploy step will.
+4. Approvals that an agent cannot forge, policy and rulings elicited from a human, and a static console.
+5. Blast-radius classification, sandbox parity, and hook packs for coding agents.
 
 The setup guide, with diagrams, copy-in recipes for agents and CI, and the build tracker, is at
 [azank1.github.io/seamkit](https://azank1.github.io/seamkit/). The design is in
@@ -208,10 +244,11 @@ cover, is in [`docs/prior-art.md`](docs/prior-art.md).
 
 ```sh
 npm ci
-npm test            # 117 tests, using temporary repositories and a local fake production
-npm run demo        # add -- --keep to keep the demo repository
-npm run pack:cli    # builds the npm package into release/seamkit
-npm run smoke:pack  # installs that package into an empty project and runs it
+npm test             # 135 tests, using temporary repositories and a local fake production
+npm run demo         # add -- --keep to keep the demo repository
+npm run pack:cli     # builds the npm package into release/seamkit
+npm run smoke:pack   # installs that package into an empty project and runs it
+npm run pack:action  # rebuilds the Action's committed bundle; commit it with the source that changed it
 ```
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) to contribute and [`SECURITY.md`](SECURITY.md) to report a vulnerability.

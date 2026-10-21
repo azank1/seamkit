@@ -826,21 +826,23 @@ fi</pre></div>
         <span class="s">"reasons"</span>: [r <span class="k">for</span> v <span class="k">in</span> doc[<span class="s">"verdicts"</span>] <span class="k">for</span> r <span class="k">in</span> v[<span class="s">"reasons"</span>]],
     }</pre></div>
   <p class="muted">The same pattern works in Go, Rust or a shell pipeline. The exit code is the decision; the JSON is the
-    explanation. An MCP server that offers these checks as tools to any MCP client is next after the GitHub Action.</p>
+    explanation. An MCP server that offers these checks as tools to any MCP client is next, in M4.</p>
 </section>
 
 <!-- ===================== STEP 8 ===================== -->
 <section class="sec" id="s8">
   <div class="step-head"><span class="step-n">8</span><h2>CI: verify every production deploy, and watch for rollbacks</h2></div>
-  <div class="where"><span class="tag built">works today</span><span class="tag">GitHub Actions</span><span class="tag planned">packaged Action · M3</span></div>
+  <div class="where"><span class="tag built">seamkit Action · 0.2.0</span><span class="tag">GitHub Actions</span><span class="tag">check runs</span></div>
   <p>Two workflows cover CI. The first runs when your host reports a successful production deployment to GitHub, as
-    Vercel does for connected repositories. The second runs on a schedule, so a rollback or a hand deploy is caught even
-    when nobody deployed through CI. Both carry the ledger, so "not live" means the change really left production.</p>
+    Vercel does for connected repositories, and posts the verdict as a check run on the deployed commit. The second runs
+    on a schedule, so a rollback or a hand deploy is caught even when nobody deployed through CI. Both keep the ledger, so
+    "not live" means the change really left production.</p>
   <div class="two">
     <div class="code"><div class="file"><span>.github/workflows/readback.yml</span><button class="copy" type="button" id="cp-8a" data-copy-from="wf-deploy">Copy</button></div><pre id="wf-deploy"><span class="k">name</span>: readback
 <span class="k">on</span>: deployment_status
 <span class="k">permissions</span>:
-  <span class="k">contents</span>: write   <span class="c"># only to push seamkit/state</span>
+  <span class="k">contents</span>: write   <span class="c"># to push seamkit/state</span>
+  <span class="k">checks</span>: write     <span class="c"># to post the check run</span>
 <span class="k">jobs</span>:
   <span class="k">readback</span>:
     <span class="k">if</span>: &gt;-
@@ -850,38 +852,41 @@ fi</pre></div>
     <span class="k">steps</span>:
       - <span class="k">uses</span>: actions/checkout@v7
         <span class="k">with</span>: { <span class="k">fetch-depth</span>: 0 }
-      - <span class="k">uses</span>: actions/setup-node@v7
-        <span class="k">with</span>: { <span class="k">node-version</span>: 22 }
-      - <span class="k">run</span>: npx --yes seamkit@0.1 state sync
-      - <span class="k">run</span>: npx --yes seamkit@0.1 readback --url https://your.app --last 20
-      - <span class="k">if</span>: always()
-        <span class="k">run</span>: npx --yes seamkit@0.1 state sync</pre></div>
+      - <span class="k">uses</span>: azank1/seamkit@v0.2.0
+        <span class="k">with</span>:
+          <span class="k">url</span>: https://your.app
+          <span class="k">ledger</span>: <span class="s">'true'</span></pre></div>
     <div class="code"><div class="file"><span>.github/workflows/watch.yml</span><button class="copy" type="button" id="cp-8b" data-copy-from="wf-watch">Copy</button></div><pre id="wf-watch"><span class="k">name</span>: production watch
 <span class="k">on</span>:
   <span class="k">schedule</span>: [{ <span class="k">cron</span>: <span class="s">'*/30 * * * *'</span> }]
   <span class="k">workflow_dispatch</span>:
 <span class="k">permissions</span>:
   <span class="k">contents</span>: write
+  <span class="k">checks</span>: write
 <span class="k">jobs</span>:
   <span class="k">watch</span>:
     <span class="k">runs-on</span>: ubuntu-latest
     <span class="k">steps</span>:
       - <span class="k">uses</span>: actions/checkout@v7
         <span class="k">with</span>: { <span class="k">fetch-depth</span>: 0 }
-      - <span class="k">uses</span>: actions/setup-node@v7
-        <span class="k">with</span>: { <span class="k">node-version</span>: 22 }
-      - <span class="k">run</span>: npx --yes seamkit@0.1 state sync
-      - <span class="k">run</span>: npx --yes seamkit@0.1 readback --url https://your.app --last 20
-      - <span class="k">if</span>: always()
-        <span class="k">run</span>: npx --yes seamkit@0.1 state sync</pre></div>
+      - <span class="k">uses</span>: azank1/seamkit@v0.2.0
+        <span class="k">with</span>:
+          <span class="k">url</span>: https://your.app
+          <span class="k">wait</span>: <span class="s">'0'</span>   <span class="c"># nothing is deploying</span></pre></div>
   </div>
-  <p>The first <code>state sync</code> pulls the ledger into the runner, so readback records the run and can see earlier
-    sightings. The last one pushes the new event, merging rather than forcing if another job pushed first. Ledger commits
-    carry their own author, so the runner needs no git identity. A failed readback fails the job, and GitHub's usual
-    notifications tell you.</p>
-  <p class="note">Other CI systems need three things: Node 20 or later, the full history (no shallow clone), and push
-    access to the <code>seamkit/state</code> branch if you keep the ledger there. Pass <code>--branch</code> when the
-    default branch is not checked out as <code>origin/HEAD</code>.</p>
+  <p>The Action pulls the ledger, reads production back until it passes or <code>wait</code> runs out (60 seconds by
+    default, recording nothing while it waits), records the run that counts, and pushes the ledger again, merging rather
+    than forcing. Only a pass posts a success: not live and not proven fail the check, production that cannot be read
+    fails it as examined nothing, and unclassified asks for a human. The step exits with seamkit's own code, and its
+    <code>outcome</code>, <code>exit-code</code> and <code>title</code> outputs let later steps react. Without
+    <code>checks: write</code> the verdict still stands and the step says which permission is missing.</p>
+  <p>When you deploy from a workflow of your own, trigger on <code>workflow_run</code> of that workflow instead; the check
+    run then goes on the commit it deployed, and a deploy that failed is skipped.</p>
+  <p class="note">Other CI systems run the CLI: Node 20 or later, the full history (no shallow clone), and push access to
+    the <code>seamkit/state</code> branch if you keep the ledger there. Run <code>npx --yes seamkit@0.2 state sync</code>,
+    then <code>npx --yes seamkit@0.2 readback --url https://your.app --last 20</code>, then <code>state sync</code> again
+    whatever the result. Pass <code>--branch</code> when the default branch is not checked out as
+    <code>origin/HEAD</code>.</p>
 </section>
 
 <!-- ===================== TROUBLE ===================== -->
@@ -951,7 +956,7 @@ fi</pre></div>
   var BUILD = {
     updated: '2026-10-21',
     version: '0.1.0',
-    tests: '117',
+    tests: '135',
     dogfood: '20 of 20',
     milestones: [
       { m: 'M1', title: 'Verdict core and ledger', state: 'done', when: '2026-10-15',
@@ -972,9 +977,9 @@ fi</pre></div>
           ['ok', 'npx seamkit on a clean repository: version, stamp, audit exit 3; commit.city 20 of 20 from npm'],
           ['ok', 'Setup guide with diagrams (this page), served from GitHub Pages'],
           ['todo', 'Test the guide recipes end to end on a sample repository: wait-live.sh, make ship, the Claude Code hook, both workflows'],
-          ['todo', 'Action design: trigger on deployment_status and workflow_run, inputs (url, last, pr), ledger sync'],
-          ['todo', 'packages/action: action.yml and one bundled file, committed'],
-          ['todo', 'Post a check run with the verdict summary (checks: write), named per production URL'],
+          ['ok', 'Action design: deployment_status and workflow_run, inputs (url, last, pr, wait, ledger), ledger pulled before and pushed after'],
+          ['ok', 'packages/action and a root action.yml; the committed bundle is rebuilt and smoke-run in CI'],
+          ['ok', 'Check run with the verdict summary (checks: write), one per production address; only a pass is a success. Tested against a stand-in GitHub API'],
           ['todo', 'Sample repository: a deploy that is live, one rolled back, one unreadable; the Action reports each'],
           ['todo', 'Release 0.2.0 with the Action; tag and marketplace listing at azank\'s go'],
         ],
@@ -1003,10 +1008,11 @@ fi</pre></div>
       ['2026-10-19', 'seamkit@0.1.0 published to npm and verified from a clean repository.'],
       ['2026-10-20', 'Setup guide with three diagrams and this tracker, on branch docs/site.'],
       ['2026-10-21', 'Architecture status settled: M1 and M2 accepted, M3 to M8 proposed. This page merged and served from GitHub Pages; it is the repository homepage.'],
+      ['2026-10-21', 'GitHub Action built (branch feat/m3-action): 18 tests, a bundle smoke run in CI, check runs where only a pass is a success. Guide step 8 now uses it.'],
     ],
     decisions: [
       ['Program readback adapter (requested by an internal project)', 'Accept with changes, scheduled after M4. Notes in the knowledge base.', 'azank', 'wait'],
-      ['Action trigger and permissions', 'deployment_status and workflow_run; contents: write only when a ledger is kept; checks: write for the check run.', 'seamkit', 'active'],
+      ['Action trigger and permissions', 'deployment_status and workflow_run; contents: write only when a ledger is kept; checks: write for the check run.', 'decided 10-21', 'done'],
       ['Architecture document status', 'M1 and M2 accepted, M3 to M8 proposed, each confirmed when its milestone ships.', 'decided 10-21', 'done'],
       ['Host this page', 'GitHub Pages from site/ on main; a domain later.', 'decided 10-21', 'done'],
       ['Repository homepage', 'This page.', 'decided 10-21', 'done'],

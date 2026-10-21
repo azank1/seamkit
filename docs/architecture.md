@@ -536,8 +536,11 @@ usable by strangers ahead of the remaining checks: the npm package and the GitHu
 ### Changes made while building
 
 M1 moved the event writer into its own `state` package, limited RFC 8785 to seamkit's own events and input digests, gave
-state commits a fixed tool identity (section 7.3), and made `--json` print one document per invocation (section 5.3).
-M2 made four further changes. Sightings come from recorded readback runs rather than from `marker_seen` events (section
+state commits a fixed tool identity (section 7.3), and made `--json` print one document per invocation (section 5.3). M2
+made four further changes. Sightings come from recorded readback runs rather than from `marker_seen` events (section
 6.4). Adapters report observations, and the core judges them (section 8). A card marker's `url` became optional and may
 be a path, so a card does not name one environment (section 6.1). And cards are read from merge commit messages, which
-makes the repository's merge setting part of the setup (section 6.1).
+makes the repository's merge setting part of the setup (section 6.1). M3 put the GitHub Action's metadata at the
+repository root, so it is used as `azank1/seamkit@<tag>`, with its code in `packages/action` and one committed bundle
+that CI rebuilds and compares. The Action posts examined nothing as a failed check, not a neutral one, because GitHub
+counts a neutral check as passing for required checks, and unclassified as action required.
