@@ -1,0 +1,1078 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>seamkit</title>
+<meta name="description" content="Set up seamkit in your shipping loop: prove each merged change is live in production, from your terminal, your coding agent and your CI.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: an engineer's field guide. A sticky table of contents on the left, numbered setup steps on the right, and
+   three drawn diagrams as the backbone: the shipping loop, one run inside seamkit, and the automation triggers.
+   Only pass is ever green. */
+:root {
+  color-scheme: light;
+  --paper: #f1f4f7;
+  --surface: #ffffff;
+  --sunk: #e8edf2;
+  --ink: #111d29;
+  --ink-2: #4b5a69;
+  --rule: #d3dbe3;
+  --accent: #2752c9;
+  --accent-soft: #e3eafb;
+  --term: #0f1922;
+  --term-ink: #d9e3ec;
+  --term-dim: #7d8e9e;
+  --term-key: #9cc0ff;
+  --term-str: #a8e0b8;
+
+  --pass: #1d7a4b;    --pass-soft: #e0f1e8;
+  --fail: #bf3a30;    --fail-soft: #f9e3e1;
+  --nothing: #9a6a0c; --nothing-soft: #f6ecd6;
+  --unclass: #6d47a8; --unclass-soft: #ece4f7;
+  --usage: #56636f;   --usage-soft: #e6eaee;
+
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+  --s-1: 0.8125rem; --s0: 1rem; --s1: 1.1875rem; --s2: 1.5rem; --s3: 2rem; --s4: clamp(2.3rem, 4.8vw, 3.6rem);
+  --measure: 1200px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #0d141b; --surface: #141e28; --sunk: #101922; --ink: #e4ebf1; --ink-2: #9aa9b7; --rule: #26343f;
+    --accent: #84a5ff; --accent-soft: #1b2944; --term: #070c11;
+    --pass: #4cc488; --pass-soft: #12301f; --fail: #f07a70; --fail-soft: #3a1714;
+    --nothing: #e0ac45; --nothing-soft: #33260b; --unclass: #b496ea; --unclass-soft: #2a1d40;
+    --usage: #a4b0bb; --usage-soft: #1e2933;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #0d141b; --surface: #141e28; --sunk: #101922; --ink: #e4ebf1; --ink-2: #9aa9b7; --rule: #26343f;
+  --accent: #84a5ff; --accent-soft: #1b2944; --term: #070c11;
+  --pass: #4cc488; --pass-soft: #12301f; --fail: #f07a70; --fail-soft: #3a1714;
+  --nothing: #e0ac45; --nothing-soft: #33260b; --unclass: #b496ea; --unclass-soft: #2a1d40;
+  --usage: #a4b0bb; --usage-soft: #1e2933;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 76px; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation: none !important; transition: none !important; } }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 400 var(--s0)/1.62 var(--body); -webkit-font-smoothing: antialiased; }
+a { color: var(--accent); text-underline-offset: 3px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+code, pre { font-family: var(--mono); }
+:not(pre) > code { font-size: 0.88em; background: var(--accent-soft); color: var(--ink); padding: 0.08em 0.36em; border-radius: 4px; overflow-wrap: anywhere; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; }
+p { margin: 0; max-width: 68ch; }
+
+.wrap { max-width: var(--measure); margin: 0 auto; padding-left: max(20px, env(safe-area-inset-left, 0px)); padding-right: max(20px, env(safe-area-inset-right, 0px)); }
+
+/* top bar */
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--paper); }
+.bar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: color-mix(in srgb, var(--paper) 90%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--rule); }
+.bar .wrap { display: flex; align-items: center; gap: 20px; min-height: 56px; }
+.logo { font-family: var(--display); font-weight: 800; font-stretch: 112%; font-size: 1.2rem; color: var(--ink); text-decoration: none; display: inline-flex; align-items: center; gap: 10px; }
+.bar .crumb { font: 500 var(--s-1) var(--mono); color: var(--ink-2); }
+.bar .right { margin-left: auto; display: flex; gap: 14px; align-items: center; font: 400 var(--s-1) var(--mono); }
+.bar .right a { color: var(--ink-2); text-decoration: none; }
+.bar .right a:hover { color: var(--ink); }
+.ver { border: 1px solid var(--rule); padding: 2px 8px; border-radius: 999px; color: var(--ink-2); }
+@media (max-width: 560px) { .bar .crumb { display: none; } }
+
+/* intro */
+.intro { padding-block: 52px 36px; }
+.intro .wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr); gap: 44px; align-items: end; }
+@media (max-width: 900px) { .intro .wrap { grid-template-columns: minmax(0, 1fr); gap: 26px; } }
+.eyebrow { font: 500 var(--s-1) var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); }
+.intro h1 { font-size: var(--s4); line-height: 1.03; font-weight: 800; font-stretch: 88%; letter-spacing: -0.02em; margin-top: 12px; }
+.intro h1 em { font-style: normal; color: var(--accent); }
+.intro .lede { font-size: 1.12rem; color: var(--ink-2); margin-top: 18px; }
+.need { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 18px 20px; font-size: 0.92rem; }
+.need h2 { font: 600 var(--s-1) var(--mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-2); }
+.need ul { margin: 10px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.need li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; }
+.need li::before { content: ""; width: 10px; height: 10px; margin-top: 7px; border: 2px solid var(--accent); border-radius: 2px; }
+.need .time { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rule); color: var(--ink-2); font: 400 var(--s-1) var(--mono); }
+
+/* page grid with toc */
+.page .wrap { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 48px; align-items: start; }
+@media (max-width: 980px) { .page .wrap { grid-template-columns: minmax(0, 1fr); } .toc { display: none; } }
+.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 76px); font-size: var(--s-1); padding-bottom: 40px; }
+.toc p { font: 600 0.72rem var(--mono); text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-2); margin: 18px 0 6px; }
+.toc p:first-child { margin-top: 0; }
+.toc a { display: block; color: var(--ink-2); text-decoration: none; padding: 3px 0 3px 12px; border-left: 2px solid var(--rule); }
+.toc a:hover { color: var(--ink); border-left-color: var(--ink-2); }
+.toc a.on { color: var(--ink); border-left-color: var(--accent); font-weight: 500; }
+
+/* sections */
+.sec { padding-block: 40px; border-top: 1px solid var(--rule); }
+.sec:first-child { border-top: 0; padding-top: 4px; }
+.sec > * + * { margin-top: 16px; }
+.kicker { font: 600 var(--s-1) var(--mono); color: var(--accent); letter-spacing: 0.04em; text-transform: uppercase; }
+.sec h2 { font-size: var(--s3); font-weight: 750; font-stretch: 92%; letter-spacing: -0.015em; line-height: 1.12; }
+.sec h3 { font-size: 1.1rem; font-weight: 680; margin-top: 26px; }
+.sec .lead { font-size: 1.06rem; color: var(--ink-2); }
+.muted { color: var(--ink-2); }
+
+/* figures */
+figure.dia { margin: 22px 0 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 14px; padding: 18px 18px 12px; }
+.dia-scroll { overflow-x: auto; }
+.dia svg { display: block; width: 100%; min-width: 760px; height: auto; }
+figcaption { font-size: 0.86rem; color: var(--ink-2); padding: 10px 4px 2px; border-top: 1px solid var(--rule); margin-top: 12px; }
+figcaption b { color: var(--ink); font-weight: 600; }
+
+/* svg classes */
+.d-box { fill: var(--surface); stroke: var(--rule); stroke-width: 1.5; }
+.d-sunk { fill: var(--sunk); stroke: var(--rule); stroke-width: 1.5; }
+.d-key { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+.d-core { fill: var(--ink); stroke: var(--ink); }
+.d-t { fill: var(--ink); font: 650 15px var(--display); }
+.d-t-inv { fill: var(--paper); font: 700 16px var(--display); }
+.d-s { fill: var(--ink-2); font: 400 11.5px var(--mono); }
+.d-s-inv { fill: var(--paper); opacity: .78; font: 400 11.5px var(--mono); }
+.d-lab { fill: var(--ink-2); font: 500 11px var(--mono); }
+.d-lab-bg { fill: var(--surface); }
+.d-line { stroke: var(--ink-2); stroke-width: 1.6; fill: none; }
+.d-line-acc { stroke: var(--accent); stroke-width: 2; fill: none; }
+.d-dash { stroke: var(--ink-2); stroke-width: 1.4; fill: none; stroke-dasharray: 5 4; }
+.d-head { fill: var(--ink-2); }
+.d-head-acc { fill: var(--accent); }
+.d-num { fill: var(--accent); font: 700 13px var(--mono); }
+.o0 { fill: var(--pass-soft); stroke: var(--pass); stroke-width: 1.6; }
+.o1 { fill: var(--fail-soft); stroke: var(--fail); stroke-width: 1.6; }
+.o3 { fill: var(--nothing-soft); stroke: var(--nothing); stroke-width: 1.6; }
+.o4 { fill: var(--unclass-soft); stroke: var(--unclass); stroke-width: 1.6; }
+.t0 { fill: var(--pass); font: 700 15px var(--display); }
+.t1 { fill: var(--fail); font: 700 15px var(--display); }
+.t3 { fill: var(--nothing); font: 700 15px var(--display); }
+.t4 { fill: var(--unclass); font: 700 15px var(--display); }
+
+/* steps */
+.step-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.step-n { font: 800 2.3rem/1 var(--display); font-stretch: 78%; color: var(--accent); font-variant-numeric: tabular-nums; }
+.where { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.tag { font: 500 0.7rem/1 var(--mono); letter-spacing: 0.03em; text-transform: uppercase; padding: 4px 7px; border-radius: 4px; border: 1px solid var(--rule); color: var(--ink-2); background: var(--surface); white-space: nowrap; }
+.tag.built { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.tag.planned { border-style: dashed; background: transparent; }
+
+/* code */
+.code { position: relative; }
+.code .file { display: flex; justify-content: space-between; align-items: center; gap: 10px; background: var(--sunk); border: 1px solid var(--rule); border-bottom: 0; border-radius: 8px 8px 0 0; padding: 6px 10px 6px 14px; font: 500 0.74rem var(--mono); color: var(--ink-2); }
+.code pre { margin: 0; background: var(--term); color: var(--term-ink); border-radius: 8px; padding: 14px 16px; font-size: 0.79rem; line-height: 1.62; overflow-x: auto; }
+.code .file + pre { border-radius: 0 0 8px 8px; }
+.code .c { color: var(--term-dim); }
+.code .k { color: var(--term-key); }
+.code .s { color: var(--term-str); }
+.copy { font: 500 0.7rem var(--mono); background: var(--surface); color: var(--ink); border: 1px solid var(--rule); border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+.copy:hover { border-color: var(--ink-2); }
+.code > .copy { position: absolute; top: 8px; right: 8px; background: rgba(255,255,255,.08); color: var(--term-ink); border-color: rgba(255,255,255,.16); }
+
+.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 860px) { .two { grid-template-columns: minmax(0, 1fr); } }
+.two > * { min-width: 0; }
+.opt { font: 600 0.74rem var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-2); margin-bottom: 6px; }
+
+.note { border-left: 3px solid var(--accent); padding: 2px 0 2px 14px; color: var(--ink-2); font-size: 0.94rem; }
+.note.warn { border-left-color: var(--nothing); }
+
+/* exit table */
+.exits { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 860px) { .exits { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 420px) { .exits { grid-template-columns: minmax(0, 1fr); } }
+.ex { border-radius: 10px; padding: 12px 14px 14px; background: var(--c-soft); display: grid; gap: 4px; align-content: start; }
+.ex b { font: 800 2rem/1 var(--display); font-stretch: 80%; color: var(--c); font-variant-numeric: tabular-nums; }
+.ex span { font: 600 0.76rem var(--mono); text-transform: uppercase; letter-spacing: 0.04em; color: var(--c); }
+.ex p { font-size: 0.84rem; color: var(--ink-2); }
+.c0 { --c: var(--pass); --c-soft: var(--pass-soft); }
+.c1 { --c: var(--fail); --c-soft: var(--fail-soft); }
+.c2 { --c: var(--usage); --c-soft: var(--usage-soft); }
+.c3 { --c: var(--nothing); --c-soft: var(--nothing-soft); }
+.c4 { --c: var(--unclass); --c-soft: var(--unclass-soft); }
+
+/* tables */
+.tbl { overflow-x: auto; border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+th { font: 600 0.72rem var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-2); background: var(--sunk); }
+td:first-child { min-width: 190px; }
+
+/* tracker */
+.stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 860px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.stat { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px; display: grid; gap: 2px; }
+.stat b { font: 750 1.5rem/1.15 var(--display); font-stretch: 85%; font-variant-numeric: tabular-nums; }
+.stat span { font: 500 0.72rem var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-2); }
+.stat.now b { color: var(--accent); }
+.rail { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 4px; margin-top: 18px; }
+.seg { display: grid; gap: 6px; text-decoration: none; color: var(--ink); }
+.seg i { display: block; height: 10px; border-radius: 3px; background: transparent; border: 1.5px dashed var(--ink-2); opacity: .7; }
+.seg.done i { background: var(--ink); border: 1.5px solid var(--ink); opacity: 1; }
+.seg.active i { background: linear-gradient(90deg, var(--accent) var(--p), var(--accent-soft) var(--p)); border: 1.5px solid var(--accent); opacity: 1; }
+.seg span { font: 600 0.78rem var(--mono); font-variant-numeric: tabular-nums; }
+.seg small { font-size: 0.74rem; color: var(--ink-2); line-height: 1.3; }
+@media (max-width: 640px) { .seg small { display: none; } }
+.ms-list { display: grid; gap: 12px; }
+.ms { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 16px 18px; display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 4px 16px; }
+.ms.active { border: 1.5px solid var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.ms .m { font: 800 1.9rem/1 var(--display); font-stretch: 78%; font-variant-numeric: tabular-nums; color: var(--ink-2); grid-row: span 2; }
+.ms.done .m { color: var(--ink); }
+.ms.active .m { color: var(--accent); }
+.ms-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.ms-top h3 { margin: 0; font-size: 1.08rem; }
+.ms-top .when { font: 400 0.76rem var(--mono); color: var(--ink-2); }
+.ms-body { display: grid; gap: 8px; font-size: 0.92rem; }
+.ms-body .lbl { font: 600 0.7rem var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-2); margin-right: 6px; }
+.ms-body p { color: var(--ink-2); }
+.ms-body p b { color: var(--ink); font-weight: 600; }
+.tasks { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 5px; }
+.tasks li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; font-size: 0.9rem; }
+.tasks li::before { content: ""; width: 12px; height: 12px; margin-top: 5px; border-radius: 3px; border: 1.5px solid var(--ink-2); }
+.tasks li.ok { color: var(--ink-2); }
+.tasks li.ok::before { background: var(--ink); border-color: var(--ink); box-shadow: inset 0 0 0 2px var(--surface); }
+.tasks li.wip::before { border-color: var(--accent); background: var(--accent-soft); }
+.ev { display: flex; flex-wrap: wrap; gap: 6px; }
+.ev a, .ev span { font: 500 0.74rem var(--mono); padding: 2px 8px; border-radius: 999px; border: 1px solid var(--rule); color: var(--ink-2); text-decoration: none; background: var(--paper); }
+.ev a:hover { color: var(--ink); border-color: var(--ink-2); }
+@media (max-width: 560px) { .ms { grid-template-columns: minmax(0, 1fr); } .ms .m { grid-row: auto; } }
+.log { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--rule); display: grid; gap: 14px; }
+.log li { position: relative; padding-left: 18px; font-size: 0.93rem; }
+.log li::before { content: ""; position: absolute; left: -6px; top: 7px; width: 10px; height: 10px; border-radius: 50%; background: var(--paper); border: 2px solid var(--accent); }
+.log time { display: block; font: 600 0.76rem var(--mono); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.state { font: 600 0.7rem/1 var(--mono); text-transform: uppercase; letter-spacing: 0.04em; padding: 4px 7px; border-radius: 4px; white-space: nowrap; }
+.state.done { background: var(--ink); color: var(--paper); }
+.state.active { background: var(--accent); color: #fff; }
+.state.planned { border: 1px dashed var(--ink-2); color: var(--ink-2); }
+.state.wait { background: var(--nothing-soft); color: var(--nothing); }
+
+footer { border-top: 1px solid var(--rule); padding-block: 32px 52px; font-size: var(--s-1); color: var(--ink-2); margin-top: 24px; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 12px 26px; }
+footer .grow { flex: 1; min-width: 220px; }
+footer a { color: var(--ink-2); }
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="wrap">
+    <a class="logo" href="#top" aria-label="seamkit">
+      <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="1" y="1" width="20" height="20" rx="5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 11h2.2M9.4 11h2.2M13.8 11h2.2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="17" cy="11" r="1.7" fill="currentColor"/></svg>
+      seamkit
+    </a>
+    <span class="crumb">/ build tracker and setup guide</span>
+    <div class="right">
+      <span class="ver">v0.1.0</span>
+      <a href="https://www.npmjs.com/package/seamkit">npm</a>
+      <a href="https://github.com/azank1/seamkit">GitHub</a>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+
+<section class="intro">
+  <div class="wrap">
+    <div>
+      <div class="eyebrow">Engineer's guide</div>
+      <h1>Put a readback <em>after every deploy</em>.</h1>
+      <p class="lede">seamkit is a command that proves each merged change is live in production. It reads your git history,
+        asks production which commit it runs, and exits 0 only when the change is there. This guide wires it into the
+        three places that ship code: your terminal, your coding agent, and your CI.</p>
+    </div>
+    <aside class="need" aria-label="What you need">
+      <h2>You need</h2>
+      <ul>
+        <li><span>A git repository with your app, and Node 20 or later.</span></li>
+        <li><span>A production URL you can reach with a plain <code>GET</code>.</span></li>
+        <li><span>One build change so production can name its commit (step 2).</span></li>
+      </ul>
+      <div class="time">First audit: one command · Full setup: about 30 minutes</div>
+    </aside>
+  </div>
+</section>
+
+<div class="page">
+  <div class="wrap">
+
+    <nav class="toc" aria-label="Contents">
+      <p>Build</p>
+      <a href="#progress">Progress</a>
+      <a href="#milestones">Milestones</a>
+      <a href="#log">Log</a>
+      <a href="#decisions">Open decisions</a>
+      <p>Understand</p>
+      <a href="#loop">The shipping loop</a>
+      <a href="#inside">Inside one run</a>
+      <a href="#exits">Exit codes</a>
+      <p>Set up</p>
+      <a href="#s1">1 · Install and audit</a>
+      <a href="#s2">2 · Production names its commit</a>
+      <a href="#s3">3 · Start the ledger</a>
+      <a href="#s4">4 · Scope cards</a>
+      <p>Automate</p>
+      <a href="#triggers">Where to trigger it</a>
+      <a href="#s5">5 · Your terminal</a>
+      <a href="#s6">6 · Coding agents</a>
+      <a href="#s7">7 · Local models and tools</a>
+      <a href="#s8">8 · CI</a>
+      <p>Reference</p>
+      <a href="#trouble">Troubleshooting</a>
+      <a href="#commands">Commands</a>
+    </nav>
+
+    <div class="content">
+
+<!-- ===================== PROGRESS ===================== -->
+<section class="sec" id="progress">
+  <div class="kicker">Build</div>
+  <h2>Where seamkit stands</h2>
+  <p class="lead">Our working view of the build. Milestones, tasks and the log live in one data block at the top of this
+    page's script; update it as work lands, and every view below follows.</p>
+  <div class="stats" id="stats"></div>
+  <nav class="rail" id="rail" aria-label="Milestones"></nav>
+</section>
+
+<section class="sec" id="milestones">
+  <div class="kicker">Build</div>
+  <h2>Milestones</h2>
+  <p class="lead">Each milestone has a "done when" written before it starts, taken from the architecture document. A
+    milestone is done when that sentence is true and shown, not when its code merges.</p>
+  <div class="ms-list" id="ms-list"></div>
+</section>
+
+<section class="sec" id="log">
+  <div class="kicker">Build</div>
+  <h2>Log</h2>
+  <ol class="log" id="log-list"></ol>
+</section>
+
+<section class="sec" id="decisions">
+  <div class="kicker">Build</div>
+  <h2>Open decisions</h2>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Decision</th><th>Recommendation</th><th>Owner</th></tr></thead>
+      <tbody id="dec-list"></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ===================== THE LOOP ===================== -->
+<section class="sec" id="loop">
+  <div class="kicker">Understand</div>
+  <h2>The shipping loop, and the step it closes</h2>
+  <p class="lead">Most pipelines stop at "deployed". seamkit adds the last step: read production back, compare it with
+    the history, and hand a verdict to whoever shipped the change, whether that was a person, an agent or a CI job.</p>
+
+  <figure class="dia">
+    <div class="dia-scroll">
+    <svg viewBox="0 0 1080 420" role="img" aria-labelledby="loop-t">
+      <title id="loop-t">The shipping loop: a change goes from author to production, and seamkit readback reads both the history and production, then returns an exit code to the author and records the run in a ledger branch.</title>
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="d-head"/></marker>
+        <marker id="aha" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="d-head-acc"/></marker>
+      </defs>
+
+      <!-- top row -->
+      <g>
+        <rect class="d-box" x="8" y="20" width="158" height="84" rx="10"/>
+        <text class="d-num" x="22" y="42">1</text>
+        <text class="d-t" x="22" y="64">You or an agent</text>
+        <text class="d-s" x="22" y="84">writes the change</text>
+
+        <rect class="d-box" x="190" y="20" width="158" height="84" rx="10"/>
+        <text class="d-num" x="204" y="42">2</text>
+        <text class="d-t" x="204" y="64">Pull request</text>
+        <text class="d-s" x="204" y="84">+ seamkit-card</text>
+
+        <rect class="d-box" x="372" y="20" width="158" height="84" rx="10"/>
+        <text class="d-num" x="386" y="42">3</text>
+        <text class="d-t" x="386" y="64">Merge to main</text>
+        <text class="d-s" x="386" y="84">card kept in message</text>
+
+        <rect class="d-box" x="554" y="20" width="158" height="84" rx="10"/>
+        <text class="d-num" x="568" y="42">4</text>
+        <text class="d-t" x="568" y="64">Build</text>
+        <text class="d-s" x="568" y="84">seamkit stamp</text>
+
+        <rect class="d-box" x="736" y="20" width="158" height="84" rx="10"/>
+        <text class="d-num" x="750" y="42">5</text>
+        <text class="d-t" x="750" y="64">Deploy</text>
+        <text class="d-s" x="750" y="84">your host or CLI</text>
+
+        <rect class="d-box" x="918" y="20" width="154" height="84" rx="10"/>
+        <text class="d-num" x="932" y="42">6</text>
+        <text class="d-t" x="932" y="64">Production</text>
+        <text class="d-s" x="932" y="84">/version.json</text>
+
+        <path class="d-line" d="M166 62 H186" marker-end="url(#ah)"/>
+        <path class="d-line" d="M348 62 H368" marker-end="url(#ah)"/>
+        <path class="d-line" d="M530 62 H550" marker-end="url(#ah)"/>
+        <path class="d-line" d="M712 62 H732" marker-end="url(#ah)"/>
+        <path class="d-line" d="M894 62 H914" marker-end="url(#ah)"/>
+      </g>
+
+      <!-- readback -->
+      <rect class="d-key" x="400" y="196" width="400" height="92" rx="12"/>
+      <text class="d-num" x="420" y="222">7</text>
+      <text class="d-t" x="420" y="246" style="font-size:18px">seamkit readback</text>
+      <text class="d-s" x="420" y="270">is each merged change in what production runs?</text>
+
+      <!-- history into readback -->
+      <path class="d-line-acc" d="M451 104 V192" marker-end="url(#aha)"/>
+      <rect class="d-lab-bg" x="460" y="138" width="120" height="20"/>
+      <text class="d-lab" x="464" y="152">reads git history</text>
+
+      <!-- production into readback -->
+      <path class="d-line-acc" d="M995 104 V242 H804" marker-end="url(#aha)"/>
+      <rect class="d-lab-bg" x="836" y="226" width="150" height="20"/>
+      <text class="d-lab" x="840" y="240">GET version + bundle</text>
+
+      <!-- verdict out -->
+      <rect class="o0" x="8" y="206" width="290" height="72" rx="10"/>
+      <text class="d-t" x="24" y="234">Exit code + --json</text>
+      <text class="d-s" x="24" y="256">0 live · 1 not live · 3 can't look</text>
+      <path class="d-line-acc" d="M400 242 H302" marker-end="url(#aha)"/>
+      <path class="d-line" d="M87 206 V108" marker-end="url(#ah)"/>
+      <rect class="d-lab-bg" x="96" y="146" width="140" height="20"/>
+      <text class="d-lab" x="100" y="160">done, retry or alert</text>
+
+      <!-- ledger -->
+      <rect class="d-sunk" x="460" y="336" width="280" height="68" rx="10"/>
+      <text class="d-t" x="478" y="362">seamkit/state branch</text>
+      <text class="d-s" x="478" y="384">every run, content-addressed</text>
+      <path class="d-line" d="M570 288 V332" marker-end="url(#ah)"/>
+      <path class="d-line" d="M630 332 V292" marker-end="url(#ah)"/>
+      <text class="d-lab" x="520" y="316">record</text>
+      <text class="d-lab" x="640" y="316">earlier sightings</text>
+    </svg>
+    </div>
+    <figcaption><b>Steps 1 to 6 are your existing pipeline.</b> seamkit adds two small things to it, a card in the pull
+      request (optional) and a stamp in the build, and then step 7: a read-only check whose exit code goes back to whoever
+      shipped. The ledger branch is what lets a later run tell "rolled back" from "never arrived".</figcaption>
+  </figure>
+</section>
+
+<!-- ===================== INSIDE ===================== -->
+<section class="sec" id="inside">
+  <div class="kicker">Understand</div>
+  <h2>Inside one run</h2>
+  <p class="lead">Adapters read the world and report what they saw. A pure core judges those observations with no network,
+    no clock and no model. The shell prints the verdicts, exits with the outcome and records the run. Because the judge is
+    pure, <code>seamkit replay</code> can recompute every recorded verdict from the ledger.</p>
+
+  <figure class="dia">
+    <div class="dia-scroll">
+    <svg viewBox="0 0 1080 380" role="img" aria-labelledby="in-t">
+      <title id="in-t">Inside one run: inputs are read by adapters into observations, the pure core turns observations into verdicts, and the shell writes the exit code, the output and an event that replay can recompute.</title>
+      <defs>
+        <marker id="bh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="d-head"/></marker>
+        <marker id="bha" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="d-head-acc"/></marker>
+      </defs>
+
+      <text class="d-lab" x="10" y="20">INPUTS</text>
+      <text class="d-lab" x="232" y="20">ADAPTERS · read-only</text>
+      <text class="d-lab" x="502" y="20">CORE · pure</text>
+      <text class="d-lab" x="790" y="20">SHELL · outputs</text>
+
+      <rect class="d-box" x="8" y="34" width="190" height="70" rx="10"/>
+      <text class="d-t" x="22" y="62">Git history</text>
+      <text class="d-s" x="22" y="84">first parent of main</text>
+
+      <rect class="d-box" x="8" y="122" width="190" height="70" rx="10"/>
+      <text class="d-t" x="22" y="150">Production URL</text>
+      <text class="d-s" x="22" y="172">plain GET, no secrets</text>
+
+      <rect class="d-box" x="8" y="210" width="190" height="70" rx="10"/>
+      <text class="d-t" x="22" y="238">Ledger</text>
+      <text class="d-s" x="22" y="260">earlier recorded runs</text>
+
+      <rect class="d-sunk" x="230" y="34" width="230" height="246" rx="12"/>
+      <text class="d-t" x="248" y="66">git</text>
+      <text class="d-s" x="248" y="86">changes, cards, ancestry</text>
+      <text class="d-t" x="248" y="128">version document</text>
+      <text class="d-s" x="248" y="148">which commit is running</text>
+      <text class="d-t" x="248" y="190">served bundle</text>
+      <text class="d-s" x="248" y="210">same-origin files, digests</text>
+      <text class="d-s" x="248" y="252">records what it read,</text>
+      <text class="d-s" x="248" y="268">never a verdict</text>
+
+      <path class="d-line" d="M198 69 H226" marker-end="url(#bh)"/>
+      <path class="d-line" d="M198 157 H226" marker-end="url(#bh)"/>
+      <path class="d-line" d="M198 245 C214 245 214 245 226 245" marker-end="url(#bh)"/>
+
+      <rect class="d-core" x="500" y="34" width="250" height="246" rx="12"/>
+      <text class="d-t-inv" x="520" y="66">Judge</text>
+      <text class="d-s-inv" x="520" y="96">contained? merge-base</text>
+      <text class="d-s-inv" x="520" y="116">markers: present, absent,</text>
+      <text class="d-s-inv" x="520" y="132">contradicted, unreadable</text>
+      <text class="d-s-inv" x="520" y="156">state: live, not live,</text>
+      <text class="d-s-inv" x="520" y="172">not proven, nothing to prove</text>
+      <text class="d-s-inv" x="520" y="196">outcome by severity</text>
+      <text class="d-s-inv" x="520" y="252">no I/O · no clock · no model</text>
+
+      <path class="d-line-acc" d="M460 157 H496" marker-end="url(#bha)"/>
+            <text class="d-lab" x="462" y="298">observations →</text>
+
+      <rect class="o0" x="790" y="34" width="282" height="64" rx="10"/>
+      <text class="d-t" x="808" y="60">Exit code</text>
+      <text class="d-s" x="808" y="82">0 · 1 · 3 · 4  (2 = bad usage)</text>
+
+      <rect class="d-box" x="790" y="114" width="282" height="64" rx="10"/>
+      <text class="d-t" x="808" y="140">Text or one --json document</text>
+      <text class="d-s" x="808" y="162">reasons, examined, not examined</text>
+
+      <rect class="d-sunk" x="790" y="194" width="282" height="86" rx="10"/>
+      <text class="d-t" x="808" y="220">Event on seamkit/state</text>
+      <text class="d-s" x="808" y="242">observations + verdicts,</text>
+      <text class="d-s" x="808" y="260">file named by its SHA-256</text>
+
+      <path class="d-line-acc" d="M750 66 H786" marker-end="url(#bha)"/>
+      <path class="d-line-acc" d="M750 146 H786" marker-end="url(#bha)"/>
+      <path class="d-line-acc" d="M750 237 H786" marker-end="url(#bha)"/>
+      <text class="d-lab" x="754" y="298">verdicts →</text>
+
+      <path class="d-dash" d="M930 280 V340 H625 V284" marker-end="url(#bh)"/>
+      <rect class="d-lab-bg" x="640" y="330" width="264" height="20"/>
+      <text class="d-lab" x="648" y="344">seamkit replay: recompute, must match</text>
+    </svg>
+    </div>
+    <figcaption><b>Why this shape matters for automation:</b> the only thing that can make a run pass is an observation the
+      core judged, and every judgment can be re-run later. An agent cannot talk its way to exit 0, and a CI log is not the
+      only record of what happened.</figcaption>
+  </figure>
+</section>
+
+<!-- ===================== EXITS ===================== -->
+<section class="sec" id="exits">
+  <div class="kicker">Understand</div>
+  <h2>Exit codes are the interface</h2>
+  <p class="lead">Every automation in this guide branches on these five codes and nothing else. Every non-zero code means
+    "not a pass", so <code>&amp;&amp;</code> chains stop safely.</p>
+  <div class="exits">
+    <div class="ex c0"><b>0</b><span>pass</span><p>Examined, and every change is live.</p></div>
+    <div class="ex c1"><b>1</b><span>fail</span><p>A change is not live, or not proven. Retry while a deploy rolls out; alert after.</p></div>
+    <div class="ex c3"><b>3</b><span>examined nothing</span><p>seamkit could not look. Fix what it could not read; the output says what.</p></div>
+    <div class="ex c4"><b>4</b><span>unclassified</span><p>No rule covers it. Stop for a human. Never retry.</p></div>
+    <div class="ex c2"><b>2</b><span>usage</span><p>Bad arguments or configuration. No verdict. Printed to stderr.</p></div>
+  </div>
+</section>
+
+<!-- ===================== STEP 1 ===================== -->
+<section class="sec" id="s1">
+  <div class="step-head"><span class="step-n">1</span><h2>Install and run your first audit</h2></div>
+  <div class="where"><span class="tag built">works today</span><span class="tag">terminal</span></div>
+  <p>Run it from the repository that production is built from. <code>audit</code> needs no configuration: it checks the
+    last 20 changes on your default branch, then prints advice for every gap it found.</p>
+  <div class="two">
+    <div>
+      <div class="opt">Try it once</div>
+      <div class="code"><pre>cd your-repo
+npx seamkit audit --url https://your.app</pre><button class="copy" type="button" id="cp-1a" data-copy="npx seamkit audit --url https://your.app">Copy</button></div>
+    </div>
+    <div>
+      <div class="opt">Pin it in the project</div>
+      <div class="code"><pre>npm install --save-dev --save-exact seamkit@0.1.0
+npx seamkit version   <span class="c"># 0.1.0</span></pre><button class="copy" type="button" id="cp-1b" data-copy="npm install --save-dev --save-exact seamkit@0.1.0">Copy</button></div>
+    </div>
+  </div>
+  <p class="note">The first audit of most sites exits 3, "examined nothing", because production does not yet say which
+    commit it runs. That is the expected start. Step 2 fixes it.</p>
+</section>
+
+<!-- ===================== STEP 2 ===================== -->
+<section class="sec" id="s2">
+  <div class="step-head"><span class="step-n">2</span><h2>Make production name its commit</h2></div>
+  <div class="where"><span class="tag built">works today</span><span class="tag">build</span></div>
+  <p>Readback needs one fact from production: the full commit id it was built from. Pick the option that matches how you
+    build. seamkit looks for <code>/version.json</code>, then <code>/api/version</code>, then <code>/version</code>.</p>
+  <div class="two">
+    <div>
+      <div class="opt">Static or bundled sites</div>
+      <div class="code"><div class="file"><span>package.json</span></div><pre>{
+  <span class="k">"scripts"</span>: {
+    <span class="k">"prebuild"</span>: <span class="s">"seamkit stamp --out public/version.json"</span>,
+    <span class="k">"build"</span>: <span class="s">"vite build"</span>
+  }
+}</pre></div>
+      <p class="muted" style="margin-top:10px;font-size:.9rem">Stamp prefers git. Where the build has no history, it uses
+        the commit your CI or host provides (<code>VERCEL_GIT_COMMIT_SHA</code>, <code>GITHUB_SHA</code>,
+        <code>CF_PAGES_COMMIT_SHA</code>, <code>COMMIT_REF</code> and others) and records which one.</p>
+    </div>
+    <div>
+      <div class="opt">Apps with a server route</div>
+      <div class="code"><div class="file"><span>app/api/version/route.ts</span><span>Next.js on Vercel</span></div><pre><span class="k">export function</span> GET() {
+  <span class="k">return</span> Response.json(
+    { commit: process.env.VERCEL_GIT_COMMIT_SHA },
+    { headers: { <span class="s">'cache-control'</span>: <span class="s">'no-store'</span> } },
+  );
+}</pre></div>
+      <p class="muted" style="margin-top:10px;font-size:.9rem">Any server can answer <code>{"commit": "&lt;40 hex&gt;"}</code>.
+        seamkit also reads fields named <code>sha</code> or <code>git.commit.id</code> that other tools serve.</p>
+    </div>
+  </div>
+  <div class="code"><div class="file"><span>check it</span></div><pre>curl -s https://your.app/version.json
+<span class="c">{ "schema": "seamkit.version/1", "commit": "492378ccca806fd3c85ea55dfaf69bdb7ff16838", "dirty": false, "source": "git", "ref": "main" }</span>
+npx seamkit audit --url https://your.app      <span class="c"># now proves changes by version</span></pre></div>
+  <p class="note warn">A build stamped from a working tree with uncommitted changes is reported as unreadable, never
+    trusted. Use <code>seamkit stamp --require-clean</code> in CI to refuse such builds outright.</p>
+</section>
+
+<!-- ===================== STEP 3 ===================== -->
+<section class="sec" id="s3">
+  <div class="step-head"><span class="step-n">3</span><h2>Start the ledger</h2></div>
+  <div class="where"><span class="tag built">works today</span><span class="tag">repository</span></div>
+  <p>Without history, seamkit can only say a change is not proven. With a ledger, it can say a change <em>was</em> live
+    and has left production, which is what a rollback looks like. The ledger is a branch in your own repository, written
+    with git plumbing that never touches your working tree, index or HEAD.</p>
+  <div class="code"><pre>npx seamkit state init       <span class="c"># create the seamkit/state branch</span>
+npx seamkit audit --url https://your.app   <span class="c"># recorded as an event from now on</span>
+npx seamkit state sync       <span class="c"># share it: merge with the remote branch and push, never forced</span>
+npx seamkit state verify     <span class="c"># every event file matches its SHA-256 name</span>
+npx seamkit replay           <span class="c"># recompute every recorded verdict; fails if any differs</span></pre><button class="copy" type="button" id="cp-3" data-copy="npx seamkit state init&#10;npx seamkit state sync">Copy</button></div>
+</section>
+
+<!-- ===================== STEP 4 ===================== -->
+<section class="sec" id="s4">
+  <div class="step-head"><span class="step-n">4</span><h2>Prove more than the version with scope cards</h2></div>
+  <div class="where"><span class="tag built">works today</span><span class="tag">pull requests</span><span class="tag">optional</span></div>
+  <p>The version proves a change's commit is deployed. A card proves the change does what it claims in the build: it
+    names text that production's served files must contain, or a separate version document, such as a server function's.
+    Agents can write cards, because a card is a fenced block in the pull request description.</p>
+  <div class="two">
+    <div class="code"><div class="file"><span>pull request description</span></div><pre>```seamkit-card
+card: 1
+intent: Show a saved indicator after a note is synced.
+layers: [frontend]
+targets: [web]
+markers:
+  - kind: bundle
+    text: "data-sync-state"
+releaseNote: Notes now show when they were last saved.
+```</pre></div>
+    <div style="display:grid;gap:12px;align-content:start">
+      <p><b>One repository setting is required.</b> Readback reads cards from merge commits, and GitHub copies the
+        description into the merge commit only when the default commit message is <b>Pull request title and
+        description</b>. Set it under Settings, General, Pull Requests, for merge commits and squash merges.</p>
+      <p class="note">A marker must be text in the built output. A component name or a comment exists only in source
+        and will never be found; readback says so when the version shows the change is deployed.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== TRIGGERS ===================== -->
+<section class="sec" id="triggers">
+  <div class="kicker">Automate</div>
+  <h2>Where to trigger it, and what to do with the answer</h2>
+  <p class="lead">One command, four places to call it. Each trigger runs the same readback and branches on the same exit
+    codes, so a verdict means the same thing in your terminal, in an agent's session and in CI.</p>
+  <figure class="dia">
+    <div class="dia-scroll">
+    <svg viewBox="0 0 1080 360" role="img" aria-labelledby="tr-t">
+      <title id="tr-t">Four triggers (an agent hook, a make target, CI after a deployment, and a scheduled CI job) all run seamkit readback, whose exit code leads to one of four actions.</title>
+      <defs>
+        <marker id="ch" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="d-head"/></marker>
+      </defs>
+      <text class="d-lab" x="10" y="18">TRIGGER</text>
+      <text class="d-lab" x="420" y="18">CHECK</text>
+      <text class="d-lab" x="752" y="18">EXIT CODE → ACTION</text>
+
+      <rect class="d-box" x="8" y="30" width="290" height="66" rx="10"/>
+      <text class="d-t" x="24" y="57">Coding agent hook</text>
+      <text class="d-s" x="24" y="79">after a deploy command · step 6</text>
+      <rect class="d-box" x="8" y="110" width="290" height="66" rx="10"/>
+      <text class="d-t" x="24" y="137">make ship</text>
+      <text class="d-s" x="24" y="159">deploy, then wait for live · step 5</text>
+      <rect class="d-box" x="8" y="190" width="290" height="66" rx="10"/>
+      <text class="d-t" x="24" y="217">CI after a deployment</text>
+      <text class="d-s" x="24" y="239">deployment_status: success · step 8</text>
+      <rect class="d-box" x="8" y="270" width="290" height="66" rx="10"/>
+      <text class="d-t" x="24" y="297">CI on a schedule</text>
+      <text class="d-s" x="24" y="319">catches rollbacks · step 8</text>
+
+      <path class="d-line" d="M298 63 C350 63 360 183 416 183" marker-end="url(#ch)"/>
+      <path class="d-line" d="M298 143 C350 143 360 183 416 183" marker-end="url(#ch)"/>
+      <path class="d-line" d="M298 223 C350 223 360 183 416 183" marker-end="url(#ch)"/>
+      <path class="d-line" d="M298 303 C350 303 360 183 416 183" marker-end="url(#ch)"/>
+
+      <rect class="d-key" x="420" y="128" width="250" height="110" rx="12"/>
+      <text class="d-t" x="440" y="168" style="font-size:18px">seamkit readback</text>
+      <text class="d-s" x="440" y="192">--url · --pr N or --last N</text>
+      <text class="d-s" x="440" y="212">--json for programs</text>
+
+      <path class="d-line" d="M670 183 C710 183 712 63 748 63" marker-end="url(#ch)"/>
+      <path class="d-line" d="M670 183 C710 183 712 143 748 143" marker-end="url(#ch)"/>
+      <path class="d-line" d="M670 183 C710 183 712 223 748 223" marker-end="url(#ch)"/>
+      <path class="d-line" d="M670 183 C710 183 712 303 748 303" marker-end="url(#ch)"/>
+
+      <rect class="o0" x="752" y="30" width="320" height="66" rx="10"/>
+      <text class="t0" x="768" y="57">0 · live</text>
+      <text class="d-s" x="768" y="79">mark shipped, close the task</text>
+      <rect class="o1" x="752" y="110" width="320" height="66" rx="10"/>
+      <text class="t1" x="768" y="137">1 · not live or not proven</text>
+      <text class="d-s" x="768" y="159">retry during rollout, then alert</text>
+      <rect class="o3" x="752" y="190" width="320" height="66" rx="10"/>
+      <text class="t3" x="768" y="217">3 · examined nothing</text>
+      <text class="d-s" x="768" y="239">fix what it could not read</text>
+      <rect class="o4" x="752" y="270" width="320" height="66" rx="10"/>
+      <text class="t4" x="768" y="297">4 · unclassified</text>
+      <text class="d-s" x="768" y="319">stop and ask a human</text>
+    </svg>
+    </div>
+    <figcaption><b>Retry rule:</b> right after a deploy, the host may still serve the old build for a minute, so retry on
+      1 and 3 until a deadline. Never retry 2 or 4: neither will change by waiting.</figcaption>
+  </figure>
+</section>
+
+<!-- ===================== STEP 5 ===================== -->
+<section class="sec" id="s5">
+  <div class="step-head"><span class="step-n">5</span><h2>Your terminal: deploy, then wait for live</h2></div>
+  <div class="where"><span class="tag built">works today</span><span class="tag">bash</span><span class="tag">make</span></div>
+  <p>This script is the building block for every trigger below. It retries readback of the newest change on the default
+    branch until production shows it or the deadline passes, and keeps polling runs out of the ledger.</p>
+  <div class="code"><div class="file"><span>scripts/wait-live.sh</span><button class="copy" type="button" id="cp-5a" data-copy-from="wait-live">Copy</button></div><pre id="wait-live">#!/usr/bin/env bash
+<span class="c"># Wait until production runs the newest change on the default branch.</span>
+<span class="c"># usage: scripts/wait-live.sh https://your.app [seconds]</span>
+url="$1"; deadline=$(( $(date +%s) + ${2:-300} ))
+git fetch --quiet origin
+while :; do
+  npx seamkit readback --url "$url" --last 1 --no-record
+  code=$?
+  case $code in
+    0) npx seamkit readback --url "$url" --last 1 &gt;/dev/null; exit 0 ;;  <span class="c"># live: record it once</span>
+    2|4) exit $code ;;                                                <span class="c"># waiting will not help</span>
+  esac
+  [ "$(date +%s)" -ge "$deadline" ] &amp;&amp; exit $code
+  sleep 15
+done</pre></div>
+  <div class="code"><div class="file"><span>Makefile</span></div><pre>DEPLOY ?= vercel deploy --prod       <span class="c"># or your own deploy command</span>
+URL    ?= https://your.app
+
+ship:
+	$(DEPLOY)
+	./scripts/wait-live.sh $(URL) 300</pre></div>
+  <p class="muted">Now <code>make ship</code> fails unless production actually runs the change, and the failure prints
+    which change and why.</p>
+</section>
+
+<!-- ===================== STEP 6 ===================== -->
+<section class="sec" id="s6">
+  <div class="step-head"><span class="step-n">6</span><h2>Coding agents: no "shipped" without exit 0</h2></div>
+  <div class="where"><span class="tag built">works today</span><span class="tag">Claude Code</span><span class="tag">Codex</span><span class="tag">Cursor</span></div>
+  <p>Agents report work as done when the pull request merges. Two layers stop that: an instruction every agent reads, and,
+    in Claude Code, a hook that checks every deploy command the agent runs.</p>
+  <div class="code"><div class="file"><span>AGENTS.md or CLAUDE.md</span><button class="copy" type="button" id="cp-6a" data-copy-from="agents-md">Copy</button></div><pre id="agents-md">## Shipping
+After a deploy, run `npx seamkit readback --url https://your.app --pr &lt;number&gt; --json`.
+The change is shipped only when it exits 0. Exit 1 means it is not live or not proven, and
+exit 3 means production could not be examined. Report the reasons; never call a change done
+on any other exit code.</pre></div>
+  <div class="two">
+    <div class="code"><div class="file"><span>.claude/settings.json</span></div><pre>{
+  <span class="k">"hooks"</span>: {
+    <span class="k">"PostToolUse"</span>: [{
+      <span class="k">"matcher"</span>: <span class="s">"Bash"</span>,
+      <span class="k">"hooks"</span>: [{
+        <span class="k">"type"</span>: <span class="s">"command"</span>,
+        <span class="k">"command"</span>: <span class="s">"\"$CLAUDE_PROJECT_DIR\"/scripts/after-deploy.sh"</span>
+      }]
+    }]
+  }
+}</pre></div>
+    <div class="code"><div class="file"><span>scripts/after-deploy.sh</span></div><pre>#!/usr/bin/env bash
+<span class="c"># Runs after each shell command; acts only on deploys.</span>
+cmd=$(jq -r '.tool_input.command // ""')
+case "$cmd" in
+  *"vercel deploy"*|*"npm run deploy"*) ;;
+  *) exit 0 ;;
+esac
+cd "$CLAUDE_PROJECT_DIR"
+if ! out=$(./scripts/wait-live.sh https://your.app 300 2&gt;&amp;1); then
+  echo "seamkit: the deploy is not proven live." &gt;&amp;2
+  echo "$out" | tail -n 20 &gt;&amp;2
+  exit 2   <span class="c"># stderr is shown to Claude</span>
+fi</pre></div>
+  </div>
+  <p class="note">The hook uses <code>jq</code> to read the command Claude ran from the hook's JSON input. Match the
+    patterns to your own deploy commands. A packaged hook set for Claude Code, Cursor and Codex is on the roadmap.</p>
+</section>
+
+<!-- ===================== STEP 7 ===================== -->
+<section class="sec" id="s7">
+  <div class="step-head"><span class="step-n">7</span><h2>Local models and your own DevOps tools</h2></div>
+  <div class="where"><span class="tag built">works today</span><span class="tag">any language</span><span class="tag">--json</span></div>
+  <p>A local model, an internal bot or a deploy script does not need an SDK. Run the command, read the exit code, and give
+    the model the reasons. Expose it as a tool like this, and the model can check its own deploys without being able to
+    fake the result.</p>
+  <div class="code"><div class="file"><span>seamkit_tool.py</span><button class="copy" type="button" id="cp-7" data-copy-from="py-tool">Copy</button></div><pre id="py-tool"><span class="k">import</span> json, subprocess
+
+<span class="k">def</span> readback(url: str, pr: int | None = None) -&gt; dict:
+    <span class="s">"""Is the change live in production? Give the model this tool's result as is."""</span>
+    args = [<span class="s">"npx"</span>, <span class="s">"seamkit"</span>, <span class="s">"readback"</span>, <span class="s">"--url"</span>, url, <span class="s">"--json"</span>]
+    <span class="k">if</span> pr <span class="k">is not None</span>:
+        args += [<span class="s">"--pr"</span>, str(pr)]
+    p = subprocess.run(args, capture_output=True, text=True)
+    <span class="k">if</span> p.returncode == 2:                       <span class="c"># usage error: text on stderr, no verdict</span>
+        <span class="k">return</span> {<span class="s">"exit"</span>: 2, <span class="s">"error"</span>: p.stderr.strip()}
+    doc = json.loads(p.stdout)
+    <span class="k">return</span> {
+        <span class="s">"exit"</span>: p.returncode,                   <span class="c"># 0 shipped; anything else is not</span>
+        <span class="s">"outcome"</span>: doc[<span class="s">"outcome"</span>],
+        <span class="s">"reasons"</span>: [r <span class="k">for</span> v <span class="k">in</span> doc[<span class="s">"verdicts"</span>] <span class="k">for</span> r <span class="k">in</span> v[<span class="s">"reasons"</span>]],
+    }</pre></div>
+  <p class="muted">The same pattern works in Go, Rust or a shell pipeline. The exit code is the decision; the JSON is the
+    explanation. An MCP server that offers these checks as tools to any MCP client is next after the GitHub Action.</p>
+</section>
+
+<!-- ===================== STEP 8 ===================== -->
+<section class="sec" id="s8">
+  <div class="step-head"><span class="step-n">8</span><h2>CI: verify every production deploy, and watch for rollbacks</h2></div>
+  <div class="where"><span class="tag built">works today</span><span class="tag">GitHub Actions</span><span class="tag planned">packaged Action · M3</span></div>
+  <p>Two workflows cover CI. The first runs when your host reports a successful production deployment to GitHub, as
+    Vercel does for connected repositories. The second runs on a schedule, so a rollback or a hand deploy is caught even
+    when nobody deployed through CI. Both carry the ledger, so "not live" means the change really left production.</p>
+  <div class="two">
+    <div class="code"><div class="file"><span>.github/workflows/readback.yml</span><button class="copy" type="button" id="cp-8a" data-copy-from="wf-deploy">Copy</button></div><pre id="wf-deploy"><span class="k">name</span>: readback
+<span class="k">on</span>: deployment_status
+<span class="k">permissions</span>:
+  <span class="k">contents</span>: write   <span class="c"># only to push seamkit/state</span>
+<span class="k">jobs</span>:
+  <span class="k">readback</span>:
+    <span class="k">if</span>: &gt;-
+      github.event.deployment_status.state == 'success' &amp;&amp;
+      github.event.deployment.environment == 'Production'
+    <span class="k">runs-on</span>: ubuntu-latest
+    <span class="k">steps</span>:
+      - <span class="k">uses</span>: actions/checkout@v7
+        <span class="k">with</span>: { <span class="k">fetch-depth</span>: 0 }
+      - <span class="k">uses</span>: actions/setup-node@v7
+        <span class="k">with</span>: { <span class="k">node-version</span>: 22 }
+      - <span class="k">run</span>: npx --yes seamkit@0.1 state sync
+      - <span class="k">run</span>: npx --yes seamkit@0.1 readback --url https://your.app --last 20
+      - <span class="k">if</span>: always()
+        <span class="k">run</span>: npx --yes seamkit@0.1 state sync</pre></div>
+    <div class="code"><div class="file"><span>.github/workflows/watch.yml</span><button class="copy" type="button" id="cp-8b" data-copy-from="wf-watch">Copy</button></div><pre id="wf-watch"><span class="k">name</span>: production watch
+<span class="k">on</span>:
+  <span class="k">schedule</span>: [{ <span class="k">cron</span>: <span class="s">'*/30 * * * *'</span> }]
+  <span class="k">workflow_dispatch</span>:
+<span class="k">permissions</span>:
+  <span class="k">contents</span>: write
+<span class="k">jobs</span>:
+  <span class="k">watch</span>:
+    <span class="k">runs-on</span>: ubuntu-latest
+    <span class="k">steps</span>:
+      - <span class="k">uses</span>: actions/checkout@v7
+        <span class="k">with</span>: { <span class="k">fetch-depth</span>: 0 }
+      - <span class="k">uses</span>: actions/setup-node@v7
+        <span class="k">with</span>: { <span class="k">node-version</span>: 22 }
+      - <span class="k">run</span>: npx --yes seamkit@0.1 state sync
+      - <span class="k">run</span>: npx --yes seamkit@0.1 readback --url https://your.app --last 20
+      - <span class="k">if</span>: always()
+        <span class="k">run</span>: npx --yes seamkit@0.1 state sync</pre></div>
+  </div>
+  <p>The first <code>state sync</code> pulls the ledger into the runner, so readback records the run and can see earlier
+    sightings. The last one pushes the new event, merging rather than forcing if another job pushed first. Ledger commits
+    carry their own author, so the runner needs no git identity. A failed readback fails the job, and GitHub's usual
+    notifications tell you.</p>
+  <p class="note">Other CI systems need three things: Node 20 or later, the full history (no shallow clone), and push
+    access to the <code>seamkit/state</code> branch if you keep the ledger there. Pass <code>--branch</code> when the
+    default branch is not checked out as <code>origin/HEAD</code>.</p>
+</section>
+
+<!-- ===================== TROUBLE ===================== -->
+<section class="sec" id="trouble">
+  <div class="kicker">Reference</div>
+  <h2>Troubleshooting</h2>
+  <p class="lead"><code>seamkit audit</code> prints advice for each of these. This table is the same advice in one place.</p>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>You see</th><th>Cause</th><th>Fix</th></tr></thead>
+      <tbody>
+        <tr><td>Exit 3 for every change</td><td>Production serves no version document, or serves a web page in its place.</td><td>Step 2. Check with <code>curl</code> that the URL returns JSON with a full commit id.</td></tr>
+        <tr><td>"commit unknown to this repository"</td><td>The local clone has not fetched the deployed commit, or it was deployed from a branch that never merged.</td><td><code>git fetch origin</code>. If it persists, someone deployed by hand.</td></tr>
+        <tr><td>"shallow clone"</td><td>CI checked out a single commit.</td><td><code>fetch-depth: 0</code>, or <code>git fetch --unshallow</code>.</td></tr>
+        <tr><td>Version unreadable, dirty build</td><td>The build was stamped from uncommitted changes.</td><td>Build from a clean tree; add <code>--require-clean</code>.</td></tr>
+        <tr><td>Marker absent although the version contains the change</td><td>The marker text is in source but not in the built output.</td><td>Use text the bundle really ships, such as an attribute value or a user-facing string.</td></tr>
+        <tr><td>"No change carries a seamkit-card"</td><td>The merge setting drops pull request descriptions.</td><td>Step 4: "Pull request title and description".</td></tr>
+        <tr><td>Exit 2: URL refused</td><td>The URL carries a query string or credentials, and URLs are recorded.</td><td>Use a plain URL. Readback only needs public <code>GET</code>s.</td></tr>
+        <tr><td>"cannot tell not live from not proven"</td><td>There is no ledger yet.</td><td>Step 3: <code>seamkit state init</code>.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ===================== COMMANDS ===================== -->
+<section class="sec" id="commands">
+  <div class="kicker">Reference</div>
+  <h2>Commands in 0.1.0</h2>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Command</th><th>Does</th></tr></thead>
+      <tbody>
+        <tr><td><code>seamkit audit --url U</code></td><td>Readback over the last 20 changes, with advice for every gap. <code>--last N</code>, <code>--branch R</code>, <code>--json</code>.</td></tr>
+        <tr><td><code>seamkit readback --url U</code></td><td>Prove each change, or one with <code>--pr N</code> or <code>--commit C</code>. <code>--last N</code>, <code>--branch R</code>, <code>--version-url V</code>, <code>--record</code> or <code>--no-record</code>, <code>--json</code>.</td></tr>
+        <tr><td><code>seamkit stamp</code></td><td>Write the version document: <code>--out F</code>, <code>--commit C</code>, <code>--require-clean</code>.</td></tr>
+        <tr><td><code>seamkit state init | list | verify | sync</code></td><td>Create, list, verify and share the ledger branch. <code>sync --remote R</code>.</td></tr>
+        <tr><td><code>seamkit replay [event]</code></td><td>Recompute recorded verdicts; fails if any comes out differently.</td></tr>
+        <tr><td><code>seamkit check NAME</code> · <code>seamkit checks</code></td><td>Run one registered check on a recorded input; list the checks.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="muted">The production URL can also come from <code>SEAMKIT_URL</code>. seamkit sends only <code>GET</code>s to
+    production, writes only the <code>seamkit/state</code> branch, records URLs, commit ids and digests but never content,
+    and runs no model.</p>
+</section>
+
+
+
+    </div>
+  </div>
+</div>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span class="grow">seamkit 0.1.0 · Apache-2.0 · Node 20 and 22</span>
+    <a href="https://github.com/azank1/seamkit">Source</a>
+    <a href="https://github.com/azank1/seamkit/blob/main/docs/architecture.md">Architecture document</a>
+    <a href="https://github.com/azank1/seamkit/blob/main/CONTRIBUTING.md">Contributing</a>
+    <a href="https://github.com/azank1/seamkit/security">Security</a>
+  </div>
+</footer>
+
+<script>
+  // ===== Build data: edit this block as work lands. States: done, active, planned. Task states: ok, wip, todo. =====
+  var BUILD = {
+    updated: '2026-10-21',
+    version: '0.1.0',
+    tests: '117',
+    dogfood: '20 of 20',
+    milestones: [
+      { m: 'M1', title: 'Verdict core and ledger', state: 'done', when: '2026-10-15',
+        scope: 'Repository scaffold, the verdict algebra in core, the event writer for the seamkit/state branch, a CLI skeleton with exit codes, and replay.',
+        doneWhen: 'Unit tests cover every outcome, including zero rows as examined nothing, and a replay test reproduces every verdict.',
+        evidence: [['PR #2', 'https://github.com/azank1/seamkit/pull/2'], ['5c834bc', 'https://github.com/azank1/seamkit/commit/5c834bc']] },
+      { m: 'M2', title: 'Readback, audit and stamp', state: 'done', when: '2026-10-15',
+        scope: 'Readback with the version-document and bundle-marker adapters, version ancestry, the fake production, a zero-configuration audit, and stamp.',
+        doneWhen: 'The demo history sorts into live, not proven, not live and nothing to prove, and the audit runs against commit.city.',
+        result: 'Demo: live 9, not live 3, not proven 5, nothing to prove 3, replayed byte for byte. commit.city: 0 of 20 before it served its commit, 20 of 20 after.',
+        evidence: [['PR #3', 'https://github.com/azank1/seamkit/pull/3'], ['543cef2', 'https://github.com/azank1/seamkit/commit/543cef2'], ['commit-city #16', 'https://github.com/azank1/commit-city/pull/16']] },
+      { m: 'M3', title: 'npm package and GitHub Action', state: 'active',
+        scope: 'The seamkit npm package, and a GitHub Action that reads back after deploys and reports a check run.',
+        doneWhen: 'npx seamkit audit works on a clean machine, and the Action posts a check run on a sample repository.',
+        tasks: [
+          ['ok', 'Bundled npm package with an install smoke test in CI (PR #4)'],
+          ['ok', 'seamkit@0.1.0 published to npm, 2026-10-19, shasum e988fa0f'],
+          ['ok', 'npx seamkit on a clean repository: version, stamp, audit exit 3; commit.city 20 of 20 from npm'],
+          ['ok', 'Setup guide with diagrams (this page), served from GitHub Pages'],
+          ['todo', 'Test the guide recipes end to end on a sample repository: wait-live.sh, make ship, the Claude Code hook, both workflows'],
+          ['todo', 'Action design: trigger on deployment_status and workflow_run, inputs (url, last, pr), ledger sync'],
+          ['todo', 'packages/action: action.yml and one bundled file, committed'],
+          ['todo', 'Post a check run with the verdict summary (checks: write), named per production URL'],
+          ['todo', 'Sample repository: a deploy that is live, one rolled back, one unreadable; the Action reports each'],
+          ['todo', 'Release 0.2.0 with the Action; tag and marketplace listing at azank\'s go'],
+        ],
+        evidence: [['PR #4', 'https://github.com/azank1/seamkit/pull/4'], ['npm', 'https://www.npmjs.com/package/seamkit']] },
+      { m: 'M4', title: 'MCP server and Claude Code plugin', state: 'planned',
+        scope: 'An MCP server whose read-only tools mirror the CLI, packaged as a Claude Code plugin.',
+        doneWhen: 'An MCP client runs an audit and receives the verdicts and the outcome.' },
+      { m: 'M5', title: 'Carry and the split rule', state: 'planned',
+        scope: 'Before a deploy, the merged pull requests it will also ship; a block on hand deploys; a warning when one pull request is several ships.',
+        doneWhen: 'Given a production version behind main, carry lists the riding pull requests by title, and a hand deploy blocks.' },
+      { m: 'M6', title: 'Card and gate', state: 'planned',
+        scope: 'The GitHub adapter, and a gate that evaluates every open pull request the way the deploy step will.',
+        doneWhen: 'seamkit gate lists each open pull request with its verdict and the exact missing items.' },
+      { m: 'M7', title: 'Approvals, policy and console', state: 'planned',
+        scope: 'Elicitation for policy and rulings, approvals at levels 1 and 3, the init interview, and the static console.',
+        doneWhen: 'An MCP client completes init and a ruling round trip, an approval passed as an argument is refused, and the console renders from policy and state alone.' },
+      { m: 'M8', title: 'Radius, parity and hooks', state: 'planned',
+        scope: 'Blast-radius classification, sandbox parity, and hook packs for Cursor and Codex.',
+        doneWhen: 'Unclassified stops, and the three parity outcomes are tested.' },
+    ],
+    log: [
+      ['2026-10-14', 'M0: architecture and prior-art survey. Name, licence and milestone order decided.'],
+      ['2026-10-15', 'M1 and M2 merged (PRs #2, #3). Found and fixed a merge-message defect: cards reach the history only under "Pull request title and description".'],
+      ['2026-10-15', 'commit.city serves /api/version; its audit goes from 0 of 20 to 20 of 20 live.'],
+      ['2026-10-15', 'Release prep merged (PR #4); the repository goes public. Roadmap re-ordered: usability first.'],
+      ['2026-10-19', 'seamkit@0.1.0 published to npm and verified from a clean repository.'],
+      ['2026-10-20', 'Setup guide with three diagrams and this tracker, on branch docs/site.'],
+      ['2026-10-21', 'Architecture status settled: M1 and M2 accepted, M3 to M8 proposed. This page merged and served from GitHub Pages; it is the repository homepage.'],
+    ],
+    decisions: [
+      ['Program readback adapter (requested by an internal project)', 'Accept with changes, scheduled after M4. Notes in the knowledge base.', 'azank', 'wait'],
+      ['Action trigger and permissions', 'deployment_status and workflow_run; contents: write only when a ledger is kept; checks: write for the check run.', 'seamkit', 'active'],
+      ['Architecture document status', 'M1 and M2 accepted, M3 to M8 proposed, each confirmed when its milestone ships.', 'decided 10-21', 'done'],
+      ['Host this page', 'GitHub Pages from site/ on main; a domain later.', 'decided 10-21', 'done'],
+      ['Repository homepage', 'This page.', 'decided 10-21', 'done'],
+    ],
+  };
+
+  (function render(b) {
+    var $ = function (id) { return document.getElementById(id); };
+    var esc = function (s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
+    var done = b.milestones.filter(function (x) { return x.state === 'done'; }).length;
+    var active = b.milestones.filter(function (x) { return x.state === 'active'; })[0];
+    var share = function (x) { if (!x.tasks) return 0; var ok = x.tasks.filter(function (t) { return t[0] === 'ok'; }).length; return Math.round(100 * ok / x.tasks.length); };
+    var stateLabel = { done: 'done', active: 'in progress', planned: 'planned' };
+
+    $('stats').innerHTML = [
+      ['now', active ? active.m + ' · ' + share(active) + '%' : 'none', 'current milestone'],
+      ['', done + ' of ' + b.milestones.length, 'milestones done'],
+      ['', b.version, 'on npm'],
+      ['', b.tests, 'tests, Node 20 and 22'],
+      ['', b.dogfood, 'dogfood live'],
+    ].map(function (s) { return '<div class="stat ' + s[0] + '"><b>' + esc(s[1]) + '</b><span>' + esc(s[2]) + '</span></div>'; }).join('');
+
+    $('rail').innerHTML = b.milestones.map(function (x) {
+      return '<a class="seg ' + x.state + '" href="#ms-' + x.m + '" style="--p:' + share(x) + '%"><i></i><span>' + x.m + '</span><small>' + esc(x.title) + '</small></a>';
+    }).join('');
+
+    $('ms-list').innerHTML = b.milestones.map(function (x) {
+      var tasks = x.tasks ? '<div><span class="lbl">Tasks</span>' + x.tasks.filter(function (t) { return t[0] === 'ok'; }).length + ' of ' + x.tasks.length +
+        '<ul class="tasks">' + x.tasks.map(function (t) { return '<li class="' + t[0] + '">' + esc(t[1]) + '</li>'; }).join('') + '</ul></div>' : '';
+      var ev = x.evidence ? '<div class="ev">' + x.evidence.map(function (e) { return '<a href="' + e[1] + '">' + esc(e[0]) + '</a>'; }).join('') + '</div>' : '';
+      return '<article class="ms ' + x.state + '" id="ms-' + x.m + '"><span class="m">' + x.m + '</span>' +
+        '<div class="ms-top"><h3>' + esc(x.title) + '</h3><span class="state ' + x.state + '">' + stateLabel[x.state] + '</span>' +
+        (x.when ? '<span class="when">' + x.when + '</span>' : '') + '</div>' +
+        '<div class="ms-body"><p><span class="lbl">Scope</span>' + esc(x.scope) + '</p>' +
+        '<p><span class="lbl">Done when</span><b>' + esc(x.doneWhen) + '</b></p>' +
+        (x.result ? '<p><span class="lbl">Result</span>' + esc(x.result) + '</p>' : '') + tasks + ev + '</div></article>';
+    }).join('');
+
+    $('log-list').innerHTML = b.log.slice().reverse().map(function (l) { return '<li><time>' + l[0] + '</time>' + esc(l[1]) + '</li>'; }).join('');
+
+    $('dec-list').innerHTML = b.decisions.map(function (d) {
+      return '<tr><td>' + esc(d[0]) + '</td><td>' + esc(d[1]) + '</td><td><span class="state ' + d[3] + '">' + esc(d[2]) + '</span></td></tr>';
+    }).join('');
+  })(BUILD);
+
+  // Copy buttons: data-copy holds the text, data-copy-from names a <pre> to copy.
+  document.querySelectorAll('[data-copy], [data-copy-from]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var src = btn.getAttribute('data-copy-from');
+      var text = src ? document.getElementById(src).textContent : btn.getAttribute('data-copy');
+      var done = function () { var old = btn.textContent; btn.textContent = 'Copied'; setTimeout(function () { btn.textContent = old; }, 1400); };
+      if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, function () {});
+      else { var t = document.createElement('textarea'); t.value = text; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); done(); } catch (e) {} t.remove(); }
+    });
+  });
+  // Contents: mark the section in view.
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  if ('IntersectionObserver' in window && links.length) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        links.forEach(function (a) { a.classList.toggle('on', a.getAttribute('href') === '#' + e.target.id); });
+      });
+    }, { rootMargin: '-30% 0px -60% 0px' });
+    document.querySelectorAll('.sec[id]').forEach(function (s) { io.observe(s); });
+  }
+</script>
+</body>
+</html>
