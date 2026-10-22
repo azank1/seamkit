@@ -7378,16 +7378,18 @@ function networkReason(err, timeoutMs) {
   const code = e?.cause?.code;
   return code ? `could not connect (${code})` : "could not connect";
 }
+var STALE_CONNECTION = /* @__PURE__ */ new Set(["UND_ERR_SOCKET", "ECONNRESET", "EPIPE"]);
 async function fetchLimited(url2, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxBytes = opts.maxBytes ?? 5 * 1024 * 1024;
+  const get = () => (opts.fetch ?? fetch)(url2, {
+    redirect: "follow",
+    signal: AbortSignal.timeout(timeoutMs),
+    headers: { "user-agent": opts.userAgent ?? "seamkit", accept: opts.accept ?? "*/*" }
+  });
   let res;
   try {
-    res = await (opts.fetch ?? fetch)(url2, {
-      redirect: "follow",
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: { "user-agent": opts.userAgent ?? "seamkit", accept: opts.accept ?? "*/*" }
-    });
+    res = await get().catch((err) => STALE_CONNECTION.has(err?.cause?.code ?? "") ? get() : Promise.reject(err));
   } catch (err) {
     return { ok: false, reason: networkReason(err, timeoutMs) };
   }
@@ -7872,7 +7874,8 @@ function replayVerdict(registry, eventId2, run2, at2) {
 }
 
 // packages/core/dist/render.js
-var asLines = (lines) => lines.map((l) => l.replace(/[\r\n\u0085\u2028\u2029]+/g, " ")).join("\n");
+var CONTROLS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]+/g;
+var asLines = (lines) => lines.map((l) => l.replace(CONTROLS, " ")).join("\n");
 function examinedText(e) {
   if (e.count === void 0)
     return e.item;
@@ -9004,7 +9007,8 @@ var NotAGitRepository = class extends Error {
   name = "NotAGitRepository";
 };
 var MAX_APPEND_ATTEMPTS = 25;
-var MAX_SYNC_ATTEMPTS = 5;
+var MAX_SYNC_ATTEMPTS = 12;
+var MAX_STALLED_PUSHES = 3;
 function sleep(ms) {
   return new Promise((resolve3) => setTimeout(resolve3, ms));
 }
@@ -9087,9 +9091,9 @@ var GitStateStore = class _GitStateStore {
     const hasRemote = await runGit(["remote", "get-url", remote], { cwd: this.cwd });
     if (hasRemote.code !== 0)
       return { status: "no_remote", remote, attempts: 0 };
+    let stalled = 0;
     for (let attempt = 1; attempt <= MAX_SYNC_ATTEMPTS; attempt++) {
-      const advertised = await this.git(["ls-remote", remote, STATE_REF]);
-      const remoteHead = advertised.split("\n").map((line) => line.split("	")).find(([, ref]) => ref === STATE_REF)?.[0];
+      const remoteHead = await this.remoteHead(remote);
       if (remoteHead !== void 0) {
         await this.git(["fetch", "--quiet", "--no-tags", remote, `+${STATE_REF}:refs/remotes/${remote}/${STATE_BRANCH}`]);
       }
@@ -9120,11 +9124,18 @@ var GitStateStore = class _GitStateStore {
       const pushed = await runGit(["push", "--quiet", remote, `${toPush}:${STATE_REF}`], { cwd: this.cwd });
       if (pushed.code === 0)
         return { status, remote, local: toPush, attempts: attempt };
-      if (attempt === MAX_SYNC_ATTEMPTS)
+      if (await this.remoteHead(remote) === remoteHead)
+        stalled++;
+      if (attempt === MAX_SYNC_ATTEMPTS || stalled === MAX_STALLED_PUSHES)
         throw new GitError(["push", remote, STATE_REF], pushed);
-      await new Promise((resolve3) => setTimeout(resolve3, attempt * 250 + Math.floor(Math.random() * 250)));
+      await sleep(Math.floor(Math.random() * Math.min(8e3, 500 * 2 ** attempt)));
     }
     throw new Error(`could not synchronise ${STATE_BRANCH} with ${remote} after ${MAX_SYNC_ATTEMPTS} attempts`);
+  }
+  /** The state branch's commit on the remote, or undefined when the remote has none. */
+  async remoteHead(remote) {
+    const advertised = await this.git(["ls-remote", remote, STATE_REF]);
+    return advertised.split("\n").map((line) => line.split("	")).find(([, ref]) => ref === STATE_REF)?.[0];
   }
   async isAncestor(ancestor, descendant) {
     const r = await runGit(["merge-base", "--is-ancestor", ancestor, descendant], { cwd: this.cwd });
@@ -9434,8 +9445,13 @@ function str(value, field2, problems, required) {
     problems.push(`${field2} must not be empty: ${required}`);
     return void 0;
   }
+  if (LONE_SURROGATE2.test(value)) {
+    problems.push(`${field2} holds half of a character (an escape such as \\uD800 without its pair); write the character itself`);
+    return void 0;
+  }
   return value;
 }
+var LONE_SURROGATE2 = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 function url(value, field2, problems) {
   if (value === void 0)
     return void 0;
@@ -9602,7 +9618,7 @@ var COMMIT_ID = /^[0-9a-f]{4,64}$/;
 function subjectOf(c, pr) {
   return pr === void 0 ? `commit:${short2(c.commit)}` : `pr#${pr}`;
 }
-function toChange(c, pageUrl, primary, subjects) {
+function toChange(c, pageUrl, primary, subjects, defaulted) {
   const message = parseChangeMessage(c.message, c.parents.length);
   let subject = subjectOf(c, message.pr);
   if (subjects.has(subject))
@@ -9610,6 +9626,8 @@ function toChange(c, pageUrl, primary, subjects) {
   subjects.add(subject);
   const implicit = [{ kind: "version", url: primary.url }];
   const card = readCard(c.message);
+  if (!card.found || !card.ok || card.card.markers.some((m) => m.kind === "version" && m.url === void 0))
+    defaulted.add(c.commit);
   if (!card.found)
     return { subject, commit: c.commit, title: message.title, markerSource: "implicit", markers: implicit, cardFound: false };
   if (!card.ok) {
@@ -9629,7 +9647,7 @@ function toChange(c, pageUrl, primary, subjects) {
   const unique2 = markers.filter((m, i) => markers.findIndex((o) => JSON.stringify(o) === JSON.stringify(m)) === i);
   return { subject, commit: c.commit, title: message.title, markerSource: "card", markers: unique2, cardFound: true };
 }
-async function loadHistory(cwd, primaryUrl, addresses, commits) {
+async function readLedger(cwd, commits) {
   let store;
   try {
     store = await GitStateStore.open(cwd);
@@ -9640,9 +9658,8 @@ async function loadHistory(cwd, primaryUrl, addresses, commits) {
   }
   if (!await store.exists())
     return null;
-  const latest = /* @__PURE__ */ new Map();
-  let readHere = false;
-  const observed2 = /* @__PURE__ */ new Set();
+  const sightings = [];
+  const readAt = /* @__PURE__ */ new Map();
   for (const file of await store.list()) {
     const parsed = parseEventFile(file.path, file.content);
     if (!parsed.ok || parsed.kind !== "verdict")
@@ -9657,30 +9674,42 @@ async function loadHistory(cwd, primaryUrl, addresses, commits) {
       continue;
     }
     const first = input2.versions[0];
-    if (first !== void 0 && addresses.has(first.url) && first.status === "ok") {
-      if (first.url === primaryUrl)
-        readHere = true;
-      const named = first.commit ?? first.reported;
-      if (named !== void 0 && COMMIT_ID.test(named))
-        observed2.add(named);
+    if (first !== void 0 && first.status === "ok") {
+      const named = readAt.get(first.url) ?? /* @__PURE__ */ new Set();
+      const commit2 = first.commit ?? first.reported;
+      if (commit2 !== void 0 && COMMIT_ID.test(commit2))
+        named.add(commit2);
+      readAt.set(first.url, named);
     }
-    for (const s of readbackSightings(input2, parsed.id)) {
-      if (!commits.has(s.change))
-        continue;
-      const key = `${s.change} ${s.marker}`;
-      const prev = latest.get(key);
-      if (prev === void 0 || s.at > prev.at || s.at === prev.at && s.event > prev.event)
-        latest.set(key, s);
-    }
+    for (const s of readbackSightings(input2, parsed.id))
+      if (commits.has(s.change))
+        sightings.push(s);
   }
-  return { sightings: [...latest.values()].sort((a, b) => a.change + a.marker < b.change + b.marker ? -1 : 1), readHere, observed: [...observed2].sort() };
+  return { sightings, readAt };
+}
+function historyAt(ledger, primaryUrl, addresses, defaulted) {
+  const here = markerKey({ kind: "version", url: primaryUrl });
+  const elsewhere = new Set([...addresses].filter((a) => a !== primaryUrl).map((url2) => markerKey({ kind: "version", url: url2 })));
+  const latest = /* @__PURE__ */ new Map();
+  for (const seen of ledger.sightings) {
+    const s = defaulted.has(seen.change) && elsewhere.has(seen.marker) ? { ...seen, marker: here } : seen;
+    const key = `${s.change} ${s.marker}`;
+    const prev = latest.get(key);
+    if (prev === void 0 || s.at > prev.at || s.at === prev.at && s.event > prev.event)
+      latest.set(key, s);
+  }
+  const observed2 = new Set([...addresses].flatMap((a) => [...ledger.readAt.get(a) ?? []]));
+  return {
+    sightings: [...latest.values()].sort((a, b) => a.change + a.marker < b.change + b.marker ? -1 : 1),
+    readHere: ledger.readAt.has(primaryUrl),
+    observed: [...observed2].sort()
+  };
 }
 async function gatherReadback(cwd, req, now, http) {
   const repo = await GitRepo.open(cwd);
   const branch = await repo.resolveBranch(req.branch);
   const resolve3 = (reported) => repo.resolve(reported);
   const origin = new URL(req.url).origin;
-  const primary = req.versionUrl !== void 0 ? await observeVersion(req.versionUrl, now(), resolve3, http) : await discoverVersion(origin, now(), resolve3, http);
   const runGaps = [];
   let deployed;
   if (req.deployed !== void 0) {
@@ -9720,10 +9749,13 @@ async function gatherReadback(cwd, req, now, http) {
   const shallow = await repo.isShallow();
   if (shallow)
     runGaps.push({ item: "history beyond the shallow clone", reason: "the clone is shallow; run git fetch --unshallow to examine older changes" });
+  const ledger = await readLedger(cwd, new Set(commits.map((c) => c.commit)));
+  const primary = req.versionUrl !== void 0 ? await observeVersion(req.versionUrl, now(), resolve3, http) : await discoverVersion(origin, now(), resolve3, http);
   const subjects = /* @__PURE__ */ new Set();
-  let drafts = commits.map((c) => toChange(c, req.url, primary, subjects));
+  const defaulted = /* @__PURE__ */ new Set();
+  let drafts = commits.map((c) => toChange(c, req.url, primary, subjects, defaulted));
   const addresses = new Set(req.versionUrl !== void 0 ? [primary.url] : VERSION_PATHS.map((p) => new URL(p, origin).href));
-  const loaded = await loadHistory(cwd, primary.url, addresses, new Set(drafts.map((c) => c.commit)));
+  const loaded = ledger === null ? null : historyAt(ledger, primary.url, addresses, defaulted);
   const history = loaded === null ? null : loaded.sightings;
   if (deployed !== void 0) {
     const ran = [];
@@ -10786,9 +10818,12 @@ async function prepareCheckout(cwd, defaultBranch, branchInput, deps) {
   await runGit(["symbolic-ref", "refs/remotes/origin/HEAD", target], { cwd });
   return void 0;
 }
-async function fullCommit(cwd, rev) {
+async function knownCommit(cwd, rev) {
   const r = await runGit(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], { cwd });
-  return r.code === 0 ? r.stdout.toString("utf8").trim() : rev;
+  return r.code === 0 ? r.stdout.toString("utf8").trim() : void 0;
+}
+async function fullCommit(cwd, rev) {
+  return await knownCommit(cwd, rev) ?? rev;
 }
 function productionOf(result) {
   try {
@@ -10813,22 +10848,29 @@ async function waitForLive(args, deployed, read, inputs, cli, cwd, deps) {
   const deadline = start + inputs.waitSeconds * 1e3;
   let lastKnown;
   const refetched = /* @__PURE__ */ new Set();
+  let reread = false;
   const done = (result) => ({ result, ...lastKnown ? { lastKnown } : {}, seconds: Math.round((clock() - start) / 1e3) });
   for (; ; ) {
     const r = await cli([...args, "--no-record"]);
     if (r.code === EXIT_USAGE2 || r.code === 4 || deployed === void 0)
       return done(r);
     const prod = productionOf(r);
-    if (prod?.status === "ok" && prod.reported !== void 0 && prod.commit === void 0 && read !== void 0 && !refetched.has(prod.reported)) {
-      refetched.add(prod.reported);
-      const failed = await fetchBranch(cwd, read);
-      if (failed === void 0)
-        continue;
-      deps.warn(`seamkit: could not fetch ${read} from origin again: ${failed}`);
-    }
     const where = await landing(prod, deployed, cwd);
     if (where !== "unknown")
       lastKnown = prod;
+    if (!reread && prod?.status === "ok" && prod.reported !== void 0 && prod.commit === void 0 && read !== void 0 && !refetched.has(prod.reported)) {
+      refetched.add(prod.reported);
+      const failed = await fetchBranch(cwd, read);
+      if (failed === void 0) {
+        const commit2 = await knownCommit(cwd, prod.reported);
+        if (commit2 !== void 0)
+          lastKnown = { ...prod, commit: commit2 };
+        deps.log(`seamkit: production reports ${prod.reported.slice(0, 12)}, which this checkout did not have; fetched ${read} again`);
+        reread = true;
+        continue;
+      }
+      deps.warn(`seamkit: could not fetch ${read} from origin again: ${failed}`);
+    }
     if (where === "runs_it") {
       deps.log(`seamkit: production runs the deployed commit ${deployed.slice(0, 12)}`);
       return done(r);
@@ -10841,6 +10883,7 @@ async function waitForLive(args, deployed, read, inputs, cli, cwd, deps) {
     const now = where === "unknown" ? "gives no commit" : `reports ${(prod?.reported ?? "").slice(0, 12)}`;
     deps.log(`seamkit: production ${now}, not the deployed commit ${deployed.slice(0, 12)} yet (exit ${r.code}); reading it again in ${Math.round(Math.min(poll, left) / 1e3)}s`);
     await deps.sleep(Math.min(poll, left));
+    reread = false;
   }
 }
 async function deployNote(read, deployed, waited, cwd) {
@@ -10990,7 +11033,7 @@ async function runAction(deps) {
     if (pushed.code === 0)
       deps.log(`seamkit: ${pushed.out.trim()}`);
     else {
-      const why = PERMISSION.test(pushed.err) ? 'give the job "permissions: contents: write"' : "other runs kept pushing while this one retried; give the readback job a concurrency group so deploy runs take turns";
+      const why = PERMISSION.test(pushed.err) ? 'give the job "permissions: contents: write"' : "other runs kept pushing while this one retried; when many readbacks record at once, give them one concurrency group so they take turns";
       deps.warn(`seamkit: ${recorded ? "the verdict was recorded here but not pushed, so it is lost with this runner" : "the ledger could not be pushed"}; ${why}: ${pushed.err.trim()}`);
     }
   }

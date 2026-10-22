@@ -35,6 +35,30 @@ describe('bounded HTTP', () => {
     await gone.close();
     assert.match((await fetchLimited(url) as { reason: string }).reason, /^could not connect/);
   });
+
+  it('sends a GET once more when a kept-alive connection turns out closed, and only once', async () => {
+    prod.deploy({ 'a.txt': 'hello' });
+    const closing = (times: number, code: string): { calls: number; fetch: typeof fetch } => {
+      const counted = {
+        calls: 0,
+        fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+          if (++counted.calls <= times) throw Object.assign(new TypeError('fetch failed'), { cause: { code } });
+          return fetch(input, init);
+        }) as typeof fetch,
+      };
+      return counted;
+    };
+    const once = closing(1, 'UND_ERR_SOCKET');
+    const read = await fetchLimited(`${prod.url}a.txt`, { fetch: once.fetch });
+    assert.ok(read.ok && read.body.toString() === 'hello');
+    assert.equal(once.calls, 2);
+    const twice = closing(2, 'ECONNRESET');
+    assert.deepEqual(await fetchLimited(`${prod.url}a.txt`, { fetch: twice.fetch }), { ok: false, reason: 'could not connect (ECONNRESET)' });
+    assert.equal(twice.calls, 2);
+    const refused = closing(1, 'ECONNREFUSED');
+    assert.deepEqual(await fetchLimited(`${prod.url}a.txt`, { fetch: refused.fetch }), { ok: false, reason: 'could not connect (ECONNREFUSED)' });
+    assert.equal(refused.calls, 1);
+  });
 });
 
 describe('version documents in production', () => {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { invariantCheck, parseEventFile, runCheck, type SeamEvent } from '@seamkit/core';
@@ -130,6 +130,35 @@ describe('GitStateStore', () => {
 
     const remoteHead = await git(['rev-parse', STATE_REF], { cwd: remote });
     assert.equal(remoteHead, await a.head());
+  });
+
+  it('pushes every one of eight writers that sync at once', async () => {
+    const remote = join(root, `remote-${++counter}.git`);
+    await git(['init', '-q', '--bare', remote], { cwd: root });
+    const writers = await Promise.all(
+      Array.from({ length: 8 }, async (_, i) => {
+        const store = await GitStateStore.open(await repo(`writer-${i}`));
+        await git(['remote', 'add', 'origin', remote], { cwd: store.cwd });
+        await store.append(event(40 + i));
+        return store;
+      }),
+    );
+    const results = await Promise.all(writers.map((w) => w.sync()));
+    assert.ok(results.every((r) => r.status === 'pushed' || r.status === 'merged'), JSON.stringify(results));
+    const pushed = await git(['ls-tree', '-r', '--name-only', STATE_REF], { cwd: remote });
+    assert.equal(pushed.split('\n').filter((p) => p.startsWith('events/')).length, 8);
+  });
+
+  it('gives up after a few tries when the remote refuses a push that no other writer raced', async () => {
+    const remote = join(root, `remote-${++counter}.git`);
+    await git(['init', '-q', '--bare', remote], { cwd: root });
+    const tries = join(root, `tries-${counter}`);
+    await writeFile(join(remote, 'hooks', 'pre-receive'), `#!/bin/sh\necho try >> '${tries}'\necho 'refused by policy' >&2\nexit 1\n`, { mode: 0o755 });
+    const store = await GitStateStore.open(await repo('refused'));
+    await git(['remote', 'add', 'origin', remote], { cwd: store.cwd });
+    await store.append(event(50));
+    await assert.rejects(store.sync(), /refused by policy/);
+    assert.equal((await readFile(tries, 'utf8')).trim().split('\n').length, 3);
   });
 
   it('reports a missing remote instead of failing', async () => {

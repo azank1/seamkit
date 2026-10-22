@@ -916,7 +916,8 @@ fi</pre></div>
     (<code>echo "::remove-matcher owner=tsc::"</code>, and the same for <code>eslint-stylish</code> and
     <code>eslint-compact</code>), which would read a change's title as an error. With <code>BRANCH</code> set to your
     default branch, fetch it as it is now (<code>git fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"</code>), run
-    <code>npx --yes seamkit@0.2 state sync</code>, then
+    <code>npx --yes seamkit@0.2 state sync</code> (when it fails, leave out <code>--deployed</code>, because a ledger copy left
+    on the runner may lack runs others pushed), then
     <code>npx --yes seamkit@0.2 readback --url https://your.app --last 20 --branch "$BRANCH" --deployed &lt;deployed commit&gt;</code>
     in the job that deployed, where the deployed commit is usually <code>$GITHUB_SHA</code> or your CI's equivalent,
     then <code>state sync</code> again whatever the result, and exit with readback's code even when that last push
@@ -992,7 +993,8 @@ fi</pre></div>
   var BUILD = {
     updated: '2026-10-22',
     version: '0.2.0',
-    tests: '192',
+    npm: '0.1.0',   // the version npm serves; the release commit bumps it
+    tests: '205',
     dogfood: '20 of 20',
     milestones: [
       { m: 'M1', title: 'Verdict core and ledger', state: 'done', when: '2026-10-15',
@@ -1049,7 +1051,8 @@ fi</pre></div>
       ['2026-10-22', 'Third review round (a workflow with skeptics): the Action now waits on production\'s own version document, scopes a deploy only when a ledger was read, keeps secrets in a refused URL out of reports, and fences workflow commands in the log. 159 tests; the bundle smoke now covers a fail and a ledger push.'],
       ['2026-10-22', 'Fourth review round (52 agents): a deploy is scoped only once the ledger holds a run at that address, changes production runs stay in scope, --last counts the changes judged, a failed read no longer ends the wait, and the Action fetches the branch it reads because actions/checkout pins it. 172 tests.'],
       ['2026-10-22', 'Fifth review round (38 agents): a change production was ever seen running stays in a deploy\'s scope, whatever the run that saw it judged; a branch input written refs/heads/, origin/ or refs/remotes/origin/ is fetched by its bare name; the ledger is fetched again after the wait; and the CLI\'s output cannot run a workflow command in a GitHub Actions step. 184 tests.'],
-      ['2026-10-22', 'Sixth review round (15 findings confirmed by skeptics): a branch input that is not a branch, or a branch that cannot be fetched, now gives no verdict instead of a warning; origin/HEAD reads as the default branch; a build seen at any version document path counts; any number of changes after the deployed commit is read; production reporting a commit the checkout lacks makes the Action fetch the branch again; and a change\'s words stay on one line of the report. 192 tests; every new rule\'s mutant is caught but one equivalent.'],
+      ['2026-10-22', 'Sixth review round (15 findings confirmed by skeptics): a branch input that is not a branch, or a branch that cannot be fetched, now gives no verdict instead of a warning; origin/HEAD reads as the default branch; a build seen at any version document path counts; any number of changes after the deployed commit is read; production reporting a commit the checkout lacks makes the Action fetch the branch again; and a change\'s words stay on one line of the report. 192 tests.'],
+      ['2026-10-22', 'Seventh review round (45 agents, 14 findings confirmed by skeptics, a lifecycle replay among them): a read that names a commit the checkout lacks is kept even when the reads after it fail, and the wait always ends; every control character in a change\'s words becomes a space in text output; a card holding half a character is a card problem, not a run with no verdict; the ledger is read before production; a ledger push that loses a race retries for about a minute; and a rollback after the version document moved reads as not live. 205 tests; each fix but the push backoff\'s timing was broken on purpose in the compiled code, and a test catches every break.'],
     ],
     decisions: [
       ['Program readback adapter (requested by an internal project)', 'Accept with changes, scheduled after M4. Notes in the knowledge base.', 'azank', 'wait'],
@@ -1071,7 +1074,7 @@ fi</pre></div>
     $('stats').innerHTML = [
       ['now', active ? active.m + ' · ' + share(active) + '%' : 'none', 'current milestone'],
       ['', done + ' of ' + b.milestones.length, 'milestones done'],
-      ['', b.version, 'on npm'],
+      ['', b.npm, 'on npm'],
       ['', b.tests, 'tests, Node 20, 22 and 24'],
       ['', b.dogfood, 'dogfood live'],
     ].map(function (s) { return '<div class="stat ' + s[0] + '"><b>' + esc(s[1]) + '</b><span>' + esc(s[2]) + '</span></div>'; }).join('');

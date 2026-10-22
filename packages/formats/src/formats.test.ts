@@ -48,6 +48,16 @@ describe('scope card', () => {
     assert.deepEqual(readCard('No card here.\n```yaml\ncard: 1\n```'), { found: false });
   });
 
+  it('refuses half a character from a YAML escape, which no event could record, and keeps a whole one', () => {
+    const half = CARD.replace('text: "data-sync-state"', 'text: "data-sync\\uD800"').replace('intent: Show a saved indicator after a note is synced.', 'intent: "\\uDC00 Show a saved indicator."');
+    assert.deepEqual(problemsOf(half), [
+      'intent holds half of a character (an escape such as \\uD800 without its pair); write the character itself',
+      'markers[0].text holds half of a character (an escape such as \\uD800 without its pair); write the character itself',
+    ]);
+    const whole = parseCard(CARD.replace('text: "data-sync-state"', 'text: "data-sync\\uD83D\\uDE00"'));
+    assert.ok(whole.ok && whole.card.markers[0]?.kind === 'bundle' && whole.card.markers[0].text === 'data-sync\u{1F600}');
+  });
+
   it('refuses two cards and an unclosed one', () => {
     const two = readCard(`${body(CARD)}\n${body(CARD)}`);
     assert.ok(two.found && !two.ok && /2 seamkit-card blocks/.test(two.problems[0] ?? ''));

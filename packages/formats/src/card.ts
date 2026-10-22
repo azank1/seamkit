@@ -127,8 +127,15 @@ function str(value: unknown, field: string, problems: string[], required: string
     problems.push(`${field} must not be empty: ${required}`);
     return undefined;
   }
+  // YAML's \uD800 escape gives half a character, which no recorded event can hold.
+  if (LONE_SURROGATE.test(value)) {
+    problems.push(`${field} holds half of a character (an escape such as \\uD800 without its pair); write the character itself`);
+    return undefined;
+  }
   return value;
 }
+
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 /** An absolute http or https URL, or a path such as /version.json that readback resolves against the production URL. */
 function url(value: unknown, field: string, problems: string[]): string | undefined {

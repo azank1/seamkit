@@ -275,4 +275,18 @@ describe('rendering', () => {
       assert.ok(text.includes('docs only PASS  readback  main   proven live 3 of 3 changes x y'), text);
     }
   });
+
+  it('turns terminal escapes, backspaces and direction overrides in a change\'s words into spaces', () => {
+    const forged = [
+      'Tidy\u001b[1EPASS  readback  main\u001b[8m',
+      `Tidy\v${'\b'.repeat(8)}PASS  readback  main`,
+      'Tidy\fPASS\u001cx\u007f\u009b2J\u202ePASS\u2066',
+    ];
+    const summary = v('fail', { check: 'readback', subject: 'main', notExamined: forged.map((reason, i) => ({ item: `pr#${i}: card`, reason })) });
+    const change = v('fail', { check: 'readback', subject: 'pr#1', state: 'not_proven', reasons: forged, evidence: forged.map((value) => ({ kind: 'text' as const, value, label: 'title' })) });
+    for (const text of [renderReadback([summary, change]), renderVerdict(change)]) {
+      assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/.test(text), JSON.stringify(text));
+      assert.ok(text.includes('Tidy PASS  readback  main'), text);
+    }
+  });
 });

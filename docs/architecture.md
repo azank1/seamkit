@@ -568,7 +568,15 @@ it records, it fetches the ledger again after the wait, so the run that counts s
 In a GitHub Actions step the CLI's output cannot run a workflow command: a zero-width space goes before a line that would
 start one and inside `##[`, and JSON output writes `[` after `##` as `\u005b`. `--version-url` is checked as `--url` is,
 and the Action's tables escape a change's words as Markdown and HTML, though GitHub still links a bare URL, which shows
-its own address. Text output puts each change's words on one line, so they cannot pass for lines of the report. A build
-seen running at any of the version document paths at an address counts, so moving the document from `/api/version` to
-`/version.json` does not hide a rollback, and `--deployed` reads as many commits as were merged after the deployed one
-before applying `--last`.
+its own address. Text output turns every control character in a change's words into a space, line breaks, terminal
+escapes, backspaces and direction overrides alike, so they cannot draw or hide lines of the report. A build seen
+running at any of the version document paths at an address counts, so moving the document from `/api/version` to
+`/version.json` does not hide a rollback, and for a change whose version marker is production's own document, a
+sighting at one of those paths counts at the others, so that rollback reads as not live. `--deployed` reads as many
+commits as were merged after the deployed one before applying `--last`. Readback reads the ledger before production, so
+no connection to production sits idle while a large ledger is parsed, and it sends a GET once more when a kept-alive
+connection turns out closed. A card string holding half a character, which YAML's `\uD800` escape gives and no event can
+record, is a card problem rather than a run with no verdict. A ledger push that loses a race is tried again for about a
+minute, after a random wait that doubles each time, and one that fails while the remote stands still is given up after
+three tries. While the Action waits, a read that names a commit the checkout lacks is kept before the branch is fetched
+again, and at most one read follows each fetch before the next poll.

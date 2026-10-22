@@ -52,8 +52,12 @@ function subjectOf(c: GitCommit, pr: number | undefined): string {
   return pr === undefined ? `commit:${short(c.commit)}` : `pr#${pr}`;
 }
 
-/** Turns a commit into a change, with its card's markers or, failing that, the implicit version marker. */
-function toChange(c: GitCommit, pageUrl: string, primary: VersionObservation, subjects: Set<string>): ReadbackChange & { cardFound: boolean } {
+/**
+ * Turns a commit into a change, with its card's markers or, failing that, the implicit version
+ * marker. `defaulted` collects the changes whose version marker is production's own document
+ * because nothing named another.
+ */
+function toChange(c: GitCommit, pageUrl: string, primary: VersionObservation, subjects: Set<string>, defaulted: Set<string>): ReadbackChange & { cardFound: boolean } {
   const message = parseChangeMessage(c.message, c.parents.length);
   // The same pull request number can appear twice (a revert, say); later ones fall back to the commit.
   let subject = subjectOf(c, message.pr);
@@ -61,6 +65,7 @@ function toChange(c: GitCommit, pageUrl: string, primary: VersionObservation, su
   subjects.add(subject);
   const implicit: Marker[] = [{ kind: 'version', url: primary.url }];
   const card = readCard(c.message);
+  if (!card.found || !card.ok || card.card.markers.some((m) => m.kind === 'version' && m.url === undefined)) defaulted.add(c.commit);
   if (!card.found) return { subject, commit: c.commit, title: message.title, markerSource: 'implicit', markers: implicit, cardFound: false };
   if (!card.ok) {
     return { subject, commit: c.commit, title: message.title, markerSource: 'implicit', markers: implicit, cardProblems: card.problems.slice(0, 20), cardFound: true };
@@ -81,21 +86,20 @@ function toChange(c: GitCommit, pageUrl: string, primary: VersionObservation, su
   return { subject, commit: c.commit, title: message.title, markerSource: 'card', markers: unique, cardFound: true };
 }
 
+/** What the ledger holds for readback. */
+interface Ledger {
+  /** Every sighting of the changes asked about, in every recorded run. */
+  sightings: Sighting[];
+  /** For each version document a recorded run read first and could read, the commits it named. */
+  readAt: Map<string, Set<string>>;
+}
+
 /**
- * Sightings of these changes in earlier recorded readback runs, or null when there is no ledger.
- * `readHere` says whether any recorded run read this address's version document, and `observed`
- * holds every commit that production's own document named in a recorded run, whatever changes
- * the run judged: together they let a change that has no sighting and was never in a build seen
- * here be left to the next deploy. `addresses` are where production's own document may have been
- * read: every discovery path on the origin when the document is discovered, since a build can
- * move it from one to another.
+ * The recorded readback runs, or null when there is no ledger. It is read before production is,
+ * so that no connection to production sits idle while a large ledger is parsed, and the version
+ * document and the pages are read close together.
  */
-async function loadHistory(
-  cwd: string,
-  primaryUrl: string,
-  addresses: ReadonlySet<string>,
-  commits: ReadonlySet<string>,
-): Promise<{ sightings: Sighting[]; readHere: boolean; observed: string[] } | null> {
+async function readLedger(cwd: string, commits: ReadonlySet<string>): Promise<Ledger | null> {
   let store: GitStateStore;
   try {
     store = await GitStateStore.open(cwd);
@@ -104,9 +108,8 @@ async function loadHistory(
     throw err;
   }
   if (!(await store.exists())) return null;
-  const latest = new Map<string, Sighting>();
-  let readHere = false;
-  const observed = new Set<string>();
+  const sightings: Sighting[] = [];
+  const readAt = new Map<string, Set<string>>();
   for (const file of await store.list()) {
     const parsed = parseEventFile(file.path, file.content);
     if (!parsed.ok || parsed.kind !== 'verdict') continue;
@@ -119,19 +122,48 @@ async function loadHistory(
       continue; // `seamkit state verify` and `seamkit replay` report broken events; history skips them.
     }
     const first = input.versions[0];
-    if (first !== undefined && addresses.has(first.url) && first.status === 'ok') {
-      if (first.url === primaryUrl) readHere = true;
-      const named = first.commit ?? first.reported;
-      if (named !== undefined && COMMIT_ID.test(named)) observed.add(named);
+    if (first !== undefined && first.status === 'ok') {
+      const named = readAt.get(first.url) ?? new Set<string>();
+      const commit = first.commit ?? first.reported;
+      if (commit !== undefined && COMMIT_ID.test(commit)) named.add(commit);
+      readAt.set(first.url, named);
     }
-    for (const s of readbackSightings(input, parsed.id)) {
-      if (!commits.has(s.change)) continue;
-      const key = `${s.change} ${s.marker}`;
-      const prev = latest.get(key);
-      if (prev === undefined || s.at > prev.at || (s.at === prev.at && s.event > prev.event)) latest.set(key, s);
-    }
+    for (const s of readbackSightings(input, parsed.id)) if (commits.has(s.change)) sightings.push(s);
   }
-  return { sightings: [...latest.values()].sort((a, b) => (a.change + a.marker < b.change + b.marker ? -1 : 1)), readHere, observed: [...observed].sort() };
+  return { sightings, readAt };
+}
+
+/**
+ * What the ledger says about this address. `readHere` says whether any recorded run read this
+ * address's version document, and `observed` holds every commit that production's own document
+ * named in a recorded run, whatever changes the run judged: together they let a change that has
+ * no sighting and was never in a build seen here be left to the next deploy. `addresses` are
+ * where production's own document may have been read: every discovery path on the origin when the
+ * document is discovered, since a build can move it from one to another. For the same reason a
+ * change whose version marker is production's own document (`defaulted`) counts a sighting at any
+ * of them as one at this run's document, so a rollback across such a move reads as not live.
+ */
+function historyAt(
+  ledger: Ledger,
+  primaryUrl: string,
+  addresses: ReadonlySet<string>,
+  defaulted: ReadonlySet<string>,
+): { sightings: Sighting[]; readHere: boolean; observed: string[] } {
+  const here = markerKey({ kind: 'version', url: primaryUrl });
+  const elsewhere = new Set([...addresses].filter((a) => a !== primaryUrl).map((url) => markerKey({ kind: 'version', url })));
+  const latest = new Map<string, Sighting>();
+  for (const seen of ledger.sightings) {
+    const s = defaulted.has(seen.change) && elsewhere.has(seen.marker) ? { ...seen, marker: here } : seen;
+    const key = `${s.change} ${s.marker}`;
+    const prev = latest.get(key);
+    if (prev === undefined || s.at > prev.at || (s.at === prev.at && s.event > prev.event)) latest.set(key, s);
+  }
+  const observed = new Set([...addresses].flatMap((a) => [...(ledger.readAt.get(a) ?? [])]));
+  return {
+    sightings: [...latest.values()].sort((a, b) => (a.change + a.marker < b.change + b.marker ? -1 : 1)),
+    readHere: ledger.readAt.has(primaryUrl),
+    observed: [...observed].sort(),
+  };
 }
 
 /**
@@ -149,10 +181,6 @@ export async function gatherReadback(
   const branch = await repo.resolveBranch(req.branch);
   const resolve = (reported: string) => repo.resolve(reported);
   const origin = new URL(req.url).origin;
-  const primary =
-    req.versionUrl !== undefined
-      ? await observeVersion(req.versionUrl, now(), resolve, http)
-      : await discoverVersion(origin, now(), resolve, http);
 
   const runGaps: { item: string; reason: string }[] = [];
   let deployed: string | undefined;
@@ -194,11 +222,17 @@ export async function gatherReadback(
   }
   const shallow = await repo.isShallow();
   if (shallow) runGaps.push({ item: 'history beyond the shallow clone', reason: 'the clone is shallow; run git fetch --unshallow to examine older changes' });
+  const ledger = await readLedger(cwd, new Set(commits.map((c) => c.commit)));
 
+  const primary =
+    req.versionUrl !== undefined
+      ? await observeVersion(req.versionUrl, now(), resolve, http)
+      : await discoverVersion(origin, now(), resolve, http);
   const subjects = new Set<string>();
-  let drafts = commits.map((c) => toChange(c, req.url, primary, subjects));
+  const defaulted = new Set<string>();
+  let drafts = commits.map((c) => toChange(c, req.url, primary, subjects, defaulted));
   const addresses = new Set(req.versionUrl !== undefined ? [primary.url] : VERSION_PATHS.map((p) => new URL(p, origin).href));
-  const loaded = await loadHistory(cwd, primary.url, addresses, new Set(drafts.map((c) => c.commit)));
+  const loaded = ledger === null ? null : historyAt(ledger, primary.url, addresses, defaulted);
   const history = loaded === null ? null : loaded.sightings;
 
   if (deployed !== undefined) {

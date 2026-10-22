@@ -56,7 +56,13 @@ export class NotAGitRepository extends Error {
 }
 
 const MAX_APPEND_ATTEMPTS = 25;
-const MAX_SYNC_ATTEMPTS = 5;
+/**
+ * A push that loses a race to another writer is tried again, for about a minute at most. One that
+ * fails while the remote stands still, for want of permission or of a network, is no race and is
+ * given up sooner.
+ */
+const MAX_SYNC_ATTEMPTS = 12;
+const MAX_STALLED_PUSHES = 3;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -142,13 +148,9 @@ export class GitStateStore {
   async sync(remote = 'origin'): Promise<SyncResult> {
     const hasRemote = await runGit(['remote', 'get-url', remote], { cwd: this.cwd });
     if (hasRemote.code !== 0) return { status: 'no_remote', remote, attempts: 0 };
+    let stalled = 0;
     for (let attempt = 1; attempt <= MAX_SYNC_ATTEMPTS; attempt++) {
-      // ls-remote matches patterns against the tail of ref names, so keep only the exact ref.
-      const advertised = await this.git(['ls-remote', remote, STATE_REF]);
-      const remoteHead = advertised
-        .split('\n')
-        .map((line) => line.split('\t'))
-        .find(([, ref]) => ref === STATE_REF)?.[0];
+      const remoteHead = await this.remoteHead(remote);
       if (remoteHead !== undefined) {
         await this.git(['fetch', '--quiet', '--no-tags', remote, `+${STATE_REF}:refs/remotes/${remote}/${STATE_BRANCH}`]);
       }
@@ -173,12 +175,23 @@ export class GitStateStore {
       }
       const pushed = await runGit(['push', '--quiet', remote, `${toPush}:${STATE_REF}`], { cwd: this.cwd });
       if (pushed.code === 0) return { status, remote, local: toPush, attempts: attempt };
-      if (attempt === MAX_SYNC_ATTEMPTS) throw new GitError(['push', remote, STATE_REF], pushed);
-      // Another writer pushed first. Wait a little, longer each time and by a different amount for
-      // each writer, so two runs that keep colliding stop colliding.
-      await new Promise((resolve) => setTimeout(resolve, attempt * 250 + Math.floor(Math.random() * 250)));
+      if ((await this.remoteHead(remote)) === remoteHead) stalled++;
+      if (attempt === MAX_SYNC_ATTEMPTS || stalled === MAX_STALLED_PUSHES) throw new GitError(['push', remote, STATE_REF], pushed);
+      // Writers that collided each wait a random time, up to twice as long after each collision, so
+      // that runs which started together stop moving in step.
+      await sleep(Math.floor(Math.random() * Math.min(8000, 500 * 2 ** attempt)));
     }
     throw new Error(`could not synchronise ${STATE_BRANCH} with ${remote} after ${MAX_SYNC_ATTEMPTS} attempts`);
+  }
+
+  /** The state branch's commit on the remote, or undefined when the remote has none. */
+  private async remoteHead(remote: string): Promise<string | undefined> {
+    // ls-remote matches patterns against the tail of ref names, so keep only the exact ref.
+    const advertised = await this.git(['ls-remote', remote, STATE_REF]);
+    return advertised
+      .split('\n')
+      .map((line) => line.split('\t'))
+      .find(([, ref]) => ref === STATE_REF)?.[0];
   }
 
   private async isAncestor(ancestor: string, descendant: string): Promise<boolean> {

@@ -152,10 +152,15 @@ async function prepareCheckout(cwd: string, defaultBranch: string | undefined, b
   return undefined;
 }
 
+/** The full id of a commit given perhaps abbreviated, or undefined when git does not know it. */
+async function knownCommit(cwd: string, rev: string): Promise<string | undefined> {
+  const r = await runGit(['rev-parse', '--verify', '--quiet', `${rev}^{commit}`], { cwd });
+  return r.code === 0 ? r.stdout.toString('utf8').trim() : undefined;
+}
+
 /** The full id of a commit given perhaps abbreviated, or the text unchanged when git does not know it. */
 async function fullCommit(cwd: string, rev: string): Promise<string> {
-  const r = await runGit(['rev-parse', '--verify', '--quiet', `${rev}^{commit}`], { cwd });
-  return r.code === 0 ? r.stdout.toString('utf8').trim() : rev;
+  return (await knownCommit(cwd, rev)) ?? rev;
 }
 
 /** Production's own version document, the one for the url input, as readback --json reports it. */
@@ -221,20 +226,30 @@ async function waitForLive(
   let lastKnown: Production | undefined;
   // A commit production reports that this clone lacks may be one merged and deployed since the
   // branch was fetched: the branch is fetched again, once for each such commit, and read at once.
+  // At most one such read follows each poll, so a document that names a new commit every time
+  // cannot keep the wait from ending.
   const refetched = new Set<string>();
+  let reread = false;
   const done = (result: CliResult): Waited => ({ result, ...(lastKnown ? { lastKnown } : {}), seconds: Math.round((clock() - start) / 1000) });
   for (;;) {
     const r = await cli([...args, '--no-record']);
     if (r.code === EXIT_USAGE || r.code === 4 || deployed === undefined) return done(r);
     const prod = productionOf(r);
-    if (prod?.status === 'ok' && prod.reported !== undefined && prod.commit === undefined && read !== undefined && !refetched.has(prod.reported)) {
-      refetched.add(prod.reported);
-      const failed = await fetchBranch(cwd, read);
-      if (failed === undefined) continue;
-      deps.warn(`seamkit: could not fetch ${read} from origin again: ${failed}`);
-    }
+    // Kept before any fetch, so a read that fails afterwards cannot undo what this one saw.
     const where = await landing(prod, deployed, cwd);
     if (where !== 'unknown') lastKnown = prod;
+    if (!reread && prod?.status === 'ok' && prod.reported !== undefined && prod.commit === undefined && read !== undefined && !refetched.has(prod.reported)) {
+      refetched.add(prod.reported);
+      const failed = await fetchBranch(cwd, read);
+      if (failed === undefined) {
+        const commit = await knownCommit(cwd, prod.reported);
+        if (commit !== undefined) lastKnown = { ...prod, commit };
+        deps.log(`seamkit: production reports ${prod.reported.slice(0, 12)}, which this checkout did not have; fetched ${read} again`);
+        reread = true;
+        continue;
+      }
+      deps.warn(`seamkit: could not fetch ${read} from origin again: ${failed}`);
+    }
     if (where === 'runs_it') {
       deps.log(`seamkit: production runs the deployed commit ${deployed.slice(0, 12)}`);
       return done(r);
@@ -245,6 +260,7 @@ async function waitForLive(
     const now = where === 'unknown' ? 'gives no commit' : `reports ${(prod?.reported ?? '').slice(0, 12)}`;
     deps.log(`seamkit: production ${now}, not the deployed commit ${deployed.slice(0, 12)} yet (exit ${r.code}); reading it again in ${Math.round(Math.min(poll, left) / 1000)}s`);
     await deps.sleep(Math.min(poll, left));
+    reread = false;
   }
 }
 
@@ -420,7 +436,7 @@ export async function runAction(deps: ActionDeps): Promise<number> {
     else {
       const why = PERMISSION.test(pushed.err)
         ? 'give the job "permissions: contents: write"'
-        : 'other runs kept pushing while this one retried; give the readback job a concurrency group so deploy runs take turns';
+        : 'other runs kept pushing while this one retried; when many readbacks record at once, give them one concurrency group so they take turns';
       deps.warn(`seamkit: ${recorded ? 'the verdict was recorded here but not pushed, so it is lost with this runner' : 'the ledger could not be pushed'}; ${why}: ${pushed.err.trim()}`);
     }
   }

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
+import { execFileSync } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -175,6 +176,15 @@ const output = (ran: Ran, name: string): string | undefined => new RegExp(`^${na
 /** The seamkit CLI in another checkout, as a run elsewhere would use it. */
 async function seamkit(args: string[], cwd: string): Promise<number> {
   return seamkitRun(args, { out: () => undefined, err: () => undefined, readStdin: async () => '', stdinIsTTY: true, env: {}, cwd, now: () => AT });
+}
+
+/** Merges a change on the remote from a clone of its own, as a merge after this job's checkout does, and returns its commit. */
+async function pushChange(remote: string, message: string): Promise<string> {
+  const dev = join(root, `dev-push-${++counter}`);
+  await git(['clone', '-q', `file://${remote}`, dev], { cwd: root });
+  await git([...ID, 'commit', '-q', '--allow-empty', '-m', message], { cwd: dev });
+  await git(['push', '-q', 'origin', 'main'], { cwd: dev });
+  return git(['rev-parse', 'HEAD'], { cwd: dev });
 }
 
 /** The check runs the last act() posted; lastPost() insists there was exactly one. */
@@ -529,7 +539,80 @@ describe('the seamkit action', () => {
     const ran = await act(ci, { wait: '10', pr: '2' }, success(commits[2] as string));
     assert.equal(ran.code, 1);
     assert.deepEqual(ran.sleeps, [10000]);
-    assert.match((lastPost()['output'] as { summary: string }).summary, /a commit this repository does not have/);
+    const post = lastPost();
+    assert.equal(post['conclusion'], 'failure');
+    assert.equal((post['output'] as { title: string }).title, 'FAIL: production runs 0123456789ab, which this repository does not have');
+    assert.match((post['output'] as { summary: string }).summary, /a commit this repository does not have/);
+  });
+
+  it('keeps a read that named a commit this repository lacks, though every read after the fetch fails', async () => {
+    const { ci, commits } = await project({ card: true });
+    // A rollback to #1 while production still runs #2, whose card's marker the page serves.
+    servePage(commits[2] as string);
+    const unknown = '0123456789abcdef0123456789abcdef01234567';
+    let served = false;
+    const ran = await act(ci, { wait: '20', pr: '2' }, success(commits[1] as string), {
+      sleep: async () => {
+        if (!served) servePage(unknown);
+        served = true;
+      },
+      log: (line) => {
+        if (/which this checkout did not have/.test(line)) prod.failWith('/version.json', 503);
+      },
+    });
+    assert.equal(ran.code, 1);
+    assert.equal((lastPost()['output'] as { title: string }).title, 'FAIL: production runs 0123456789ab, which this repository does not have');
+  });
+
+  it('judges by the commit the fetch brought in, when the read after it fails', async () => {
+    const { remote, ci, commits } = await project({ card: true });
+    servePage(commits[1] as string);
+    let third = '';
+    const ran = await act(ci, { wait: '20', pr: '2' }, success(commits[2] as string), {
+      sleep: async () => {
+        if (third !== '') return;
+        third = await pushChange(remote, 'Add the chart (#3)');
+        servePage(third);
+      },
+      log: (line) => {
+        if (/which this checkout did not have/.test(line)) prod.failWith('/version.json', 503);
+      },
+    });
+    assert.equal(ran.code, 0, ran.logs.join('\n'));
+    assert.match((lastPost()['output'] as { summary: string }).summary, new RegExp(`Production runs ${third.slice(0, 12)}, which comes after the deployed commit`));
+  });
+
+  it('fetches the branch again for each new commit production reports, one poll after another', async () => {
+    const { remote, ci, commits } = await project();
+    deploy(commits[1]);
+    const later: string[] = [];
+    const ran = await act(ci, { wait: '30' }, success(commits[2] as string), {
+      sleep: async () => {
+        if (later.length === 2) return;
+        later.push(await pushChange(remote, `Add part ${later.length + 3} (#${later.length + 3})`));
+        deploy(later[later.length - 1]);
+      },
+    });
+    assert.equal(ran.code, 0, ran.logs.join('\n'));
+    assert.equal(ran.logs.filter((l) => /which this checkout did not have/.test(l)).length, 2);
+    assert.equal((lastPost()['output'] as { title: string }).title, 'PASS: 5 live of 5');
+  });
+
+  it('ends the wait when production names a new commit on every read', async () => {
+    const { ci, commits } = await project();
+    let reads = 0;
+    const fresh = (): string => (++reads).toString(16).padStart(40, 'a');
+    deploy(fresh());
+    // A new commit for each fetch, up to a point, so that a wait that never ends fails here instead of hanging.
+    const ran = await act(ci, { wait: '0' }, success(commits[2] as string), {
+      log: (line) => {
+        if (/which this checkout did not have/.test(line) && reads < 6) deploy(fresh());
+      },
+    });
+    assert.equal(reads, 2);
+    assert.deepEqual(ran.sleeps, []);
+    assert.equal(ran.code, 3, ran.logs.join('\n'));
+    assert.match((lastPost()['output'] as { title: string }).title, /^EXAMINED NOTHING/);
   });
 
   it('keeps waiting while production serves no version document and nothing passes yet', async () => {
@@ -591,8 +674,26 @@ describe('the seamkit action', () => {
       const post = lastPost();
       assert.equal(post['conclusion'], 'failure');
       assert.match((post['output'] as { title: string }).title, /^No verdict: /);
+      assert.ok(message.test((post['output'] as { title: string }).title.replace(/^No verdict: /, '')), `${branch}: ${(post['output'] as { title: string }).title}`);
       assert.ok(ran.warnings.some((w) => message.test(w.replace(/^seamkit: /, ''))), `${branch}: ${ran.warnings.join('\n')}`);
     }
+  });
+
+  it('gives no verdict when the branch the checkout pinned cannot be fetched, rather than read the pin', async () => {
+    const { remote, ci, commits } = await project();
+    deploy(commits[2]);
+    assert.equal((await act(ci, { ledger: 'true' }, success(commits[2] as string))).code, 0);
+    // A rollback to #1, in a checkout that pinned origin/main at #1 and then lost its remote.
+    const late = join(root, `ci-late-${++counter}`);
+    await git(['clone', '-q', `file://${remote}`, late], { cwd: root });
+    await git(['update-ref', 'refs/remotes/origin/main', commits[1] as string], { cwd: late });
+    await git(['checkout', '-q', '-B', 'main', commits[1] as string], { cwd: late });
+    await git(['remote', 'set-url', 'origin', `file://${remote}-gone`], { cwd: late });
+    deploy(commits[1]);
+    const ran = await act(late, {}, success(commits[1] as string));
+    assert.equal(ran.code, 2, ran.logs.join('\n'));
+    assert.equal(output(ran, 'outcome'), 'error');
+    assert.match((lastPost()['output'] as { title: string }).title, /^No verdict: could not fetch main from origin, so changes merged since this job's commit cannot be examined/);
   });
 
   it('fetches the branch again when production reports a commit merged and deployed since the fetch', async () => {
@@ -623,6 +724,27 @@ describe('the seamkit action', () => {
     // The verdict is read again once the branch holds #3, so #3 is judged and nothing is left unknown.
     assert.equal(out.title, 'PASS: 4 live of 4');
     assert.ok(!out.summary.includes('does not have'), out.summary);
+  });
+
+  it('fetches the branch again before the counted read, for a deploy that lands just after the wait', async () => {
+    const { remote, ci, commits } = await project();
+    deploy(commits[2]);
+    let third = '';
+    const ran = await act(ci, { ledger: 'true', wait: '60' }, success(commits[2] as string), {
+      log: (line) => {
+        if (third !== '' || !/production runs the deployed commit/.test(line)) return;
+        const dev = join(root, `dev-after-${++counter}`);
+        execFileSync('git', ['clone', '-q', `file://${remote}`, dev], { cwd: root });
+        execFileSync('git', [...ID, 'commit', '-q', '--allow-empty', '-m', 'Add the chart (#3)'], { cwd: dev });
+        execFileSync('git', ['push', '-q', 'origin', 'main'], { cwd: dev });
+        third = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dev }).toString().trim();
+        deploy(third);
+      },
+    });
+    assert.equal(ran.code, 0, ran.logs.join('\n'));
+    const out = lastPost()['output'] as { title: string; summary: string };
+    assert.equal(out.title, 'PASS: 4 live of 4');
+    assert.match(out.summary, new RegExp(`Production runs ${third.slice(0, 12)}, which comes after`));
   });
 
   it('reads production again after fetching the branch, even when the wait ends at that read', async () => {

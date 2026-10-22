@@ -3,9 +3,11 @@ import type { Verdict } from './verdict.js';
 
 /**
  * Each entry is one line of the report. Text from a change (a title, a card's reason) can hold line
- * breaks, which would let it write lines that look like the report's own, so they become spaces.
+ * breaks, terminal escapes, backspaces or direction overrides, which would let it draw lines that
+ * look like the report's own or hide them, so every control character becomes a space.
  */
-const asLines = (lines: readonly string[]): string => lines.map((l) => l.replace(/[\r\n\u0085\u2028\u2029]+/g, ' ')).join('\n');
+const CONTROLS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]+/g;
+const asLines = (lines: readonly string[]): string => lines.map((l) => l.replace(CONTROLS, ' ')).join('\n');
 
 function examinedText(e: Verdict['examined'][number]): string {
   if (e.count === undefined) return e.item;

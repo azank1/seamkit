@@ -404,6 +404,34 @@ describe('seamkit readback', () => {
     }
   });
 
+  it('reads a rollback as not live when the version document moved to another path since the change was seen', async () => {
+    const { dir, merges, direct } = await repo({ card: false });
+    assert.equal((await cli(['state', 'init'], dir)).code, 0);
+    const build = (commit: string, path: string): void =>
+      prod.deploy({ 'index.html': '<!doctype html>', [path]: JSON.stringify({ schema: 'seamkit.version/1', commit, dirty: false, source: 'git' }) });
+    build(direct, 'api/version');
+    assert.match((await cli(['readback', '--url', prod.url], dir)).err, /recorded as event/);
+    // The rollback's build serves its document at /version.json.
+    build(merges[0] as string, 'version.json');
+    const r = await cli(['readback', '--url', prod.url, '--deployed', merges[0] as string, '--json'], dir);
+    assert.equal(r.code, 1, r.out);
+    const states = Object.fromEntries(JSON.parse(r.out).verdicts.slice(1).map((v: { subject: string; state: string }) => [v.subject, v.state]));
+    const first = await git(['rev-list', '--max-parents=0', 'HEAD'], { cwd: dir });
+    assert.deepEqual(states, { [`commit:${direct.slice(0, 12)}`]: 'not_live', 'pr#2': 'not_live', 'pr#1': 'live', [`commit:${first.slice(0, 12)}`]: 'live' });
+  });
+
+  it('says --last left changes out when scoping kept more than it judges, with nothing older on the branch', async () => {
+    const { dir, merges, direct } = await repo();
+    const first = await git(['rev-list', '--max-parents=0', 'HEAD'], { cwd: dir });
+    deploy(direct);
+    const r = await cli(['readback', '--url', prod.url, '--deployed', first, '--last', '1', '--json'], dir);
+    assert.equal(r.code, 0, r.out);
+    const [summary, ...parts] = JSON.parse(r.out).verdicts;
+    assert.deepEqual(parts.map((v: { subject: string }) => v.subject), [`commit:${direct.slice(0, 12)}`]);
+    assert.ok(summary.notExamined.some((g: { item: string; reason: string }) => g.item === 'changes before the last 1 on main' && g.reason === 'outside --last'), JSON.stringify(summary.notExamined));
+    assert.equal(merges.length, 2);
+  });
+
   it('judges --last changes however many were merged after the deployed commit', async () => {
     const { dir, merges, direct } = await repo();
     assert.equal((await cli(['state', 'init'], dir)).code, 0);
