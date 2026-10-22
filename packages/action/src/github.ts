@@ -65,6 +65,14 @@ export function plainText(text: string, token: string): string {
 /** One raw input, as the runner passes it. */
 export const rawInput = input;
 
+/**
+ * A branch input as the bare name of the remote's branch: refs/heads/main, the form github.ref
+ * takes, and origin/main or refs/remotes/origin/main all mean main, which is what is fetched.
+ */
+export function branchName(raw: string): string {
+  return raw.replace(/^(?:refs\/heads\/|refs\/remotes\/origin\/|origin\/)/, '');
+}
+
 export function readInputs(env: Env): ActionInputs {
   const url = input(env, 'url');
   if (url === '') throw new ActionInputError('the url input is required: the production address to read back, such as https://your.app');
@@ -76,7 +84,7 @@ export function readInputs(env: Env): ActionInputs {
     url,
     last: input(env, 'last'),
     pr: input(env, 'pr'),
-    branch: input(env, 'branch'),
+    branch: branchName(input(env, 'branch')),
     versionUrl: input(env, 'version-url'),
     waitSeconds: Number(wait),
     ledger,
@@ -164,11 +172,16 @@ export function displayUrl(raw: string): string {
   }
 }
 
-/** A message with every appearance of the given raw values replaced by how they may be shown. */
+/**
+ * A message with every appearance of the given raw values replaced by how they may be shown. One
+ * pass, longest first, so a value inside another cannot garble the other's replacement; a value
+ * shorter than any address is left alone, because it would match ordinary words.
+ */
 export function scrub(message: string, raws: readonly string[]): string {
-  let out = message;
-  for (const raw of raws) if (raw !== '') out = out.split(raw).join(displayUrl(raw));
-  return out;
+  const given = [...new Set(raws)].filter((r) => r.length >= 8).sort((a, b) => b.length - a.length);
+  if (given.length === 0) return message;
+  const pattern = new RegExp(given.map((r) => r.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g');
+  return message.replace(pattern, (raw) => displayUrl(raw));
 }
 
 /** Why this event is not a finished deploy, or undefined when it should be read back. */

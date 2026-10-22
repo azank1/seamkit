@@ -154,7 +154,7 @@ describe('seamkit readback', () => {
     assert.equal(parts.length, 2);
     const gap = summary.notExamined.find((g: { item: string }) => / merged after the deployed commit /.test(g.item));
     assert.equal(gap.item, `2 changes merged after the deployed commit ${(merges[0] as string).slice(0, 12)}`);
-    assert.match(gap.reason, /^no recorded run saw them live at this address, so the next deploy proves them: commit:[0-9a-f]{12}, pr#2$/);
+    assert.match(gap.reason, /^production at this address was never seen running them, so the next deploy proves them: commit:[0-9a-f]{12}, pr#2$/);
     assert.deepEqual(out.production, { url: `${prod.url}version.json`, status: 'ok', commit: merges[0], reported: merges[0] });
   });
 
@@ -311,6 +311,97 @@ describe('seamkit readback', () => {
     await git(['branch', 'release', 'origin/release~1'], { cwd: clone });
     const remote = await cli(['readback', '--url', prod.url, '--branch', 'release', '--json'], clone);
     assert.equal(JSON.parse(remote.out).verdicts.length, 4);
+  });
+
+  it('keeps in scope a change production was seen running, whatever the recorded run judged', async () => {
+    const dirty = (commit: string): void => prod.deploy({ 'version.json': JSON.stringify({ schema: 'seamkit.version/1', commit, dirty: true, source: 'git' }) });
+    for (const [label, record] of [
+      ['--pr', (dir: string) => cli(['readback', '--url', prod.url, '--pr', '1'], dir)],
+      ['--commit', (dir: string, first: string) => cli(['readback', '--url', prod.url, '--commit', first], dir)],
+      ['a dirty build', (dir: string, _first: string, second: string) => (dirty(second), cli(['readback', '--url', prod.url], dir))],
+    ] as const) {
+      const { dir, merges } = await repo();
+      assert.equal((await cli(['state', 'init'], dir)).code, 0);
+      // Production runs #2, and the only run recorded here judged something else or could sight nothing.
+      deploy(merges[1] as string);
+      assert.match((await record(dir, merges[0] as string, merges[1] as string)).err, /recorded as event/, label);
+      // A rollback to #1 is reported as a deploy of #1, so #2 is not in the deploy and has no sighting.
+      deploy(merges[0] as string, '');
+      const r = await cli(['readback', '--url', prod.url, '--deployed', merges[0] as string, '--json'], dir);
+      assert.equal(r.code, 1, `${label}: ${r.out}`);
+      const parts = JSON.parse(r.out).verdicts.slice(1);
+      assert.ok(parts.some((v: { subject: string; outcome: string }) => v.subject === 'pr#2' && v.outcome === 'fail'), `${label}: ${r.out}`);
+    }
+  });
+
+  it('judges every change once production here was seen running a commit this repository does not have', async () => {
+    const { dir, merges } = await repo();
+    assert.equal((await cli(['state', 'init'], dir)).code, 0);
+    prod.deploy({ 'version.json': JSON.stringify({ schema: 'seamkit.version/1', commit: 'e'.repeat(40), dirty: false, source: 'git' }) });
+    assert.match((await cli(['readback', '--url', prod.url], dir)).err, /recorded as event/);
+    deploy(merges[0] as string);
+    const r = await cli(['readback', '--url', prod.url, '--deployed', merges[0] as string, '--json'], dir);
+    assert.equal(r.code, 1, r.out);
+    const summary = JSON.parse(r.out).verdicts[0];
+    assert.ok(
+      summary.notExamined.some((g: { reason: string }) => g.reason.startsWith(`production at this address was seen running ${'e'.repeat(12)}, which this repository does not have (fetch the branch it came from), so`)),
+      JSON.stringify(summary.notExamined),
+    );
+  });
+
+  it('says --last left changes out when it did, with or without a deploy', async () => {
+    const { dir, direct } = await repo();
+    deploy(direct);
+    const r = await cli(['readback', '--url', prod.url, '--last', '2', '--json'], dir);
+    assert.equal(r.code, 0, r.out);
+    const [summary, ...parts] = JSON.parse(r.out).verdicts;
+    assert.equal(parts.length, 2);
+    assert.ok(summary.notExamined.some((g: { item: string; reason: string }) => g.item === 'changes before the last 2 on main' && g.reason === 'outside --last'));
+    const all = JSON.parse((await cli(['readback', '--url', prod.url, '--last', '4', '--json'], dir)).out).verdicts[0];
+    assert.ok(!all.notExamined.some((g: { item: string }) => g.item.startsWith('changes before the last')), JSON.stringify(all.notExamined));
+  });
+
+  it('checks --version-url as it checks --url, and never repeats it', async () => {
+    const { dir } = await repo();
+    for (const [url, message] of [
+      [`${prod.url}version.json?token=s3cr3t`, /--version-url must not carry a query string/],
+      ['https://user:s3cr3t@notes.example/version.json', /--version-url must not contain a user name or password/],
+      ['file:///s3cr3t/version.json', /--version-url must be an http or https URL/],
+      ['version.json#s3cr3t', /--version-url is not an absolute URL; give one such as/],
+    ] as const) {
+      const r = await cli(['readback', '--url', prod.url, '--version-url', url], dir);
+      assert.equal(r.code, 2, url);
+      assert.match(r.err, message);
+      assert.ok(!r.err.includes('s3cr3t'), r.err);
+    }
+  });
+
+  it('reads --branch HEAD as the checkout has it, and any branch git allows as the remote has it', async () => {
+    const { dir, direct } = await repo();
+    await git(['branch', 'release', 'HEAD~1'], { cwd: dir });
+    await git(['branch', 'release+1', 'HEAD~1'], { cwd: dir });
+    const clone = join(root, `clone-${++counter}`);
+    await git(['clone', '-q', '-b', 'release', dir, clone], { cwd: root });
+    deploy(direct);
+    // origin/HEAD names main, which has one more change than the release branch checked out here.
+    const head = JSON.parse((await cli(['readback', '--url', prod.url, '--branch', 'HEAD', '--json'], clone)).out);
+    assert.equal(head.verdicts.length, 4);
+    assert.equal((JSON.parse((await cli(['readback', '--url', prod.url, '--json'], clone)).out)).verdicts.length, 5);
+    await git(['branch', 'release+1', 'origin/release+1~1'], { cwd: clone });
+    const plus = JSON.parse((await cli(['readback', '--url', prod.url, '--branch', 'release+1', '--json'], clone)).out);
+    assert.equal(plus.verdicts.length, 4);
+  });
+
+  it('prints a change\'s words so that no runner reads them as a workflow command', async () => {
+    const { dir, direct } = await repo();
+    const card = '```seamkit-card\ncard: 1\nintent: Tidy.\nlayers: [frontend]\ntargets: [web]\n"\\n::error::forged": 1\nmarkers:\n  - kind: none\n    reason: tests only\n```';
+    await git([...ID, 'commit', '-q', '--allow-empty', '-m', `Tidy ##[warning]forged (#3)\n\n${card}`], { cwd: dir });
+    deploy(direct);
+    const human = await cli(['readback', '--url', prod.url], dir);
+    assert.ok(!human.out.split(/[\r\n]/).some((line) => line.trimStart().startsWith('::')), human.out);
+    const json = await cli(['readback', '--url', prod.url, '--json'], dir);
+    assert.ok(!json.out.includes('##['), json.out);
+    assert.ok(JSON.stringify(JSON.parse(json.out)).includes('##['));
   });
 
   it('takes the URL from SEAMKIT_URL', async () => {

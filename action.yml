@@ -15,17 +15,18 @@ inputs:
   last:
     description: >-
       How many of the latest changes on the default branch to judge. After a deploy, once the ledger holds a run at this
-      address, changes merged after the deployed commit that no recorded run saw live there, and that production does
-      not run, are listed as not examined, left to the next deploy, and not counted.
+      address, changes merged after the deployed commit that were never seen live there, nor in a build production was
+      seen running there, are listed as not examined, left to the next deploy, and not counted.
     default: '20'
   pr:
     description: Read back one merged pull request by number instead of the latest changes.
     default: ''
   branch:
     description: >-
-      The branch changes are merged into. Defaults to the repository's default branch, as the event names it. A bare
-      name such as production means the remote's branch, which the Action fetches before reading. It does not change
-      which commit counts as deployed.
+      The branch changes are merged into. Defaults to the repository's default branch, as the event names it. A branch
+      name such as production, also written refs/heads/production or origin/production, means the remote's branch,
+      which the Action fetches before reading; anything else, such as HEAD, is read as the checkout has it, with a
+      warning. It does not change which commit counts as deployed.
     default: ''
   version-url:
     description: Where production's version document is, when it is not at one of the usual paths.
@@ -34,7 +35,8 @@ inputs:
     description: >-
       After a deploy, seconds (0 to 1800) to keep reading production until its version document reports the deployed
       commit. Reading stops as soon as it does, and nothing is recorded while waiting. When production reports no
-      commit, a pass also stops it. Without a deployed commit, as on a schedule, there is nothing to wait for.
+      commit and no earlier read in this run named one, a pass also stops it. Without a deployed commit, as on a
+      schedule, there is nothing to wait for.
     default: '60'
   ledger:
     description: >-
@@ -48,8 +50,8 @@ inputs:
   sha:
     description: >-
       The deployed commit, full or abbreviated. The check run goes on it, and once the ledger holds a run at this
-      address, a change merged after it is left to the next deploy unless a recorded run saw it live there or production
-      runs it. Defaults to the deployed commit for
+      address, a change merged after it is left to the next deploy unless it was seen live there or in a build
+      production was seen running there. Defaults to the deployed commit for
       deployment and deployment_status, and to the other workflow's commit for workflow_run. For other events nothing
       counts as deployed, and the check goes on the job's commit, or a pull request's head commit.
     default: ''

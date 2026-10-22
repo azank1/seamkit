@@ -45,8 +45,18 @@ export function stateCounts(parts: readonly Verdict[]): { state: ReadbackState; 
   return order.map((state) => ({ state, count: parts.filter((p) => p.state === state).length })).filter((c) => c.count > 0);
 }
 
-/** A table cell: one line, whatever ends it (Markdown ends a line at a lone CR too), with the table's own separator escaped. */
-const cell = (s: string): string => s.replace(/\s*[\r\n]\s*/g, ' ').replace(/\|/g, '\\|');
+/**
+ * Text from a merged change, as one line of Markdown that shows it as written: one line whatever
+ * ends it (Markdown ends a line at a lone CR too), HTML as text, and every character that would
+ * start a link, an image, emphasis, code or the table's next column escaped.
+ */
+export const cell = (s: string): string =>
+  s
+    .replace(/\s*[\r\n]\s*/g, ' ')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/[\\`*_[\]!~|]/g, '\\$&');
 
 /** A fenced block that the text cannot close: its fence is longer than any run of backticks in it. */
 function fenced(text: string): string {

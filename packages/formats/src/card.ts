@@ -87,6 +87,9 @@ export function readCard(text: string): CardLookup {
   return { found: true, ...parseCard(blocks[0] as string) };
 }
 
+/** A key as a problem names it: as written when it is a plain name, else quoted, so it cannot break the report's lines. */
+const keyName = (k: string): string => (/^[A-Za-z0-9_.-]{1,64}$/.test(k) ? k : JSON.stringify(k));
+
 const describe = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? 'a list' : typeof v === 'object' ? 'a mapping' : JSON.stringify(v));
 
 /** Parses the YAML inside a card block. */
@@ -173,7 +176,7 @@ function checkMarker(raw: unknown, field: string, problems: string[]): CardMarke
     none: ['kind', 'reason'],
   };
   const extra = Object.keys(m).filter((k) => !(allowed[kind] as string[]).includes(k));
-  if (extra.length > 0) problems.push(`${field} has unknown field(s) for kind ${kind}: ${extra.join(', ')}; allowed: ${(allowed[kind] as string[]).join(', ')}`);
+  if (extra.length > 0) problems.push(`${field} has unknown field(s) for kind ${kind}: ${extra.map(keyName).join(', ')}; allowed: ${(allowed[kind] as string[]).join(', ')}`);
   switch (kind) {
     case 'bundle': {
       const text = str(m['text'], `${field}.text`, problems, 'text the built output contains, not text that exists only in source');
@@ -208,7 +211,7 @@ function checkCard(raw: unknown, problems: string[]): Card | undefined {
   }
   const c = raw as Record<string, unknown>;
   const unknown = Object.keys(c).filter((k) => !FIELDS.includes(k));
-  if (unknown.length > 0) problems.push(`card has unknown field(s): ${unknown.join(', ')}; allowed: ${FIELDS.join(', ')}`);
+  if (unknown.length > 0) problems.push(`card has unknown field(s): ${unknown.map(keyName).join(', ')}; allowed: ${FIELDS.join(', ')}`);
   if (c['card'] !== 1) problems.push(`card must be 1, the card format version; got ${describe(c['card'])}`);
   const intent = str(c['intent'], 'intent', problems, 'one sentence saying what the change does and why');
 

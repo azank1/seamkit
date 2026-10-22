@@ -119,13 +119,13 @@ seconds until production's version document reports the deployed commit, then re
 the ledger. When production still runs another commit at the end of the wait, the summary says which. If that commit
 does not contain the deployed one, the deploy is not live at this address, and a pass is reported as a fail.
 
-Once the ledger holds a run at this address, a change merged after the deployed commit that no recorded run saw live
-there, and that production's own version document does not contain, is listed as not examined and left to the next
-deploy, so a merge landing while this deploy builds does not fail it. A change a recorded run saw live is still judged,
-so a deploy that drops it, as a rollback does, fails as not live. Without a ledger, and on the first run at an
-address, seamkit cannot tell a change still on its way from one a rollback removed, so it judges every change: a merge
-landing during the build fails the deploy as not proven until the next deploy carries it, and a rollback fails as not
-proven rather than not live. After a deploy, `last` counts the changes judged, not the ones left to the next deploy.
+Once the ledger holds a run that read this address, a change merged after the deployed commit is listed as not
+examined and left to the next deploy when it was never seen live there and was in no build production was seen running
+there, so a merge landing while this deploy builds does not fail it. Every other change is judged, so a deploy that
+drops one, as a rollback does, fails. Without a ledger, on the first run at an address, and once production there has
+been seen running a commit this repository does not have, seamkit cannot tell a change still on its way from one a
+rollback removed, so it judges every change: a merge landing during the build fails the deploy as not proven until the
+next deploy carries it, and a rollback fails as not proven rather than not live. After a deploy, `last` counts the changes judged, not the ones left to the next deploy.
 
 Only a pass posts a success. A change that is not live or not proven fails the check, and an unclassified result is
 marked action required. Examined nothing fails it too, whether production could not be read, a marker could not be
@@ -182,19 +182,22 @@ Anywhere else, run readback as a step of the job that deploys, once the deploy i
     node-version: 22
 # … your deploy steps …
 - run: |
-    git fetch --quiet --no-tags origin '+refs/heads/main:refs/remotes/origin/main'   # main as it is now
+    git fetch --quiet --no-tags origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"   # the branch as it is now
     npx --yes seamkit@0.2 state sync || true   # fetch the ledger, when there is one
     status=0
-    npx --yes seamkit@0.2 readback --url https://your.app --last 20 --deployed "$DEPLOYED_COMMIT" || status=$?
+    npx --yes seamkit@0.2 readback --url https://your.app --last 20 --branch "$BRANCH" --deployed "$DEPLOYED_COMMIT" || status=$?
     npx --yes seamkit@0.2 state sync || echo '::warning::seamkit: the ledger was not pushed'
     exit $status
   env:
+    BRANCH: ${{ github.event.repository.default_branch }}
     DEPLOYED_COMMIT: ${{ github.sha }}   # the commit this job deployed
 ```
 
 The step exits with readback's code: it fails when a change is not live or not proven, and exits 3 when nothing could
 be examined, so a broken read never passes silently. Readback records the run when the checkout has a ledger
-(`seamkit state init` starts one), and pushing it needs `permissions: contents: write`.
+(`seamkit state init` starts one), and pushing it needs `permissions: contents: write`. In a GitHub Actions step, the
+CLI's output cannot run a workflow command: where a change's own words would read as one, a zero-width space keeps them
+plain text.
 
 ## Use it from an agent
 
@@ -312,7 +315,7 @@ cover, is in [`docs/prior-art.md`](docs/prior-art.md).
 
 ```sh
 npm ci
-npm test             # 172 tests, using temporary repositories and a local fake production
+npm test             # 184 tests, using temporary repositories and a local fake production
 npm run demo         # add -- --keep to keep the demo repository
 npm run pack:cli     # builds the npm package into release/seamkit
 npm run smoke:pack   # installs that package into an empty project and runs it

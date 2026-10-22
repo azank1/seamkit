@@ -545,18 +545,24 @@ repository root, so it is used as `azank1/seamkit@<tag>`, with its code in `pack
 that CI rebuilds and compares. The Action posts examined nothing as a failed check, not a neutral one, because GitHub
 counts a neutral check as passing for required checks, and unclassified as action required. Readback gained
 `--deployed`, the commit a deploy put out. Once the ledger holds a recorded run that read this address's version
-document, a change merged after it that no recorded run saw live there, and that production's own version document does
-not contain, is scoped out, folded into one not-examined gap and left to the next deploy, so a merge landing during a
-build does not fail a healthy deploy. A change seen live there before is still judged, so a deploy that drops it fails
-as not live, and one production runs is judged, so the run records the sighting. Without such a run, whether there is no
-ledger, a ledger just started, or one kept for another address, nothing is scoped out, because a change on its way
-cannot be told from one a rollback removed, and the gap says so. `--last` counts the changes judged. This is scoping in
+document, a change merged after it is scoped out, folded into one not-examined gap and left to the next deploy, when it
+was never seen live there and is in no build production was seen running there, by any recorded run whatever it judged,
+or by this one. A merge landing during a build then does not fail a healthy deploy, and a deploy that drops any other
+change fails. Without such a run, whether there is no ledger, a ledger just started, or one kept for another address,
+and once production there has been seen running a commit the repository does not have, nothing is scoped out, because a
+change on its way cannot be told from one a rollback removed, and the gap says so. `--last` counts the changes judged. This is scoping in
 the shell, like `--last`; the check and its version are unchanged, and a contradicted marker on a scoped-out change
 shows on the next run that judges it, such as the scheduled watch. `readback --json` reports production's own version
 document as `production`, and the Action waits on that document alone: a read is final once it reports the deployed
 commit, and once a read has named a commit, a read that names none is a failed read rather than an answer. A pass while
 production runs a commit that does not contain the deployed one is reported as a fail, because the deploy is not live at
 that address. Before reading, the Action fetches the branch it reads, because `actions/checkout` points
-`origin/<branch>` at the job's commit when the branch has moved on, and a bare `--branch` name now prefers
-`origin/<name>` over a local branch of that name. It points `origin/HEAD` at the event's default branch, which
-`actions/checkout` leaves unset, and for a schedule, whose payload names none, at the branch the schedule runs on.
+`origin/<branch>` at the job's commit when the branch has moved on, and a `--branch` that git accepts as a branch name
+(`git check-ref-format --branch`) now prefers `origin/<name>` over a local branch of that name, while `HEAD` and other
+revisions mean what git says. The Action reads `refs/heads/<name>`, `origin/<name>` and `refs/remotes/origin/<name>` as
+`<name>`, and warns when the branch cannot be fetched. It points `origin/HEAD` at the event's default branch, which
+`actions/checkout` leaves unset, and for a schedule, whose payload names none, at the branch the schedule runs on. When
+it records, it fetches the ledger again after the wait, so the run that counts sees what other runs pushed meanwhile.
+In a GitHub Actions step the CLI's output cannot run a workflow command: a zero-width space goes before a line that would
+start one and inside `##[`, and JSON output writes `[` after `##` as `\u005b`. `--version-url` is checked as `--url` is,
+and the Action's tables show a change's words as text, never as Markdown or HTML.

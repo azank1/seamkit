@@ -1,3 +1,4 @@
+import { isBranchName } from '@seamkit/adapters';
 import { renderReadback, type Outcome, type Verdict } from '@seamkit/core';
 import { runGit } from '@seamkit/state';
 import { run, type Io } from 'seamkit';
@@ -114,8 +115,6 @@ async function openLedger(inputs: ActionInputs, cli: (args: string[]) => Promise
   return true;
 }
 
-const BRANCH_NAME = /^[A-Za-z0-9._/-]+$/;
-
 /**
  * Prepares the checkout as readback expects a clone: the full history, because readback decides by
  * ancestry; the branch it reads as the remote has it, because actions/checkout points
@@ -131,11 +130,15 @@ async function prepareCheckout(cwd: string, defaultBranch: string | undefined, b
     if (fetched.code !== 0) deps.warn(`seamkit: could not fetch the full history, so older changes are not examined: ${fetched.stderr.trim()}`);
   }
   const read = branchInput !== '' ? branchInput : defaultBranch;
-  if (read !== undefined && BRANCH_NAME.test(read) && !read.startsWith('refs/')) {
-    const tip = await runGit(['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/${read}:refs/remotes/origin/${read}`], { cwd });
-    if (tip.code !== 0 && branchInput === '') deps.warn(`seamkit: could not fetch ${read} from origin, so changes merged since this job's commit may not be examined: ${tip.stderr.trim()}`);
+  if (read !== undefined) {
+    if (await isBranchName(cwd, read)) {
+      const tip = await runGit(['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/${read}:refs/remotes/origin/${read}`], { cwd });
+      if (tip.code !== 0) deps.warn(`seamkit: could not fetch ${read} from origin, so changes merged since this job's commit may not be examined: ${tip.stderr.trim()}`);
+    } else {
+      deps.warn(`seamkit: ${read} is not a branch name, so it was not fetched from origin and is read as this checkout has it`);
+    }
   }
-  if (defaultBranch === undefined || !BRANCH_NAME.test(defaultBranch)) return;
+  if (defaultBranch === undefined || !(await isBranchName(cwd, defaultBranch))) return;
   const target = `refs/remotes/origin/${defaultBranch}`;
   if ((await runGit(['rev-parse', '--verify', '--quiet', target], { cwd })).code !== 0) return;
   const head = await runGit(['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'], { cwd });
@@ -336,8 +339,11 @@ export async function runAction(deps: ActionDeps): Promise<number> {
   // CLI messages can repeat an input; a URL in one is shown as displayUrl shows it.
   const clean = (text: string): string => scrub(text, [inputs.url, inputs.versionUrl]);
   if (recording && result.code !== EXIT_USAGE) {
-    // The run that counts is read again and recorded, so the ledger holds what was judged. A
+    // The run that counts is read again and recorded, so the ledger holds what was judged. Other
+    // runs may have pushed to the ledger during the wait, so it is fetched again first. A
     // recording that fails leaves the verdict as it was read, and says it was not recorded.
+    const resync = await cli(['state', 'sync', '--json']);
+    if (resync.code !== 0) deps.warn(`seamkit: the ledger could not be fetched again after the wait, so this run judges it as it was: ${clean(resync.err.trim())}`);
     const again = await cli(args);
     if (again.code === EXIT_USAGE) deps.warn(`seamkit: the verdict was not recorded: ${clean(again.err.trim())}`);
     else result = again;

@@ -1,7 +1,8 @@
 // Runs the committed action bundle the way GitHub does, `node packages/action/bundle/index.js` with
 // INPUT_* and GITHUB_* variables, in a throwaway clone of a local origin, against a local production
 // and a local stand-in for the GitHub API. The first deploy must pass, start the ledger and push it;
-// the second, which production does not run, must fail as not live and push its run too.
+// the second, which production does not run, must fail as not live and push its run too. A change
+// title written as workflow commands must reach the job log only inside a stop-commands fence.
 import { execFile, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -71,7 +72,24 @@ async function job(n, deployed, inputs) {
   );
   process.stdout.write(`${r.stdout}${r.stderr}`);
   const outcome = /^outcome<<(\S+)\n([\s\S]*?)\n\1$/m.exec(await readFile(output, 'utf8'))?.[2];
-  return { code: r.code, post: posts.length === before + 1 ? posts[posts.length - 1] : undefined, outcome, summary: await readFile(summary, 'utf8') };
+  return { code: r.code, stdout: r.stdout, post: posts.length === before + 1 ? posts[posts.length - 1] : undefined, outcome, summary: await readFile(summary, 'utf8') };
+}
+
+/** Lines holding `word` that a runner would read with commands on: outside every fence, or in one whose token was used before. */
+function unfenced(stdout, word) {
+  const tokens = new Set();
+  let open;
+  const bad = [];
+  for (const line of stdout.split(/\r\n|\r|\n/)) {
+    const start = /^::stop-commands::(.+)$/.exec(line);
+    if (open === undefined && start) {
+      if (tokens.has(start[1])) bad.push(`token reused: ${start[1]}`);
+      tokens.add(start[1]);
+      open = start[1];
+    } else if (open !== undefined && line === `::${open}::`) open = undefined;
+    else if (open === undefined && line.includes(word)) bad.push(line);
+  }
+  return bad;
 }
 
 const ledgerEvents = () => git(origin, 'ls-tree', '-r', '--name-only', 'refs/heads/seamkit/state', 'events/').split('\n').filter((l) => l.length > 0).length;
@@ -91,7 +109,7 @@ try {
   const first = git(dev, 'rev-parse', 'HEAD');
   await writeFile(join(dev, 'a.txt'), 'a\n');
   git(dev, 'add', 'a.txt');
-  git(dev, 'commit', '-q', '-m', 'Add the list (#1)');
+  git(dev, 'commit', '-q', '-m', 'Add the list ##[warning]forged ::warning::forged (#1)');
   const head = git(dev, 'rev-parse', 'HEAD');
   git(dev, 'push', '-q', origin, 'main');
   git(root, 'clone', '-q', `file://${origin}`, ci);
@@ -102,6 +120,8 @@ try {
   expect(pass.post?.conclusion === 'success' && pass.post?.head_sha === head, `the first deploy posts a success on ${head}, not ${JSON.stringify(pass.post)}`);
   expect(pass.outcome === 'pass', `the first deploy's outcome is pass, not ${pass.outcome}`);
   expect(pass.summary.startsWith(`### ${pass.post?.name}: ${pass.post?.output?.title}`), `the first deploy writes its job summary, not ${JSON.stringify(pass.summary.slice(0, 80))}`);
+  expect(pass.stdout.includes('forged'), 'the first deploy logs the change title');
+  expect(unfenced(pass.stdout, 'forged').length === 0, `the first deploy logs a change title outside a fence: ${JSON.stringify(unfenced(pass.stdout, 'forged'))}`);
   const pushed = spawnSync('git', ['ls-remote', origin, 'refs/heads/seamkit/state'], { encoding: 'utf8' }).stdout.trim();
   expect(pushed !== '', 'the first deploy pushes the seamkit/state branch to origin');
 
@@ -112,6 +132,7 @@ try {
   expect(fail.post?.conclusion === 'failure', `the second deploy posts a failure, not ${JSON.stringify(fail.post)}`);
   expect(/1 not live/.test(fail.post?.output?.title ?? ''), `the second deploy's title says not live, not ${fail.post?.output?.title}`);
   expect(fail.outcome === 'fail', `the second deploy's outcome is fail, not ${fail.outcome}`);
+  expect(unfenced(fail.stdout, 'forged').length === 0, `the second deploy logs a change title outside a fence: ${JSON.stringify(unfenced(fail.stdout, 'forged'))}`);
   if (pushed !== '') expect(ledgerEvents() === 2, `origin's ledger holds both runs, not ${ledgerEvents()}`);
 
   if (problems.length > 0) {

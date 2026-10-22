@@ -7369,6 +7369,65 @@ var require_dist = __commonJS({
 // packages/action/dist/main.js
 import { randomUUID } from "node:crypto";
 
+// packages/adapters/dist/http.js
+var DEFAULT_TIMEOUT_MS = 1e4;
+function networkReason(err, timeoutMs) {
+  const e = err;
+  if (e?.name === "TimeoutError" || e?.name === "AbortError")
+    return `no response within ${timeoutMs / 1e3} s`;
+  const code = e?.cause?.code;
+  return code ? `could not connect (${code})` : "could not connect";
+}
+async function fetchLimited(url2, opts = {}) {
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxBytes = opts.maxBytes ?? 5 * 1024 * 1024;
+  let res;
+  try {
+    res = await (opts.fetch ?? fetch)(url2, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { "user-agent": opts.userAgent ?? "seamkit", accept: opts.accept ?? "*/*" }
+    });
+  } catch (err) {
+    return { ok: false, reason: networkReason(err, timeoutMs) };
+  }
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => void 0);
+    return { ok: false, status: res.status, reason: `HTTP ${res.status}` };
+  }
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await res.body?.cancel().catch(() => void 0);
+    return { ok: false, status: res.status, reason: `larger than ${maxBytes} bytes` };
+  }
+  const chunks = [];
+  let size = 0;
+  try {
+    if (res.body !== null) {
+      for await (const chunk of res.body) {
+        size += chunk.byteLength;
+        if (size > maxBytes) {
+          await res.body.cancel().catch(() => void 0);
+          return { ok: false, status: res.status, reason: `larger than ${maxBytes} bytes` };
+        }
+        chunks.push(Buffer.from(chunk));
+      }
+    }
+  } catch (err) {
+    return { ok: false, status: res.status, reason: `the response stopped: ${networkReason(err, timeoutMs)}` };
+  }
+  return { ok: true, status: res.status, contentType: (res.headers.get("content-type") ?? "").toLowerCase(), body: Buffer.concat(chunks) };
+}
+function isHtml(f) {
+  if (f.contentType.startsWith("text/html"))
+    return true;
+  const head = f.body.subarray(0, 256).toString("utf8").trimStart().toLowerCase();
+  return head.startsWith("<!doctype html") || head.startsWith("<html");
+}
+
+// packages/adapters/dist/version.js
+import { createHash as createHash2 } from "node:crypto";
+
 // packages/core/dist/outcome.js
 var OUTCOMES = ["pass", "examined_nothing", "unclassified", "fail"];
 var SEVERITY = {
@@ -8689,6 +8748,199 @@ function defaultRegistry() {
   return new CheckRegistry().register(invariantCheck).register(readbackCheck);
 }
 
+// packages/adapters/dist/version.js
+var VERSION_PATHS = ["/version.json", "/api/version", "/version"];
+async function probe(url2, opts) {
+  const r = await fetchLimited(url2, { ...opts, maxBytes: 64 * 1024, accept: "application/json" });
+  if (!r.ok)
+    return { ok: false, reason: r.reason };
+  if (isHtml(r)) {
+    return { ok: false, reason: "the response is a web page, not a version document (sites often answer unknown paths with their index page)" };
+  }
+  const reading = readVersionDoc(r.body.toString("utf8"));
+  if (!reading.ok)
+    return { ok: false, reason: reading.problem };
+  const digest2 = createHash2("sha256").update(r.body).digest("hex");
+  return reading.dirty === void 0 ? { ok: true, commit: reading.commit, digest: digest2 } : { ok: true, commit: reading.commit, dirty: reading.dirty, digest: digest2 };
+}
+async function observed(url2, at2, p, resolve3) {
+  const obs = { url: url2, at: at2, status: "ok", reported: p.commit, digest: p.digest };
+  const full = await resolve3(p.commit);
+  if (full !== void 0)
+    obs.commit = full;
+  if (p.dirty !== void 0)
+    obs.dirty = p.dirty;
+  return obs;
+}
+async function observeVersion(url2, at2, resolve3, opts = {}) {
+  const p = await probe(url2, opts);
+  return p.ok ? observed(url2, at2, p, resolve3) : { url: url2, at: at2, status: "unreadable", reason: p.reason };
+}
+async function discoverVersion(origin, at2, resolve3, opts = {}) {
+  const tried = [];
+  for (const path of VERSION_PATHS) {
+    const url2 = new URL(path, origin).href;
+    const p = await probe(url2, opts);
+    if (p.ok)
+      return observed(url2, at2, p, resolve3);
+    tried.push(`${path}: ${p.reason}`);
+  }
+  return {
+    url: new URL(VERSION_PATHS[0], origin).href,
+    at: at2,
+    status: "unreadable",
+    reason: `production serves no version document (${tried.join("; ")})`
+  };
+}
+
+// packages/adapters/dist/bundle.js
+import { createHash as createHash3 } from "node:crypto";
+var TAG = /<(script|link)\b([^>]*)>/gi;
+var ATTR = /([^\s"'=<>`/]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g;
+var SCRIPT_REF = /["'`]((?:\.{1,2}\/|\/)[^"'`\s<>()]*?\.(?:m?js|css))["'`]/g;
+function attributes(text) {
+  const out = /* @__PURE__ */ new Map();
+  for (const m of text.matchAll(ATTR))
+    out.set(m[1].toLowerCase(), (m[2] ?? m[3] ?? m[4] ?? "").replace(/&amp;/g, "&"));
+  return out;
+}
+function pageRefs(html) {
+  const refs = [];
+  for (const m of html.matchAll(TAG)) {
+    const attrs = attributes(m[2]);
+    if (m[1].toLowerCase() === "script") {
+      const src = attrs.get("src");
+      if (src)
+        refs.push(src);
+      continue;
+    }
+    const rel = (attrs.get("rel") ?? "").toLowerCase().split(/\s+/);
+    const as = (attrs.get("as") ?? "").toLowerCase();
+    const href = attrs.get("href");
+    if (href && (rel.includes("stylesheet") || rel.includes("modulepreload") || rel.includes("preload") && (as === "script" || as === "style"))) {
+      refs.push(href);
+    }
+  }
+  return refs;
+}
+function scriptRefs(js) {
+  return [...js.matchAll(SCRIPT_REF)].map((m) => m[1]);
+}
+function resolveRef(ref, base) {
+  try {
+    const u = new URL(ref, base);
+    u.hash = "";
+    return u.protocol === "http:" || u.protocol === "https:" ? u : void 0;
+  } catch {
+    return void 0;
+  }
+}
+var MAX_FILE_BYTES = 10 * 1024 * 1024;
+var isStyleOrScript = (contentType, url2) => /javascript|ecmascript|text\/css/.test(contentType) || /\.(?:m?js|css)$/i.test(new URL(url2).pathname);
+async function observeBundle(pageUrl, texts, at2, opts = {}) {
+  const maxFiles = opts.maxFiles ?? 100;
+  const maxTotalBytes = opts.maxTotalBytes ?? 25 * 1024 * 1024;
+  const concurrency = opts.concurrency ?? 6;
+  const searched = [...new Set(texts)].sort();
+  const unreadable = (reason) => ({ url: pageUrl, at: at2, status: "unreadable", complete: false, files: 0, bytes: 0, searched, found: [], reason });
+  const page = await fetchLimited(pageUrl, { ...opts, accept: "text/html,*/*" });
+  if (!page.ok)
+    return unreadable(page.reason);
+  const origin = new URL(pageUrl).origin;
+  const read = /* @__PURE__ */ new Map([[pageUrl, page.body]]);
+  const seen = /* @__PURE__ */ new Set([pageUrl]);
+  const failures = [];
+  const otherOrigins = /* @__PURE__ */ new Set();
+  let total = page.body.length;
+  let capped = false;
+  const enqueue = (refs, base, required, into) => {
+    for (const ref of refs) {
+      const u = resolveRef(ref, base);
+      if (u === void 0)
+        continue;
+      if (u.origin !== origin) {
+        if (required)
+          otherOrigins.add(u.origin);
+        continue;
+      }
+      if (seen.has(u.href))
+        continue;
+      seen.add(u.href);
+      into.push({ url: u.href, required });
+    }
+  };
+  let level = [];
+  if (isHtml(page))
+    enqueue(pageRefs(page.body.toString("utf8")), pageUrl, true, level);
+  while (level.length > 0 && !capped) {
+    level.sort((a, b) => a.url < b.url ? -1 : a.url > b.url ? 1 : 0);
+    const room = maxFiles - read.size;
+    if (level.length > room) {
+      level = level.slice(0, room);
+      capped = true;
+    }
+    const next = [];
+    for (let i = 0; i < level.length; i += concurrency) {
+      const batch = level.slice(i, i + concurrency);
+      const results = await Promise.all(batch.map((ref) => fetchLimited(ref.url, { ...opts, maxBytes: MAX_FILE_BYTES })));
+      batch.forEach((ref, j) => {
+        const r = results[j];
+        const path = new URL(ref.url).pathname;
+        if (!r.ok) {
+          if (!ref.required && r.status === 404)
+            return;
+          failures.push(`${path}: ${r.reason}`);
+          return;
+        }
+        if (!ref.required && (isHtml(r) || !isStyleOrScript(r.contentType, ref.url)))
+          return;
+        if (ref.required && isHtml(r) && /\.(?:m?js|css)$/i.test(path)) {
+          failures.push(`${path}: the server answered with a web page instead of the file`);
+          return;
+        }
+        if (total + r.body.length > maxTotalBytes) {
+          capped = true;
+          return;
+        }
+        read.set(ref.url, r.body);
+        total += r.body.length;
+        if (!/text\/css/.test(r.contentType))
+          enqueue(scriptRefs(r.body.toString("utf8")), ref.url, false, next);
+      });
+    }
+    level = next;
+  }
+  const found = searched.filter((text) => {
+    const needle = Buffer.from(text, "utf8");
+    for (const body of read.values())
+      if (body.includes(needle))
+        return true;
+    return false;
+  });
+  const listing = [...read].map(([url2, body]) => [url2, createHash3("sha256").update(body).digest("hex")]).sort((a, b) => a[0] < b[0] ? -1 : 1);
+  const obs = {
+    url: pageUrl,
+    at: at2,
+    status: "ok",
+    complete: failures.length === 0 && !capped,
+    files: read.size,
+    bytes: total,
+    digest: createHash3("sha256").update(canonicalJson(listing)).digest("hex"),
+    searched,
+    found
+  };
+  if (otherOrigins.size > 0)
+    obs.otherOrigins = [...otherOrigins].sort().slice(0, 20);
+  const problems = [];
+  if (failures.length > 0)
+    problems.push(`${failures.length} referenced file${failures.length === 1 ? "" : "s"} could not be read (${failures.slice(0, 3).join("; ")})`);
+  if (capped)
+    problems.push(`the search stopped at its limit of ${maxFiles} files or ${maxTotalBytes} bytes`);
+  if (problems.length > 0)
+    obs.reason = problems.join("; ");
+  return obs;
+}
+
 // packages/state/dist/store.js
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8953,264 +9205,14 @@ var GitStateStore = class _GitStateStore {
   }
 };
 
-// packages/cli/dist/cli.js
-import { readFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
-import { resolve as resolve2 } from "node:path";
-import { parseArgs } from "node:util";
-
-// packages/adapters/dist/http.js
-var DEFAULT_TIMEOUT_MS = 1e4;
-function networkReason(err, timeoutMs) {
-  const e = err;
-  if (e?.name === "TimeoutError" || e?.name === "AbortError")
-    return `no response within ${timeoutMs / 1e3} s`;
-  const code = e?.cause?.code;
-  return code ? `could not connect (${code})` : "could not connect";
-}
-async function fetchLimited(url2, opts = {}) {
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const maxBytes = opts.maxBytes ?? 5 * 1024 * 1024;
-  let res;
-  try {
-    res = await (opts.fetch ?? fetch)(url2, {
-      redirect: "follow",
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: { "user-agent": opts.userAgent ?? "seamkit", accept: opts.accept ?? "*/*" }
-    });
-  } catch (err) {
-    return { ok: false, reason: networkReason(err, timeoutMs) };
-  }
-  if (!res.ok) {
-    await res.body?.cancel().catch(() => void 0);
-    return { ok: false, status: res.status, reason: `HTTP ${res.status}` };
-  }
-  const declared = Number(res.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    await res.body?.cancel().catch(() => void 0);
-    return { ok: false, status: res.status, reason: `larger than ${maxBytes} bytes` };
-  }
-  const chunks = [];
-  let size = 0;
-  try {
-    if (res.body !== null) {
-      for await (const chunk of res.body) {
-        size += chunk.byteLength;
-        if (size > maxBytes) {
-          await res.body.cancel().catch(() => void 0);
-          return { ok: false, status: res.status, reason: `larger than ${maxBytes} bytes` };
-        }
-        chunks.push(Buffer.from(chunk));
-      }
-    }
-  } catch (err) {
-    return { ok: false, status: res.status, reason: `the response stopped: ${networkReason(err, timeoutMs)}` };
-  }
-  return { ok: true, status: res.status, contentType: (res.headers.get("content-type") ?? "").toLowerCase(), body: Buffer.concat(chunks) };
-}
-function isHtml(f) {
-  if (f.contentType.startsWith("text/html"))
-    return true;
-  const head = f.body.subarray(0, 256).toString("utf8").trimStart().toLowerCase();
-  return head.startsWith("<!doctype html") || head.startsWith("<html");
-}
-
-// packages/adapters/dist/version.js
-import { createHash as createHash2 } from "node:crypto";
-var VERSION_PATHS = ["/version.json", "/api/version", "/version"];
-async function probe(url2, opts) {
-  const r = await fetchLimited(url2, { ...opts, maxBytes: 64 * 1024, accept: "application/json" });
-  if (!r.ok)
-    return { ok: false, reason: r.reason };
-  if (isHtml(r)) {
-    return { ok: false, reason: "the response is a web page, not a version document (sites often answer unknown paths with their index page)" };
-  }
-  const reading = readVersionDoc(r.body.toString("utf8"));
-  if (!reading.ok)
-    return { ok: false, reason: reading.problem };
-  const digest2 = createHash2("sha256").update(r.body).digest("hex");
-  return reading.dirty === void 0 ? { ok: true, commit: reading.commit, digest: digest2 } : { ok: true, commit: reading.commit, dirty: reading.dirty, digest: digest2 };
-}
-async function observed(url2, at2, p, resolve3) {
-  const obs = { url: url2, at: at2, status: "ok", reported: p.commit, digest: p.digest };
-  const full = await resolve3(p.commit);
-  if (full !== void 0)
-    obs.commit = full;
-  if (p.dirty !== void 0)
-    obs.dirty = p.dirty;
-  return obs;
-}
-async function observeVersion(url2, at2, resolve3, opts = {}) {
-  const p = await probe(url2, opts);
-  return p.ok ? observed(url2, at2, p, resolve3) : { url: url2, at: at2, status: "unreadable", reason: p.reason };
-}
-async function discoverVersion(origin, at2, resolve3, opts = {}) {
-  const tried = [];
-  for (const path of VERSION_PATHS) {
-    const url2 = new URL(path, origin).href;
-    const p = await probe(url2, opts);
-    if (p.ok)
-      return observed(url2, at2, p, resolve3);
-    tried.push(`${path}: ${p.reason}`);
-  }
-  return {
-    url: new URL(VERSION_PATHS[0], origin).href,
-    at: at2,
-    status: "unreadable",
-    reason: `production serves no version document (${tried.join("; ")})`
-  };
-}
-
-// packages/adapters/dist/bundle.js
-import { createHash as createHash3 } from "node:crypto";
-var TAG = /<(script|link)\b([^>]*)>/gi;
-var ATTR = /([^\s"'=<>`/]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g;
-var SCRIPT_REF = /["'`]((?:\.{1,2}\/|\/)[^"'`\s<>()]*?\.(?:m?js|css))["'`]/g;
-function attributes(text) {
-  const out = /* @__PURE__ */ new Map();
-  for (const m of text.matchAll(ATTR))
-    out.set(m[1].toLowerCase(), (m[2] ?? m[3] ?? m[4] ?? "").replace(/&amp;/g, "&"));
-  return out;
-}
-function pageRefs(html) {
-  const refs = [];
-  for (const m of html.matchAll(TAG)) {
-    const attrs = attributes(m[2]);
-    if (m[1].toLowerCase() === "script") {
-      const src = attrs.get("src");
-      if (src)
-        refs.push(src);
-      continue;
-    }
-    const rel = (attrs.get("rel") ?? "").toLowerCase().split(/\s+/);
-    const as = (attrs.get("as") ?? "").toLowerCase();
-    const href = attrs.get("href");
-    if (href && (rel.includes("stylesheet") || rel.includes("modulepreload") || rel.includes("preload") && (as === "script" || as === "style"))) {
-      refs.push(href);
-    }
-  }
-  return refs;
-}
-function scriptRefs(js) {
-  return [...js.matchAll(SCRIPT_REF)].map((m) => m[1]);
-}
-function resolveRef(ref, base) {
-  try {
-    const u = new URL(ref, base);
-    u.hash = "";
-    return u.protocol === "http:" || u.protocol === "https:" ? u : void 0;
-  } catch {
-    return void 0;
-  }
-}
-var MAX_FILE_BYTES = 10 * 1024 * 1024;
-var isStyleOrScript = (contentType, url2) => /javascript|ecmascript|text\/css/.test(contentType) || /\.(?:m?js|css)$/i.test(new URL(url2).pathname);
-async function observeBundle(pageUrl, texts, at2, opts = {}) {
-  const maxFiles = opts.maxFiles ?? 100;
-  const maxTotalBytes = opts.maxTotalBytes ?? 25 * 1024 * 1024;
-  const concurrency = opts.concurrency ?? 6;
-  const searched = [...new Set(texts)].sort();
-  const unreadable = (reason) => ({ url: pageUrl, at: at2, status: "unreadable", complete: false, files: 0, bytes: 0, searched, found: [], reason });
-  const page = await fetchLimited(pageUrl, { ...opts, accept: "text/html,*/*" });
-  if (!page.ok)
-    return unreadable(page.reason);
-  const origin = new URL(pageUrl).origin;
-  const read = /* @__PURE__ */ new Map([[pageUrl, page.body]]);
-  const seen = /* @__PURE__ */ new Set([pageUrl]);
-  const failures = [];
-  const otherOrigins = /* @__PURE__ */ new Set();
-  let total = page.body.length;
-  let capped = false;
-  const enqueue = (refs, base, required, into) => {
-    for (const ref of refs) {
-      const u = resolveRef(ref, base);
-      if (u === void 0)
-        continue;
-      if (u.origin !== origin) {
-        if (required)
-          otherOrigins.add(u.origin);
-        continue;
-      }
-      if (seen.has(u.href))
-        continue;
-      seen.add(u.href);
-      into.push({ url: u.href, required });
-    }
-  };
-  let level = [];
-  if (isHtml(page))
-    enqueue(pageRefs(page.body.toString("utf8")), pageUrl, true, level);
-  while (level.length > 0 && !capped) {
-    level.sort((a, b) => a.url < b.url ? -1 : a.url > b.url ? 1 : 0);
-    const room = maxFiles - read.size;
-    if (level.length > room) {
-      level = level.slice(0, room);
-      capped = true;
-    }
-    const next = [];
-    for (let i = 0; i < level.length; i += concurrency) {
-      const batch = level.slice(i, i + concurrency);
-      const results = await Promise.all(batch.map((ref) => fetchLimited(ref.url, { ...opts, maxBytes: MAX_FILE_BYTES })));
-      batch.forEach((ref, j) => {
-        const r = results[j];
-        const path = new URL(ref.url).pathname;
-        if (!r.ok) {
-          if (!ref.required && r.status === 404)
-            return;
-          failures.push(`${path}: ${r.reason}`);
-          return;
-        }
-        if (!ref.required && (isHtml(r) || !isStyleOrScript(r.contentType, ref.url)))
-          return;
-        if (ref.required && isHtml(r) && /\.(?:m?js|css)$/i.test(path)) {
-          failures.push(`${path}: the server answered with a web page instead of the file`);
-          return;
-        }
-        if (total + r.body.length > maxTotalBytes) {
-          capped = true;
-          return;
-        }
-        read.set(ref.url, r.body);
-        total += r.body.length;
-        if (!/text\/css/.test(r.contentType))
-          enqueue(scriptRefs(r.body.toString("utf8")), ref.url, false, next);
-      });
-    }
-    level = next;
-  }
-  const found = searched.filter((text) => {
-    const needle = Buffer.from(text, "utf8");
-    for (const body of read.values())
-      if (body.includes(needle))
-        return true;
-    return false;
-  });
-  const listing = [...read].map(([url2, body]) => [url2, createHash3("sha256").update(body).digest("hex")]).sort((a, b) => a[0] < b[0] ? -1 : 1);
-  const obs = {
-    url: pageUrl,
-    at: at2,
-    status: "ok",
-    complete: failures.length === 0 && !capped,
-    files: read.size,
-    bytes: total,
-    digest: createHash3("sha256").update(canonicalJson(listing)).digest("hex"),
-    searched,
-    found
-  };
-  if (otherOrigins.size > 0)
-    obs.otherOrigins = [...otherOrigins].sort().slice(0, 20);
-  const problems = [];
-  if (failures.length > 0)
-    problems.push(`${failures.length} referenced file${failures.length === 1 ? "" : "s"} could not be read (${failures.slice(0, 3).join("; ")})`);
-  if (capped)
-    problems.push(`the search stopped at its limit of ${maxFiles} files or ${maxTotalBytes} bytes`);
-  if (problems.length > 0)
-    obs.reason = problems.join("; ");
-  return obs;
-}
-
 // packages/adapters/dist/git.js
 var HEX = /^[0-9a-f]{4,64}$/;
+async function isBranchName(cwd, name) {
+  if (name === "" || name.startsWith("-"))
+    return false;
+  const r = await runGit(["check-ref-format", "--branch", name], { cwd });
+  return r.code === 0 && r.stdout.toString("utf8").trim() === name;
+}
 var GitRepo = class _GitRepo {
   cwd;
   constructor(cwd) {
@@ -9235,7 +9237,7 @@ var GitRepo = class _GitRepo {
     if (name !== void 0) {
       if (name.startsWith("-"))
         throw new Error(`there is no branch or commit called ${name}`);
-      const remote = /^[A-Za-z0-9._/-]+$/.test(name) && !name.startsWith("refs/") ? await this.rev(`refs/remotes/origin/${name}`) : void 0;
+      const remote = !name.startsWith("refs/") && await isBranchName(this.cwd, name) ? await this.rev(`refs/remotes/origin/${name}`) : void 0;
       if (remote !== void 0)
         return { name, head: remote };
       const head2 = await this.rev(name);
@@ -9286,6 +9288,16 @@ var GitRepo = class _GitRepo {
       return { contains: false };
     return { contains: null, reason: `git could not compare the commits: ${r.stderr.trim().split("\n")[0] ?? `exit ${r.code}`}` };
   }
+  /** The commits reachable from any of `tips`, full ids, and not from `exclude`. */
+  async reachableFrom(tips, exclude) {
+    if (tips.length === 0)
+      return /* @__PURE__ */ new Set();
+    const r = await runGit(["rev-list", "--stdin"], { cwd: this.cwd, input: `${[...tips, `^${exclude}`].join("\n")}
+` });
+    if (r.code !== 0)
+      throw new GitError(["rev-list", "--stdin"], r);
+    return new Set(r.stdout.toString("utf8").split("\n").filter((l) => l.length > 0));
+  }
   async isShallow() {
     return await git(["rev-parse", "--is-shallow-repository"], { cwd: this.cwd }) === "true";
   }
@@ -9318,6 +9330,12 @@ var GitRepo = class _GitRepo {
     return out;
   }
 };
+
+// packages/cli/dist/cli.js
+import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { resolve as resolve2 } from "node:path";
+import { parseArgs } from "node:util";
 
 // packages/formats/dist/card.js
 var import_yaml = __toESM(require_dist(), 1);
@@ -9358,6 +9376,7 @@ function readCard(text) {
     return { found: true, ok: false, problems: [`there are ${blocks.length} seamkit-card blocks; a change has exactly one`] };
   return { found: true, ...parseCard(blocks[0]) };
 }
+var keyName = (k) => /^[A-Za-z0-9_.-]{1,64}$/.test(k) ? k : JSON.stringify(k);
 var describe = (v) => v === null ? "null" : Array.isArray(v) ? "a list" : typeof v === "object" ? "a mapping" : JSON.stringify(v);
 function parseCard(yamlText) {
   if (Buffer.byteLength(yamlText, "utf8") > MAX_CARD_BYTES)
@@ -9438,7 +9457,7 @@ function checkMarker(raw, field2, problems) {
   };
   const extra = Object.keys(m).filter((k) => !allowed[kind].includes(k));
   if (extra.length > 0)
-    problems.push(`${field2} has unknown field(s) for kind ${kind}: ${extra.join(", ")}; allowed: ${allowed[kind].join(", ")}`);
+    problems.push(`${field2} has unknown field(s) for kind ${kind}: ${extra.map(keyName).join(", ")}; allowed: ${allowed[kind].join(", ")}`);
   switch (kind) {
     case "bundle": {
       const text = str(m["text"], `${field2}.text`, problems, "text the built output contains, not text that exists only in source");
@@ -9474,7 +9493,7 @@ function checkCard(raw, problems) {
   const c = raw;
   const unknown = Object.keys(c).filter((k) => !FIELDS.includes(k));
   if (unknown.length > 0)
-    problems.push(`card has unknown field(s): ${unknown.join(", ")}; allowed: ${FIELDS.join(", ")}`);
+    problems.push(`card has unknown field(s): ${unknown.map(keyName).join(", ")}; allowed: ${FIELDS.join(", ")}`);
   if (c["card"] !== 1)
     problems.push(`card must be 1, the card format version; got ${describe(c["card"])}`);
   const intent = str(c["intent"], "intent", problems, "one sentence saying what the change does and why");
@@ -9553,6 +9572,7 @@ function parseChangeMessage(message, parentCount) {
 // packages/cli/dist/readback.js
 var PR_SEARCH_DEPTH = 200;
 var short2 = (commit2) => commit2.slice(0, 12);
+var COMMIT_ID = /^[0-9a-f]{4,64}$/;
 function subjectOf(c, pr) {
   return pr === void 0 ? `commit:${short2(c.commit)}` : `pr#${pr}`;
 }
@@ -9596,6 +9616,7 @@ async function loadHistory(cwd, primaryUrl, commits) {
     return null;
   const latest = /* @__PURE__ */ new Map();
   let readHere = false;
+  const observed2 = /* @__PURE__ */ new Set();
   for (const file of await store.list()) {
     const parsed = parseEventFile(file.path, file.content);
     if (!parsed.ok || parsed.kind !== "verdict")
@@ -9610,8 +9631,12 @@ async function loadHistory(cwd, primaryUrl, commits) {
       continue;
     }
     const first = input2.versions[0];
-    if (first !== void 0 && first.url === primaryUrl && first.status === "ok")
+    if (first !== void 0 && first.url === primaryUrl && first.status === "ok") {
       readHere = true;
+      const named = first.commit ?? first.reported;
+      if (named !== void 0 && COMMIT_ID.test(named))
+        observed2.add(named);
+    }
     for (const s of readbackSightings(input2, parsed.id)) {
       if (!commits.has(s.change))
         continue;
@@ -9621,7 +9646,7 @@ async function loadHistory(cwd, primaryUrl, commits) {
         latest.set(key, s);
     }
   }
-  return { sightings: [...latest.values()].sort((a, b) => a.change + a.marker < b.change + b.marker ? -1 : 1), readHere };
+  return { sightings: [...latest.values()].sort((a, b) => a.change + a.marker < b.change + b.marker ? -1 : 1), readHere, observed: [...observed2].sort() };
 }
 async function gatherReadback(cwd, req, now, http) {
   const repo = await GitRepo.open(cwd);
@@ -9641,11 +9666,11 @@ async function gatherReadback(cwd, req, now, http) {
     subject = `commit:${short2(c.commit)}`;
   } else {
     const depth = req.pr !== void 0 ? Math.max(req.last, PR_SEARCH_DEPTH) : req.deployed !== void 0 ? req.last + PR_SEARCH_DEPTH : req.last;
-    const history2 = await repo.firstParent(branch.head, depth);
+    const history2 = await repo.firstParent(branch.head, req.pr === void 0 ? depth + 1 : depth);
     if (req.pr === void 0) {
-      commits = history2;
+      commits = history2.slice(0, depth);
       subject = branch.name;
-      window = { read: history2.length, depth };
+      window = { more: history2.length > depth };
     } else {
       commits = history2.filter((c) => parseChangeMessage(c.message, c.parents.length).pr === req.pr).slice(0, 1);
       subject = `pr#${req.pr}`;
@@ -9672,37 +9697,50 @@ async function gatherReadback(cwd, req, now, http) {
   const loaded = await loadHistory(cwd, primary.url, new Set(drafts.map((c) => c.commit)));
   const history = loaded === null ? null : loaded.sightings;
   if (deployed !== void 0) {
-    if (loaded === null || !loaded.readHere) {
+    const ran = [];
+    const missing = [];
+    if (loaded !== null && loaded.readHere) {
+      const now2 = primary.status === "ok" ? primary.commit ?? primary.reported : void 0;
+      for (const named of /* @__PURE__ */ new Set([...loaded.observed, ...now2 !== void 0 && COMMIT_ID.test(now2) ? [now2] : []])) {
+        const full = await repo.resolve(named);
+        if (full === void 0)
+          missing.push(named);
+        else
+          ran.push(full);
+      }
+    }
+    if (loaded === null || !loaded.readHere || missing.length > 0) {
+      const because = loaded === null ? "no ledger was read, so" : !loaded.readHere ? "the ledger holds no earlier run that read this address, so" : `production at this address was seen running ${missing.map(short2).join(", ")}, which this repository does not have (fetch the branch it came from), so`;
       runGaps.push({
         item: "whether changes merged after the deployed commit are still on their way",
-        reason: loaded === null ? "no ledger was read, so one still on its way cannot be told from one a rollback removed; every change is judged (keep a ledger with seamkit state init)" : "the ledger holds no earlier run that read this address, so one still on its way cannot be told from one a rollback removed; every change is judged"
+        reason: `${because} one still on its way cannot be told from one a rollback removed; every change is judged${loaded === null ? " (keep a ledger with seamkit state init)" : ""}`
       });
     } else {
       const seen = new Set(loaded.sightings.map((s) => `${s.change} ${s.marker}`));
-      const shown = primary.status === "ok" && primary.commit !== void 0 && primary.dirty !== true ? primary.commit : void 0;
+      const wasRunning = await repo.reachableFrom(ran, deployed);
       const kept2 = [];
       const later = [];
       for (const d of drafts) {
         const inDeploy = (await repo.contains(deployed, d.commit)).contains;
         const seenHere = d.markers.some((m) => seen.has(`${d.commit} ${markerKey(m)}`));
-        const running2 = shown !== void 0 && (await repo.contains(shown, d.commit)).contains === true;
-        if (inDeploy !== false || seenHere || running2)
+        if (inDeploy !== false || seenHere || wasRunning.has(d.commit))
           kept2.push(d);
         else
           later.push(d.subject);
       }
       if (later.length > 0) {
         const listed = later.length > 20 ? `${later.slice(0, 20).join(", ")} and ${later.length - 20} more` : later.join(", ");
+        const them = later.length === 1 ? "it" : "them";
         runGaps.push({
           item: `${later.length} change${later.length === 1 ? "" : "s"} merged after the deployed commit ${short2(deployed)}`,
-          reason: `no recorded run saw ${later.length === 1 ? "it" : "them"} live at this address, so the next deploy proves ${later.length === 1 ? "it" : "them"}: ${listed}`
+          reason: `production at this address was never seen running ${them}, so the next deploy proves ${them}: ${listed}`
         });
       }
       drafts = kept2;
     }
   }
   if (window !== void 0) {
-    if (drafts.length > req.last || window.read === window.depth)
+    if (drafts.length > req.last || window.more)
       runGaps.push({ item: `changes before the last ${req.last} on ${branch.name}`, reason: "outside --last" });
     drafts = drafts.slice(0, req.last);
   }
@@ -9879,10 +9917,10 @@ readback proves whether production holds each merged change: by the commit produ
 runs (a version document, which "seamkit stamp" writes at build time), and by the markers in a
 change's seamkit-card. audit is readback over the last changes with advice for every gap. The
 production URL can also come from SEAMKIT_URL. After a deploy, --deployed names the commit just
-deployed. When the ledger holds a run that read this address, a change merged after it that no
-recorded run saw live here, and that production does not run, is left to the next deploy; one seen
-live here is still judged, so a rollback fails as not live. Without such a run every change is
-judged. --last counts the changes judged.
+deployed. When the ledger holds a run that read this address, a change merged after it that was
+never seen live here, nor in any build production was seen running here, is left to the next
+deploy; any other is still judged, so a rollback fails. Without such a run every change is judged.
+--last counts the changes judged.
 
 Every command that produces a verdict exits with its outcome:
   0 pass   1 fail   3 examined nothing   4 unclassified (stops for a human)
@@ -10014,8 +10052,7 @@ async function readInput(flags, cwd, io) {
 }
 function print(verdicts, outcome, io, json, extra = {}) {
   if (json) {
-    io.out(`${JSON.stringify({ outcome, exitCode: exitCodeFor(outcome), verdicts, ...extra })}
-`);
+    io.out(jsonLine({ outcome, exitCode: exitCodeFor(outcome), verdicts, ...extra }));
     return;
   }
   for (const v of verdicts)
@@ -10068,22 +10105,29 @@ function noteRecording(recorded, io) {
 ` : `not recorded (no ${STATE_BRANCH} branch; run "seamkit state init" or pass --record)
 `);
 }
+function jsonLine(value) {
+  return `${JSON.stringify(value).replace(/##\[/g, "##\\u005b")}
+`;
+}
 function productionUrl(flags, env) {
   const raw = flags.url ?? env["SEAMKIT_URL"];
   if (raw === void 0 || raw === "")
     throw new UsageError("give the production URL with --url, or set SEAMKIT_URL");
+  return recordableUrl(raw, "--url", "https://your.app");
+}
+function recordableUrl(raw, flag2, example) {
   let url2;
   try {
     url2 = new URL(raw);
   } catch {
-    throw new UsageError("--url is not an absolute URL; give one such as https://your.app");
+    throw new UsageError(`${flag2} is not an absolute URL; give one such as ${example}`);
   }
   if (url2.protocol !== "http:" && url2.protocol !== "https:")
-    throw new UsageError("--url must be an http or https URL");
+    throw new UsageError(`${flag2} must be an http or https URL`);
   if (url2.username !== "" || url2.password !== "")
-    throw new UsageError("--url must not contain a user name or password, because URLs are recorded in the ledger");
+    throw new UsageError(`${flag2} must not contain a user name or password, because URLs are recorded in the ledger`);
   if (url2.search !== "")
-    throw new UsageError("--url must not carry a query string, because URLs are recorded in the ledger");
+    throw new UsageError(`${flag2} must not carry a query string, because URLs are recorded in the ledger`);
   url2.hash = "";
   return url2.href;
 }
@@ -10116,12 +10160,8 @@ async function cmdReadback(args, flags, cwd, io, audit) {
       throw new UsageError("--deployed needs a commit, such as the one the host reports for this deploy");
     req.deployed = flags.deployed;
   }
-  if (flags["version-url"] !== void 0) {
-    const v = flags["version-url"];
-    if (!/^https?:\/\//.test(v) || /[?@]/.test(v))
-      throw new UsageError("--version-url must be an http or https URL without a query string or credentials");
-    req.versionUrl = v;
-  }
+  if (flags["version-url"] !== void 0)
+    req.versionUrl = recordableUrl(flags["version-url"], "--version-url", "https://your.app/version.json");
   const { input: input2, context } = await gatherReadback(cwd, req, io.now, { userAgent: `seamkit/${VERSION} (${command})` });
   const at2 = io.now();
   const run2 = runCheck(readbackCheck, input2, at2);
@@ -10131,8 +10171,7 @@ async function cmdReadback(args, flags, cwd, io, audit) {
   if (flags.json) {
     const v = context.primaryVersion;
     const production = { url: v.url, status: v.status, ...v.commit ? { commit: v.commit } : {}, ...v.reported ? { reported: v.reported } : {}, ...v.reason ? { reason: v.reason } : {} };
-    io.out(`${JSON.stringify({ outcome, exitCode: exitCodeFor(outcome), verdicts: run2.verdicts, production, ...audit ? { advice } : {}, ...recorded ? { recorded } : {} })}
-`);
+    io.out(jsonLine({ outcome, exitCode: exitCodeFor(outcome), verdicts: run2.verdicts, production, ...audit ? { advice } : {}, ...recorded ? { recorded } : {} }));
     return exitCodeFor(outcome);
   }
   io.out(`${renderReadback(run2.verdicts)}
@@ -10262,8 +10301,7 @@ async function cmdState(args, flags, cwd, io) {
         };
       });
       if (flags.json)
-        io.out(`${JSON.stringify(rows)}
-`);
+        io.out(jsonLine(rows));
       else {
         for (const r of rows) {
           io.out(r.ok ? `${String(r.at)}  ${r.id.slice(0, 12)}  ${r.kind}  ${r.check ?? ""}  ${outcomesText(r.outcomes ?? [])}
@@ -10294,8 +10332,7 @@ async function cmdState(args, flags, cwd, io) {
         no_remote: `there is no remote called ${r.remote}`
       };
       if (flags.json)
-        io.out(`${JSON.stringify(r)}
-`);
+        io.out(jsonLine(r));
       else
         io.out(`${messages[r.status]}
 `);
@@ -10368,6 +10405,9 @@ ${text}
 `;
 }
 var rawInput = input;
+function branchName(raw) {
+  return raw.replace(/^(?:refs\/heads\/|refs\/remotes\/origin\/|origin\/)/, "");
+}
 function readInputs(env) {
   const url2 = input(env, "url");
   if (url2 === "")
@@ -10382,7 +10422,7 @@ function readInputs(env) {
     url: url2,
     last: input(env, "last"),
     pr: input(env, "pr"),
-    branch: input(env, "branch"),
+    branch: branchName(input(env, "branch")),
     versionUrl: input(env, "version-url"),
     waitSeconds: Number(wait),
     ledger,
@@ -10454,11 +10494,11 @@ function displayUrl(raw) {
   }
 }
 function scrub(message, raws) {
-  let out = message;
-  for (const raw of raws)
-    if (raw !== "")
-      out = out.split(raw).join(displayUrl(raw));
-  return out;
+  const given = [...new Set(raws)].filter((r) => r.length >= 8).sort((a, b) => b.length - a.length);
+  if (given.length === 0)
+    return message;
+  const pattern = new RegExp(given.map((r) => r.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
+  return message.replace(pattern, (raw) => displayUrl(raw));
 }
 function skipReason(ctx, event) {
   if (ctx.eventName === "deployment_status") {
@@ -10557,7 +10597,7 @@ function stateCounts(parts) {
   const order = ["not_live", "not_proven", "nothing_to_prove", "live"];
   return order.map((state) => ({ state, count: parts.filter((p) => p.state === state).length })).filter((c) => c.count > 0);
 }
-var cell = (s) => s.replace(/\s*[\r\n]\s*/g, " ").replace(/\|/g, "\\|");
+var cell = (s) => s.replace(/\s*[\r\n]\s*/g, " ").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/[\\`*_[\]!~|]/g, "\\$&");
 function fenced(text) {
   let longest = 0;
   for (const m of text.matchAll(/`+/g))
@@ -10682,7 +10722,6 @@ async function openLedger(inputs, cli, deps) {
   deps.log(`seamkit: ${init.out.trim()}`);
   return true;
 }
-var BRANCH_NAME = /^[A-Za-z0-9._/-]+$/;
 async function prepareCheckout(cwd, defaultBranch, branchInput, deps) {
   const shallow = await runGit(["rev-parse", "--is-shallow-repository"], { cwd });
   if (shallow.stdout.toString("utf8").trim() === "true") {
@@ -10692,12 +10731,16 @@ async function prepareCheckout(cwd, defaultBranch, branchInput, deps) {
       deps.warn(`seamkit: could not fetch the full history, so older changes are not examined: ${fetched.stderr.trim()}`);
   }
   const read = branchInput !== "" ? branchInput : defaultBranch;
-  if (read !== void 0 && BRANCH_NAME.test(read) && !read.startsWith("refs/")) {
-    const tip = await runGit(["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${read}:refs/remotes/origin/${read}`], { cwd });
-    if (tip.code !== 0 && branchInput === "")
-      deps.warn(`seamkit: could not fetch ${read} from origin, so changes merged since this job's commit may not be examined: ${tip.stderr.trim()}`);
+  if (read !== void 0) {
+    if (await isBranchName(cwd, read)) {
+      const tip = await runGit(["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${read}:refs/remotes/origin/${read}`], { cwd });
+      if (tip.code !== 0)
+        deps.warn(`seamkit: could not fetch ${read} from origin, so changes merged since this job's commit may not be examined: ${tip.stderr.trim()}`);
+    } else {
+      deps.warn(`seamkit: ${read} is not a branch name, so it was not fetched from origin and is read as this checkout has it`);
+    }
   }
-  if (defaultBranch === void 0 || !BRANCH_NAME.test(defaultBranch))
+  if (defaultBranch === void 0 || !await isBranchName(cwd, defaultBranch))
     return;
   const target = `refs/remotes/origin/${defaultBranch}`;
   if ((await runGit(["rev-parse", "--verify", "--quiet", target], { cwd })).code !== 0)
@@ -10841,6 +10884,9 @@ async function runAction(deps) {
   let recorded = false;
   const clean = (text) => scrub(text, [inputs.url, inputs.versionUrl]);
   if (recording && result.code !== EXIT_USAGE2) {
+    const resync = await cli(["state", "sync", "--json"]);
+    if (resync.code !== 0)
+      deps.warn(`seamkit: the ledger could not be fetched again after the wait, so this run judges it as it was: ${clean(resync.err.trim())}`);
     const again = await cli(args);
     if (again.code === EXIT_USAGE2)
       deps.warn(`seamkit: the verdict was not recorded: ${clean(again.err.trim())}`);

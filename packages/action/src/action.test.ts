@@ -10,9 +10,10 @@ import { parse as parseYaml } from 'yaml';
 import type { Verdict } from '@seamkit/core';
 import { FakeProduction } from '@seamkit/adapters';
 import { git } from '@seamkit/state';
+import { run as seamkitRun } from 'seamkit';
 import { runAction, type ActionDeps } from './action.js';
 import { CONCLUSIONS, errorReport, readbackReport } from './report.js';
-import { defaultBranchOf, deployedCommit, displayUrl, headSha, plainText, readInputs, skipReason, type GitHubContext } from './github.js';
+import { defaultBranchOf, deployedCommit, displayUrl, headSha, plainText, readInputs, scrub, skipReason, type GitHubContext } from './github.js';
 
 const AT = '2026-10-21T09:00:00.000Z';
 const ID = ['-c', 'user.name=dev', '-c', 'user.email=dev@example.invalid'];
@@ -171,6 +172,11 @@ async function act(
 
 const success = (sha: string): Record<string, unknown> => ({ deployment: { sha, environment: 'Production' }, deployment_status: { state: 'success' }, repository: { default_branch: 'main' } });
 const output = (ran: Ran, name: string): string | undefined => new RegExp(`^${name}<<(\\S+)\\n([\\s\\S]*?)\\n\\1$`, 'm').exec(ran.outputs)?.[2];
+/** The seamkit CLI in another checkout, as a run elsewhere would use it. */
+async function seamkit(args: string[], cwd: string): Promise<number> {
+  return seamkitRun(args, { out: () => undefined, err: () => undefined, readStdin: async () => '', stdinIsTTY: true, env: {}, cwd, now: () => AT });
+}
+
 /** The check runs the last act() posted; lastPost() insists there was exactly one. */
 let posted: Record<string, unknown>[] = [];
 const lastPost = (): Record<string, unknown> => {
@@ -540,7 +546,8 @@ describe('the seamkit action', () => {
     assert.equal((await act(ci, { ledger: 'true' }, success(commits[2] as string))).code, 0);
     // The deploy of #1 finishes after the deploy of #2. actions/checkout with fetch-depth: 0 points
     // origin/main and main at the event's commit, because main has moved on.
-    for (const branch of ['', 'main']) {
+    // Every spelling of the branch means the remote's main: github.ref's form, and origin's.
+    for (const branch of ['', 'main', 'refs/heads/main', 'origin/main', 'refs/remotes/origin/main']) {
       const late = join(root, `ci-late-${++counter}`);
       await git(['clone', '-q', `file://${remote}`, late], { cwd: root });
       await git(['update-ref', 'refs/remotes/origin/main', commits[1] as string], { cwd: late });
@@ -550,6 +557,59 @@ describe('the seamkit action', () => {
       assert.equal(ran.code, 1, `branch "${branch}": ${ran.logs.join('\n')}`);
       assert.match((lastPost()['output'] as { title: string }).title, /1 not live/);
     }
+  });
+
+  it('reads a deploy branch that is not the default one as the remote has it, whatever its name', async () => {
+    for (const name of ['release', 'release+1']) {
+      const { ci, commits } = await project();
+      await git(['push', '-q', 'origin', `${commits[2] as string}:refs/heads/${name}`], { cwd: ci });
+      deploy(commits[2]);
+      assert.equal((await act(ci, { ledger: 'true', branch: name }, success(commits[2] as string))).code, 0);
+      const late = join(root, `ci-late-${++counter}`);
+      await git(['clone', '-q', `file://${await git(['remote', 'get-url', 'origin'], { cwd: ci })}`, late], { cwd: root });
+      await git(['update-ref', `refs/remotes/origin/${name}`, commits[1] as string], { cwd: late });
+      await git(['checkout', '-q', '-B', name, commits[1] as string], { cwd: late });
+      deploy(commits[1]);
+      const ran = await act(late, { branch: name }, success(commits[1] as string));
+      assert.equal(ran.code, 1, `${name}: ${ran.logs.join('\n')}`);
+      assert.match((lastPost()['output'] as { title: string }).title, /1 not live/);
+      assert.deepEqual(ran.warnings, []);
+    }
+  });
+
+  it('warns when the branch it reads cannot be fetched, or is not a branch at all', async () => {
+    const { ci, commits } = await project();
+    deploy(commits[2]);
+    const missing = await act(ci, { branch: 'nope' }, success(commits[2] as string));
+    assert.ok(missing.warnings.some((w) => /^seamkit: could not fetch nope from origin, so changes merged since this job's commit may not be examined/.test(w)), missing.warnings.join('\n'));
+    const head = await act(ci, { branch: 'HEAD' }, success(commits[2] as string));
+    assert.ok(head.warnings.some((w) => w === 'seamkit: HEAD is not a branch name, so it was not fetched from origin and is read as this checkout has it'), head.warnings.join('\n'));
+  });
+
+  it('fetches the ledger again after the wait, so the run that counts sees what other runs pushed meanwhile', async () => {
+    const { remote, ci, commits } = await project();
+    deploy(commits[0]);
+    // The ledger's first run here judges every change, so it fails; it is recorded all the same.
+    assert.ok((await act(ci, { ledger: 'true' }, success(commits[0] as string))).logs.some((l) => /recorded as event/.test(l)));
+    // While this run waits for the deploy of #1, a later deploy of #2 serves and a watch run
+    // elsewhere records it live and pushes; then a rollback to #1 lands.
+    const watch = join(root, `ci-watch-${++counter}`);
+    await git(['clone', '-q', `file://${remote}`, watch], { cwd: root });
+    let once = false;
+    deploy(commits[0]);
+    const ran = await act(ci, { wait: '60' }, success(commits[1] as string), {
+      sleep: async () => {
+        if (once) return;
+        once = true;
+        deploy(commits[2]);
+        assert.equal(await seamkit(['state', 'sync'], watch), 0);
+        assert.equal(await seamkit(['readback', '--url', prod.url], watch), 0);
+        assert.equal(await seamkit(['state', 'sync'], watch), 0);
+        deploy(commits[1]);
+      },
+    });
+    assert.equal(ran.code, 1, ran.logs.join('\n'));
+    assert.match((lastPost()['output'] as { title: string }).title, /1 not live/);
   });
 
   it('keeps the verdict and the check run when the step outputs cannot be written', async () => {
@@ -620,10 +680,30 @@ describe('action inputs and reports', () => {
     assert.match(r.summary, /^\*\*FAIL\*\* for https:\/\/a\.example\n\n> Production runs abc\./);
     assert.match(r.summary, /\| pr#1 a b \| FAIL \| line one line \\\| two \|/);
     const cr = readbackReport('fail', [readbackSummary, { ...verdict('pr#2', 'fail'), reasons: ['docs only\r# PASS\r[x](https://example.invalid)'] }], 'https://a.example');
-    assert.match(cr.summary, /\| pr#2 \| FAIL \| docs only # PASS \[x\]\(https:\/\/example\.invalid\) \|/);
+    assert.match(cr.summary, /\| pr#2 \| FAIL \| docs only # PASS \\\[x\\\]\(https:\/\/example\.invalid\) \|/);
+    // Markup in a change's words shows as written: no HTML, image, link, emphasis or code.
+    const marked = readbackReport('fail', [readbackSummary, { ...verdict('pr#4 <img src=x> **ok**', 'fail'), reasons: ['![p](https://example.invalid/p.png) `x` _y_ ~z~ a & b \\'] }], 'https://a.example');
+    assert.ok(marked.summary.includes('| pr#4 &lt;img src=x&gt; \\*\\*ok\\*\\* | FAIL | \\!\\[p\\](https://example.invalid/p.png) \\`x\\` \\_y\\_ \\~z\\~ a &amp; b \\\\ |'), marked.summary);
     const ticks = readbackReport('fail', [readbackSummary, { ...verdict('pr#3', 'fail'), reasons: ['a\n```\n# PASS'] }], 'https://a.example');
     assert.match(ticks.text, /^````text\n/);
     assert.match(ticks.text, /\n````$/);
+  });
+
+  it('replaces raw values in a message in one pass, longest first, and leaves short ones alone', () => {
+    const url = 'https://user:s3cr3t@a.example/app?t=1';
+    assert.equal(scrub(`read ${url} and https://a.example`, [url, 'https://a.example']), 'read https://a.example/app and https://a.example/');
+    assert.equal(scrub('read https://a.example/app and https://a.example/app/version.json', ['https://a.example/app', 'https://a.example/app/version.json']), 'read https://a.example/app and https://a.example/app/version.json');
+    const short = 'https://a.example/app?t=1';
+    assert.equal(scrub(`x ${short}&u=s3cr3t`, [short, `${short}&u=s3cr3t`]), 'x https://a.example/app');
+    assert.equal(scrub('a b c', ['a', 'b c']), 'a b c');
+    assert.equal(scrub('cost $& and $1', ['https://x.example/$&']), 'cost $& and $1');
+  });
+
+  it('reads every spelling of a branch input as the bare branch name', () => {
+    for (const given of ['main', 'refs/heads/main', 'origin/main', 'refs/remotes/origin/main']) {
+      assert.equal(readInputs({ INPUT_URL: 'https://a.example', INPUT_BRANCH: given }).branch, 'main');
+    }
+    assert.equal(readInputs({ INPUT_URL: 'https://a.example', INPUT_BRANCH: 'release/2.0' }).branch, 'release/2.0');
   });
 
   it('validates wait and ledger', () => {

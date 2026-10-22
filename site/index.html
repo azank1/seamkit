@@ -885,12 +885,12 @@ fi</pre></div>
     deployed commit, recording nothing meanwhile, then records the run that counts and pushes the ledger, merging rather
     than forcing. When production still runs another commit at the end of the wait, the summary says which, and if that
     commit does not contain the deployed one, a pass is reported as a fail: the deploy is not live at this address.</p>
-  <p>Once the ledger holds a run at this address, a change merged after the deployed commit that no recorded run saw
-    live there, and that production's own version document does not contain, is listed as not examined and left to the
-    next deploy, so a merge landing mid-build does not fail a healthy deploy; a change a recorded run saw live is still
-    judged, so a deploy that drops it, as a rollback does, fails as not live. Without a ledger, and on the first run at an
-    address, every change is judged, so a merge landing mid-build fails the deploy as not proven until the next deploy
-    carries it. <code>last</code> counts the changes judged. Before reading, the Action fetches the branch it reads, because
+  <p>Once the ledger holds a run that read this address, a change merged after the deployed commit is listed as not
+    examined and left to the next deploy when it was never seen live there and was in no build production was seen
+    running there, so a merge landing mid-build does not fail a healthy deploy; every other change is judged, so a deploy
+    that drops one, as a rollback does, fails. Without a ledger, on the first run at an address, and once production there
+    has been seen running a commit this repository does not have, every change is judged, so a merge landing mid-build
+    fails the deploy as not proven until the next deploy carries it. <code>last</code> counts the changes judged. Before reading, the Action fetches the branch it reads, because
     <code>actions/checkout</code> leaves <code>origin/&lt;branch&gt;</code> at the job's commit when the branch has moved
     on.</p>
   <p>Only a pass posts a success: not live and not proven fail the check, and unclassified is marked action required.
@@ -910,13 +910,13 @@ fi</pre></div>
     <code>Production – &lt;project&gt;</code>; give each project its own job, with that exact name and its own
     <code>url</code>; the group, keyed by environment, keeps them from cancelling each other.</p>
   <p class="note">Other CI systems run the CLI: Node 20 or later, the full history (no shallow clone), and push access to
-    the <code>seamkit/state</code> branch if you keep the ledger there. Fetch the branch as it is now
-    (<code>git fetch origin '+refs/heads/main:refs/remotes/origin/main'</code>), run
+    the <code>seamkit/state</code> branch if you keep the ledger there. With <code>BRANCH</code> set to your default
+    branch, fetch it as it is now (<code>git fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"</code>), run
     <code>npx --yes seamkit@0.2 state sync</code>, then
-    <code>npx --yes seamkit@0.2 readback --url https://your.app --last 20 --deployed &lt;deployed commit&gt;</code>
+    <code>npx --yes seamkit@0.2 readback --url https://your.app --last 20 --branch "$BRANCH" --deployed &lt;deployed commit&gt;</code>
     in the job that deployed, where the deployed commit is usually <code>$GITHUB_SHA</code> or your CI's equivalent,
     then <code>state sync</code> again whatever the result, and exit with readback's code even when that last push
-    fails. Pass <code>--branch</code> when the default branch is not checked out as <code>origin/HEAD</code>.</p>
+    fails.</p>
 </section>
 
 <!-- ===================== TROUBLE ===================== -->
@@ -929,13 +929,13 @@ fi</pre></div>
       <thead><tr><th>You see</th><th>Cause</th><th>Fix</th></tr></thead>
       <tbody>
         <tr><td>Exit 3 for every change</td><td>Production serves no version document, or serves a web page in its place.</td><td>Step 2. Check with <code>curl</code> that the URL returns JSON with a full commit id.</td></tr>
-        <tr><td>"commit unknown to this repository"</td><td>The local clone has not fetched the deployed commit, or it was deployed from a branch that never merged.</td><td><code>git fetch origin</code>. If it persists, someone deployed by hand.</td></tr>
+        <tr><td>"which this repository does not have"</td><td>The local clone has not fetched the deployed commit, or it was deployed from a branch that never merged.</td><td><code>git fetch origin</code>. If it persists, someone deployed by hand.</td></tr>
         <tr><td>"shallow clone"</td><td>CI checked out a single commit.</td><td><code>fetch-depth: 0</code>, or <code>git fetch --unshallow</code>.</td></tr>
         <tr><td>Version unreadable, dirty build</td><td>The build was stamped from uncommitted changes.</td><td>Build from a clean tree; add <code>--require-clean</code>.</td></tr>
         <tr><td>Marker absent although the version contains the change</td><td>The marker text is in source but not in the built output.</td><td>Use text the bundle really ships, such as an attribute value or a user-facing string.</td></tr>
         <tr><td>"No change carries a seamkit-card"</td><td>The merge setting drops pull request descriptions.</td><td>Step 4: "Pull request title and description".</td></tr>
         <tr><td>Exit 2: URL refused</td><td>The URL carries a query string or credentials, and URLs are recorded.</td><td>Use a plain URL. Readback only needs public <code>GET</code>s.</td></tr>
-        <tr><td>"cannot tell not live from not proven"</td><td>There is no ledger yet.</td><td>Step 3: <code>seamkit state init</code>.</td></tr>
+        <tr><td>"no ledger was read"</td><td>There is no ledger yet, so a change that left production shows as not proven rather than not live.</td><td>Step 3: <code>seamkit state init</code>.</td></tr>
       </tbody>
     </table>
   </div>
@@ -986,7 +986,7 @@ fi</pre></div>
   var BUILD = {
     updated: '2026-10-22',
     version: '0.2.0',
-    tests: '172',
+    tests: '184',
     dogfood: '20 of 20',
     milestones: [
       { m: 'M1', title: 'Verdict core and ledger', state: 'done', when: '2026-10-15',
@@ -1042,6 +1042,7 @@ fi</pre></div>
       ['2026-10-22', 'Two review rounds (one reviewer, then 19 agents with skeptics) found an action.yml that GitHub could not load and a false pass after a rollback deploy; both fixed and tested. Readback gains --deployed; 0.2.0 candidate, 145 tests, Node 20, 22 and 24.'],
       ['2026-10-22', 'Third review round (a workflow with skeptics): the Action now waits on production\'s own version document, scopes a deploy only when a ledger was read, keeps secrets in a refused URL out of reports, and fences workflow commands in the log. 159 tests; the bundle smoke now covers a fail and a ledger push.'],
       ['2026-10-22', 'Fourth review round (52 agents): a deploy is scoped only once the ledger holds a run at that address, changes production runs stay in scope, --last counts the changes judged, a failed read no longer ends the wait, and the Action fetches the branch it reads because actions/checkout pins it. 172 tests.'],
+      ['2026-10-22', 'Fifth review round (38 agents): a change production was ever seen running stays in a deploy\'s scope, whatever the run that saw it judged; every spelling of a branch input is fetched; the ledger is fetched again after the wait; and the CLI\'s output cannot run a workflow command in a GitHub Actions step. 184 tests.'],
     ],
     decisions: [
       ['Program readback adapter (requested by an internal project)', 'Accept with changes, scheduled after M4. Notes in the knowledge base.', 'azank', 'wait'],

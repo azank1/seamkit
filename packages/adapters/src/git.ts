@@ -9,6 +9,16 @@ export interface GitCommit {
 
 const HEX = /^[0-9a-f]{4,64}$/;
 
+/**
+ * Whether git accepts `name` as a branch name, exactly as written: never HEAD, an option, or an
+ * @{-N} that git would expand. Anything git accepts is safe as one argument of a refspec.
+ */
+export async function isBranchName(cwd: string, name: string): Promise<boolean> {
+  if (name === '' || name.startsWith('-')) return false;
+  const r = await runGit(['check-ref-format', '--branch', name], { cwd });
+  return r.code === 0 && r.stdout.toString('utf8').trim() === name;
+}
+
 /** Read-only questions to the local repository: history, ancestry and commit ids. */
 export class GitRepo {
   private constructor(readonly cwd: string) {}
@@ -32,9 +42,10 @@ export class GitRepo {
   async resolveBranch(name?: string): Promise<{ name: string; head: string }> {
     if (name !== undefined) {
       if (name.startsWith('-')) throw new Error(`there is no branch or commit called ${name}`);
-      // A bare branch name means the remote's branch: a CI checkout often has it only as
+      // A branch name means the remote's branch: a CI checkout often has it only as
       // origin/<name>, and its local branch of that name sits at the commit the job was given.
-      const remote = /^[A-Za-z0-9._/-]+$/.test(name) && !name.startsWith('refs/') ? await this.rev(`refs/remotes/origin/${name}`) : undefined;
+      // HEAD, a commit or any other revision means what git says it means.
+      const remote = !name.startsWith('refs/') && (await isBranchName(this.cwd, name)) ? await this.rev(`refs/remotes/origin/${name}`) : undefined;
       if (remote !== undefined) return { name, head: remote };
       const head = await this.rev(name);
       if (head === undefined) throw new Error(`there is no branch or commit called ${name}`);
@@ -81,6 +92,14 @@ export class GitRepo {
     if (r.code === 0) return { contains: true };
     if (r.code === 1) return { contains: false };
     return { contains: null, reason: `git could not compare the commits: ${r.stderr.trim().split('\n')[0] ?? `exit ${r.code}`}` };
+  }
+
+  /** The commits reachable from any of `tips`, full ids, and not from `exclude`. */
+  async reachableFrom(tips: readonly string[], exclude: string): Promise<Set<string>> {
+    if (tips.length === 0) return new Set();
+    const r = await runGit(['rev-list', '--stdin'], { cwd: this.cwd, input: `${[...tips, `^${exclude}`].join('\n')}\n` });
+    if (r.code !== 0) throw new GitError(['rev-list', '--stdin'], r);
+    return new Set(r.stdout.toString('utf8').split('\n').filter((l) => l.length > 0));
   }
 
   async isShallow(): Promise<boolean> {

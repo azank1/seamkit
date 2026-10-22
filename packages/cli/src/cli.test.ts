@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { git, GitStateStore, STATE_REF } from '@seamkit/state';
-import { detectActor, run, VERSION, type Io } from './cli.js';
+import { detectActor, inert, run, VERSION, type Io } from './cli.js';
 
 const AT = '2026-10-14T09:00:00.000Z';
 const MAIN = fileURLToPath(new URL('./main.js', import.meta.url));
@@ -172,6 +172,19 @@ describe('seamkit cli', () => {
     assert.deepEqual(detectActor({ GITHUB_ACTIONS: 'true', CI: 'true' }), { kind: 'ci', harness: 'github-actions' });
     assert.deepEqual(detectActor({ SEAMKIT_HANDLE: 'eng-1' }), { kind: 'unknown', handle: 'eng-1' });
     assert.throws(() => detectActor({ SEAMKIT_HANDLE: 'someone@example.com' }), /not an email address/);
+  });
+
+  it('keeps output from reading as a workflow command in a GitHub Actions step', () => {
+    assert.equal(inert('ok\n  ::warning::x\n'), 'ok\n\u200b  ::warning::x\n');
+    assert.equal(inert('::error::y'), '\u200b::error::y');
+    assert.equal(inert('a\r::error::y'), 'a\r\u200b::error::y');
+    assert.equal(inert('a\n\u0085\t::x::'), 'a\n\u200b\u0085\t::x::');
+    assert.equal(inert('Fix ##[warning]x and ##[y'), 'Fix ##\u200b[warning]x and ##\u200b[y');
+    assert.equal(inert('a :: b\nno command here\n'), 'a :: b\nno command here\n');
+    const actions = spawnSync(process.execPath, [MAIN, '##[warning]x'], { encoding: 'utf8', env: { ...process.env, GITHUB_ACTIONS: 'true' } });
+    assert.ok(actions.stderr.includes('##\u200b[warning]x') && !actions.stderr.includes('##[warning]'), actions.stderr);
+    const elsewhere = spawnSync(process.execPath, [MAIN, '##[warning]x'], { encoding: 'utf8', env: { ...process.env, GITHUB_ACTIONS: '' } });
+    assert.ok(elsewhere.stderr.includes('##[warning]x'), elsewhere.stderr);
   });
 
   it('runs as a real process with the documented exit codes', async () => {
