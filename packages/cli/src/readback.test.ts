@@ -7,7 +7,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FakeProduction } from '@seamkit/adapters';
 import { git } from '@seamkit/state';
+import { execFileSync } from 'node:child_process';
 import { run, type Io } from './cli.js';
+import { gatherReadback } from './readback.js';
 
 const AT = '2026-10-14T09:00:00.000Z';
 const MAIN = fileURLToPath(new URL('./main.js', import.meta.url));
@@ -43,7 +45,7 @@ async function cli(args: string[], cwd: string, env: Record<string, string> = {}
  * default message, which holds no description; the second has the form that "Pull request title
  * and description" writes, and carries a card unless `card` is false.
  */
-async function repo(options: { card?: boolean } = {}): Promise<{ dir: string; merges: string[]; direct: string }> {
+async function repo(options: { card?: boolean | string } = {}): Promise<{ dir: string; merges: string[]; direct: string }> {
   const dir = join(root, `repo-${++counter}`);
   await git(['init', '-q', '-b', 'main', dir], { cwd: root });
   await writeFile(join(dir, 'README.md'), 'x\n');
@@ -53,7 +55,7 @@ async function repo(options: { card?: boolean } = {}): Promise<{ dir: string; me
   const card = '```seamkit-card\ncard: 1\nintent: Add the badge.\nlayers: [frontend]\ntargets: [web]\nmarkers:\n  - kind: bundle\n    text: "sync-badge-v2"\n```';
   for (const [n, message] of [
     [1, 'Merge pull request #1 from agent/b1\n\nChange 1'],
-    [2, `Change 2 (#2)\n\nAdds the badge.\n\n${options.card === false ? '' : card}`],
+    [2, `Change 2 (#2)\n\nAdds the badge.\n\n${options.card === false ? '' : typeof options.card === 'string' ? `\`\`\`seamkit-card\n${options.card}\n\`\`\`` : card}`],
   ] as const) {
     await git(['switch', '-q', '-c', `b${n}`, 'main'], { cwd: dir });
     await writeFile(join(dir, `f${n}.txt`), `${n}\n`);
@@ -418,6 +420,79 @@ describe('seamkit readback', () => {
     const states = Object.fromEntries(JSON.parse(r.out).verdicts.slice(1).map((v: { subject: string; state: string }) => [v.subject, v.state]));
     const first = await git(['rev-list', '--max-parents=0', 'HEAD'], { cwd: dir });
     assert.deepEqual(states, { [`commit:${direct.slice(0, 12)}`]: 'not_live', 'pr#2': 'not_live', 'pr#1': 'live', [`commit:${first.slice(0, 12)}`]: 'live' });
+  });
+
+  it('counts a sighting at another version path for a card whose version marker names none, or a broken card', async () => {
+    for (const card of ['card: 1\nintent: Add the badge.\nlayers: [frontend]\ntargets: [web]\nmarkers:\n  - kind: version', 'card: 1\nintent: [broken']) {
+      const { dir, merges } = await repo({ card });
+      assert.equal((await cli(['state', 'init'], dir)).code, 0);
+      const build = (commit: string, path: string): void =>
+        prod.deploy({ 'index.html': '<!doctype html>', [path]: JSON.stringify({ schema: 'seamkit.version/1', commit, dirty: false, source: 'git' }) });
+      build(merges[1] as string, 'api/version');
+      assert.match((await cli(['readback', '--url', prod.url], dir)).err, /recorded as event/);
+      build(merges[0] as string, 'version.json');
+      const r = await cli(['readback', '--url', prod.url, '--deployed', merges[0] as string, '--json'], dir);
+      assert.equal(r.code, 1, r.out);
+      assert.equal(JSON.parse(r.out).verdicts.find((v: { subject: string }) => v.subject === 'pr#2').state, 'not_live', `${card}: ${r.out}`);
+    }
+  });
+
+  it('keeps a sighting under the version path a card names, when production\'s own document is elsewhere', async () => {
+    const card = (markers: string): string => `card: 1\nintent: Add the badge.\nlayers: [function]\ntargets: [api]\nmarkers:\n${markers}`;
+    const serve = (front: string, api: string): void =>
+      prod.deploy({
+        'index.html': '<!doctype html>',
+        'version.json': JSON.stringify({ schema: 'seamkit.version/1', commit: front, dirty: false, source: 'git' }),
+        'api/version': JSON.stringify({ schema: 'seamkit.version/1', commit: api, dirty: false, source: 'git' }),
+      });
+    // Only the API's own path: seen live there while the front end ran #1, then the API rolls back.
+    {
+      const { dir, merges } = await repo({ card: card('  - kind: version\n    url: /api/version') });
+      assert.equal((await cli(['state', 'init'], dir)).code, 0);
+      serve(merges[0] as string, merges[1] as string);
+      assert.match((await cli(['readback', '--url', prod.url], dir)).err, /recorded as event/);
+      serve(merges[0] as string, merges[0] as string);
+      const r = await cli(['readback', '--url', prod.url, '--deployed', merges[0] as string, '--json'], dir);
+      assert.equal(r.code, 1, r.out);
+      assert.equal(JSON.parse(r.out).verdicts.find((v: { subject: string }) => v.subject === 'pr#2').state, 'not_live', r.out);
+    }
+    // Both documents: the API rolls back while the front end stays.
+    {
+      const { dir, merges } = await repo({ card: card('  - kind: version\n  - kind: version\n    url: /api/version') });
+      assert.equal((await cli(['state', 'init'], dir)).code, 0);
+      serve(merges[1] as string, merges[1] as string);
+      assert.match((await cli(['readback', '--url', prod.url], dir)).err, /recorded as event/);
+      serve(merges[1] as string, merges[0] as string);
+      const r = await cli(['readback', '--url', prod.url, '--json'], dir);
+      assert.equal(r.code, 1, r.out);
+      assert.equal(JSON.parse(r.out).verdicts.find((v: { subject: string }) => v.subject === 'pr#2').state, 'not_live', r.out);
+    }
+    // Both documents, and only the API ever ran #2: the front end's marker was never seen live.
+    {
+      const { dir, merges } = await repo({ card: card('  - kind: version\n  - kind: version\n    url: /api/version') });
+      assert.equal((await cli(['state', 'init'], dir)).code, 0);
+      serve(merges[0] as string, merges[1] as string);
+      assert.match((await cli(['readback', '--url', prod.url], dir)).err, /recorded as event/);
+      const r = await cli(['readback', '--url', prod.url, '--json'], dir);
+      const pr2 = JSON.parse(r.out).verdicts.find((v: { subject: string }) => v.subject === 'pr#2');
+      assert.equal(pr2.state, 'not_proven', r.out);
+      assert.ok(!pr2.reasons.some((x: string) => /seen live/.test(x)), r.out);
+    }
+  });
+
+  it('reads the ledger before it reads production', async () => {
+    const { dir, merges } = await repo();
+    assert.equal((await cli(['state', 'init'], dir)).code, 0);
+    deploy(merges[1] as string);
+    let first = true;
+    // The ledger goes away as production is first read: a run that read it first still has it.
+    const fetchThen: typeof fetch = (input, init) => {
+      if (first) execFileSync('git', ['update-ref', '-d', 'refs/heads/seamkit/state'], { cwd: dir });
+      first = false;
+      return fetch(input, init);
+    };
+    const { input } = await gatherReadback(dir, { url: prod.url, last: 20, deployed: merges[0] as string }, () => AT, { fetch: fetchThen });
+    assert.ok(input.notExamined?.some((g) => g.reason.startsWith('the ledger holds no earlier run that read this address')), JSON.stringify(input.notExamined));
   });
 
   it('says --last left changes out when scoping kept more than it judges, with nothing older on the branch', async () => {

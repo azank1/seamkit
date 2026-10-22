@@ -55,6 +55,9 @@ describe('bounded HTTP', () => {
     const twice = closing(2, 'ECONNRESET');
     assert.deepEqual(await fetchLimited(`${prod.url}a.txt`, { fetch: twice.fetch }), { ok: false, reason: 'could not connect (ECONNRESET)' });
     assert.equal(twice.calls, 2);
+    const broken = closing(1, 'EPIPE');
+    assert.ok((await fetchLimited(`${prod.url}a.txt`, { fetch: broken.fetch })).ok);
+    assert.equal(broken.calls, 2);
     const refused = closing(1, 'ECONNREFUSED');
     assert.deepEqual(await fetchLimited(`${prod.url}a.txt`, { fetch: refused.fetch }), { ok: false, reason: 'could not connect (ECONNREFUSED)' });
     assert.equal(refused.calls, 1);

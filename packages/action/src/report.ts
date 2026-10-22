@@ -33,10 +33,13 @@ export interface Report {
 /** GitHub refuses check run output fields over 65535 characters. */
 export const OUTPUT_LIMIT = 65535;
 
-function clip(text: string, limit: number): string {
+export function clip(text: string, limit: number): string {
   if (text.length <= limit) return text;
   const note = '\n… cut to fit; the full report is in the job log';
-  return text.slice(0, limit - note.length) + note;
+  let end = limit - note.length;
+  // Never between the two halves of one character, which GitHub may refuse.
+  if (/[\uD800-\uDBFF]/.test(text[end - 1] ?? '')) end--;
+  return text.slice(0, end) + note;
 }
 
 /** Per-state counts, problems first, each with its denominator. */

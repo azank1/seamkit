@@ -7875,7 +7875,8 @@ function replayVerdict(registry, eventId2, run2, at2) {
 
 // packages/core/dist/render.js
 var CONTROLS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]+/g;
-var asLines = (lines) => lines.map((l) => l.replace(CONTROLS, " ")).join("\n");
+var oneLine = (text) => text.replace(CONTROLS, " ");
+var asLines = (lines) => lines.map(oneLine).join("\n");
 function examinedText(e) {
   if (e.count === void 0)
     return e.item;
@@ -9687,16 +9688,20 @@ async function readLedger(cwd, commits) {
   }
   return { sightings, readAt };
 }
-function historyAt(ledger, primaryUrl, addresses, defaulted) {
+function historyAt(ledger, primaryUrl, addresses, defaulted, own) {
   const here = markerKey({ kind: "version", url: primaryUrl });
   const elsewhere = new Set([...addresses].filter((a) => a !== primaryUrl).map((url2) => markerKey({ kind: "version", url: url2 })));
   const latest = /* @__PURE__ */ new Map();
-  for (const seen of ledger.sightings) {
-    const s = defaulted.has(seen.change) && elsewhere.has(seen.marker) ? { ...seen, marker: here } : seen;
+  const keep = (s) => {
     const key = `${s.change} ${s.marker}`;
     const prev = latest.get(key);
     if (prev === void 0 || s.at > prev.at || s.at === prev.at && s.event > prev.event)
       latest.set(key, s);
+  };
+  for (const seen of ledger.sightings) {
+    keep(seen);
+    if (defaulted.has(seen.change) && elsewhere.has(seen.marker) && !own.get(seen.change)?.has(seen.marker))
+      keep({ ...seen, marker: here });
   }
   const observed2 = new Set([...addresses].flatMap((a) => [...ledger.readAt.get(a) ?? []]));
   return {
@@ -9755,7 +9760,8 @@ async function gatherReadback(cwd, req, now, http) {
   const defaulted = /* @__PURE__ */ new Set();
   let drafts = commits.map((c) => toChange(c, req.url, primary, subjects, defaulted));
   const addresses = new Set(req.versionUrl !== void 0 ? [primary.url] : VERSION_PATHS.map((p) => new URL(p, origin).href));
-  const loaded = ledger === null ? null : historyAt(ledger, primary.url, addresses, defaulted);
+  const own = new Map(drafts.map((d) => [d.commit, new Set(d.markers.map(markerKey))]));
+  const loaded = ledger === null ? null : historyAt(ledger, primary.url, addresses, defaulted, own);
   const history = loaded === null ? null : loaded.sightings;
   if (deployed !== void 0) {
     const ran = [];
@@ -10368,8 +10374,8 @@ async function cmdState(args, flags, cwd, io) {
         io.out(jsonLine(rows));
       else {
         for (const r of rows) {
-          io.out(r.ok ? `${String(r.at)}  ${r.id.slice(0, 12)}  ${r.kind}  ${r.check ?? ""}  ${outcomesText(r.outcomes ?? [])}
-` : `${r.path}  CORRUPT  ${(r.problems ?? []).join("; ")}
+          const row = r.ok ? `${String(r.at)}  ${r.id.slice(0, 12)}  ${r.kind}  ${r.check ?? ""}  ${outcomesText(r.outcomes ?? [])}` : `${r.path}  CORRUPT  ${(r.problems ?? []).join("; ")}`;
+          io.out(`${oneLine(row)}
 `);
         }
         io.out(`${rows.length} event${rows.length === 1 ? "" : "s"} on ${STATE_BRANCH}
@@ -10656,7 +10662,10 @@ function clip(text, limit) {
   if (text.length <= limit)
     return text;
   const note = "\n\u2026 cut to fit; the full report is in the job log";
-  return text.slice(0, limit - note.length) + note;
+  let end = limit - note.length;
+  if (/[\uD800-\uDBFF]/.test(text[end - 1] ?? ""))
+    end--;
+  return text.slice(0, end) + note;
 }
 function stateCounts(parts) {
   const order = ["not_live", "not_proven", "nothing_to_prove", "live"];

@@ -7,7 +7,11 @@ import type { Verdict } from './verdict.js';
  * look like the report's own or hide them, so every control character becomes a space.
  */
 const CONTROLS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]+/g;
-const asLines = (lines: readonly string[]): string => lines.map((l) => l.replace(CONTROLS, ' ')).join('\n');
+
+/** Text from a change or a ledger file, as one line of plain text: every control character becomes a space. */
+export const oneLine = (text: string): string => text.replace(CONTROLS, ' ');
+
+const asLines = (lines: readonly string[]): string => lines.map(oneLine).join('\n');
 
 function examinedText(e: Verdict['examined'][number]): string {
   if (e.count === undefined) return e.item;

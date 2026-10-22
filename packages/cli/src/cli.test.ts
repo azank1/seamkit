@@ -120,6 +120,30 @@ describe('seamkit cli', () => {
     assert.deepEqual(listed[0].outcomes, ['pass']);
   });
 
+  it('lists a tampered ledger without passing its terminal escapes or line breaks on', async () => {
+    const dir = await repo();
+    assert.equal((await cli(['state', 'init'], { cwd: dir })).code, 0);
+    await cli(['check', 'invariant'], { cwd: dir, stdin: HELD });
+    // Someone who can push to the branch adds a file whose name and fields hold escapes.
+    const index = join(dir, '.git', 'tamper-index');
+    const env = { ...process.env, GIT_INDEX_FILE: index };
+    const sh = (args: string[], input?: string): string => {
+      const r = spawnSync('git', args, { cwd: dir, env, input, encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout.trim();
+    };
+    sh(['read-tree', STATE_REF]);
+    const blob = sh(['hash-object', '-w', '--stdin'], JSON.stringify({ at: '\u001b[8mhidden', kind: '\u001b[2Kx' }));
+    sh(['update-index', '--add', '--cacheinfo', `100644,${blob},events/2026/10/22/\u001b[31mfake\nPASS.json`]);
+    const tree = sh(['write-tree']);
+    const commit = sh(['-c', 'user.name=x', '-c', 'user.email=x@example.invalid', 'commit-tree', tree, '-p', STATE_REF, '-m', 'tamper']);
+    sh(['update-ref', STATE_REF, commit]);
+    const listed = (await cli(['state', 'list'], { cwd: dir })).out;
+    assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/.test(listed), JSON.stringify(listed));
+    assert.ok(listed.split('\n').every((line) => !line.startsWith('PASS')), listed);
+    assert.match(listed, /CORRUPT/);
+  });
+
   it('verifies and replays a clean ledger, and reports an empty one as examined nothing', async () => {
     const dir = await repo();
     assert.equal((await cli(['state', 'verify'], { cwd: dir })).code, 3);

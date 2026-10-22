@@ -579,4 +579,8 @@ connection turns out closed. A card string holding half a character, which YAML'
 record, is a card problem rather than a run with no verdict. A ledger push that loses a race is tried again for about a
 minute, after a random wait that doubles each time, and one that fails while the remote stands still is given up after
 three tries. While the Action waits, a read that names a commit the checkout lacks is kept before the branch is fetched
-again, and at most one read follows each fetch before the next poll.
+again, and at most one read follows each fetch before the next poll. A sighting at another discovery path is counted at
+production's own document only for a change whose card names no such path itself, and `seamkit state list` folds
+control characters in ledger file names and fields as reports do. Readback follows redirects as a browser does, so an
+address that redirects to another origin, such as `http://` to `https://` or the bare domain to `www`, is judged by what
+it redirects to; only production's operator can make it redirect.

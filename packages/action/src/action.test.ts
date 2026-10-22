@@ -13,7 +13,7 @@ import { FakeProduction } from '@seamkit/adapters';
 import { git } from '@seamkit/state';
 import { run as seamkitRun } from 'seamkit';
 import { runAction, type ActionDeps } from './action.js';
-import { CONCLUSIONS, errorReport, readbackReport } from './report.js';
+import { CONCLUSIONS, clip, errorReport, readbackReport } from './report.js';
 import { defaultBranchOf, deployedCommit, displayUrl, headSha, plainText, readInputs, scrub, skipReason, type GitHubContext } from './github.js';
 
 const AT = '2026-10-21T09:00:00.000Z';
@@ -883,6 +883,16 @@ describe('action inputs and reports', () => {
     assert.equal(scrub(`x ${short}&u=s3cr3t`, [short, `${short}&u=s3cr3t`]), 'x https://a.example/app');
     assert.equal(scrub('a b c', ['a', 'b c']), 'a b c');
     assert.equal(scrub('cost $& and $1', ['https://x.example/$&']), 'cost $& and $1');
+  });
+
+  it('cuts a report that is too long between characters, never inside one', () => {
+    const note = '\n… cut to fit; the full report is in the job log';
+    for (const pad of [0, 1]) {
+      const text = `${'a'.repeat(100 - note.length - 1 + pad)}${'\u{1F600}'.repeat(60)}`;
+      const cut = clip(text, 100);
+      assert.ok(cut.length <= 100 && cut.endsWith(note), cut);
+      assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(cut), JSON.stringify(cut.slice(-60)));
+    }
   });
 
   it('reads the spellings of a branch input as the bare branch name, and origin/HEAD as the default branch', () => {

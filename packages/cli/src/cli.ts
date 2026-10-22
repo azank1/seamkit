@@ -11,6 +11,7 @@ import {
   defaultRegistry,
   digest,
   exitCodeFor,
+  oneLine,
   parseEventFile,
   readbackCheck,
   renderReadback,
@@ -436,12 +437,13 @@ async function cmdState(args: string[], flags: Flags, cwd: string, io: Io): Prom
       });
       if (flags.json) io.out(jsonLine(rows));
       else {
+        // A ledger file's name and fields are anyone's who can push to the branch, so no row can
+        // carry a terminal escape or a line break.
         for (const r of rows) {
-          io.out(
-            r.ok
-              ? `${String(r.at)}  ${(r.id as string).slice(0, 12)}  ${r.kind}  ${r.check ?? ''}  ${outcomesText(r.outcomes ?? [])}\n`
-              : `${r.path}  CORRUPT  ${(r.problems ?? []).join('; ')}\n`,
-          );
+          const row = r.ok
+            ? `${String(r.at)}  ${(r.id as string).slice(0, 12)}  ${r.kind}  ${r.check ?? ''}  ${outcomesText(r.outcomes ?? [])}`
+            : `${r.path}  CORRUPT  ${(r.problems ?? []).join('; ')}`;
+          io.out(`${oneLine(row)}\n`);
         }
         io.out(`${rows.length} event${rows.length === 1 ? '' : 's'} on ${STATE_BRANCH}\n`);
       }

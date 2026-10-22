@@ -148,15 +148,21 @@ function historyAt(
   primaryUrl: string,
   addresses: ReadonlySet<string>,
   defaulted: ReadonlySet<string>,
+  own: ReadonlyMap<string, ReadonlySet<string>>,
 ): { sightings: Sighting[]; readHere: boolean; observed: string[] } {
   const here = markerKey({ kind: 'version', url: primaryUrl });
   const elsewhere = new Set([...addresses].filter((a) => a !== primaryUrl).map((url) => markerKey({ kind: 'version', url })));
   const latest = new Map<string, Sighting>();
-  for (const seen of ledger.sightings) {
-    const s = defaulted.has(seen.change) && elsewhere.has(seen.marker) ? { ...seen, marker: here } : seen;
+  const keep = (s: Sighting): void => {
     const key = `${s.change} ${s.marker}`;
     const prev = latest.get(key);
     if (prev === undefined || s.at > prev.at || (s.at === prev.at && s.event > prev.event)) latest.set(key, s);
+  };
+  for (const seen of ledger.sightings) {
+    keep(seen);
+    // Counted at this run's document too, unless the change's card names that other path itself,
+    // in which case the sighting belongs to that marker alone.
+    if (defaulted.has(seen.change) && elsewhere.has(seen.marker) && !own.get(seen.change)?.has(seen.marker)) keep({ ...seen, marker: here });
   }
   const observed = new Set([...addresses].flatMap((a) => [...(ledger.readAt.get(a) ?? [])]));
   return {
@@ -232,7 +238,8 @@ export async function gatherReadback(
   const defaulted = new Set<string>();
   let drafts = commits.map((c) => toChange(c, req.url, primary, subjects, defaulted));
   const addresses = new Set(req.versionUrl !== undefined ? [primary.url] : VERSION_PATHS.map((p) => new URL(p, origin).href));
-  const loaded = ledger === null ? null : historyAt(ledger, primary.url, addresses, defaulted);
+  const own = new Map(drafts.map((d) => [d.commit, new Set(d.markers.map(markerKey))]));
+  const loaded = ledger === null ? null : historyAt(ledger, primary.url, addresses, defaulted, own);
   const history = loaded === null ? null : loaded.sightings;
 
   if (deployed !== undefined) {
