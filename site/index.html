@@ -995,7 +995,7 @@ fi</pre></div>
     updated: '2026-10-22',
     version: '0.2.0',
     npm: '0.1.0',   // the version npm serves; the release commit bumps it
-    tests: '210',
+    tests: '215',
     dogfood: '20 of 20',
     milestones: [
       { m: 'M1', title: 'Verdict core and ledger', state: 'done', when: '2026-10-15',
@@ -1055,6 +1055,7 @@ fi</pre></div>
       ['2026-10-22', 'Sixth review round (15 findings confirmed by skeptics): a branch input that is not a branch, or a branch that cannot be fetched, now gives no verdict instead of a warning; origin/HEAD reads as the default branch; a build seen at any version document path counts; any number of changes after the deployed commit is read; production reporting a commit the checkout lacks makes the Action fetch the branch again; and a change\'s words stay on one line of the report. 192 tests.'],
       ['2026-10-22', 'Seventh review round (45 agents, 14 findings confirmed by skeptics, a lifecycle replay among them): a read that names a commit the checkout lacks is kept even when the reads after it fail, and the wait always ends; every control character in a change\'s words becomes a space in text output; a card holding half a character is a card problem, not a run with no verdict; the ledger is read before production; a ledger push that loses a race retries for about a minute; and a rollback after the version document moved reads as not live. 205 tests.'],
       ['2026-10-22', 'Eighth review round (21 agents, 5 findings confirmed, all low but one): seamkit state list folds control characters from a tampered ledger; a version sighting is moved to production\'s document only for markers that name no path of their own; a report cut to fit never splits a character; and tests now pin reading the ledger before production and each retried connection error. 210 tests; each fix but the push backoff\'s timing was broken on purpose in the compiled code, and a test catches every break that changes a verdict.'],
+      ['2026-10-22', 'Ninth review round (19 agents, 7 findings confirmed, all low): a --version-url at a usual path counts the other discovery paths, so a rollback across a move fails, and runs at any of them let a change on its way be left to the next deploy; CLI errors print on one line; the Action keeps plain paths in its advice and names the setting to change when the remote refuses the ledger push. 215 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
     ],
     decisions: [
       ['Program readback adapter (requested by an internal project)', 'Accept with changes, scheduled after M4. Notes in the knowledge base.', 'azank', 'wait'],

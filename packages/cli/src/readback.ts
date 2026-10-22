@@ -134,9 +134,9 @@ async function readLedger(cwd: string, commits: ReadonlySet<string>): Promise<Le
 }
 
 /**
- * What the ledger says about this address. `readHere` says whether any recorded run read this
- * address's version document, and `observed` holds every commit that production's own document
- * named in a recorded run, whatever changes the run judged: together they let a change that has
+ * What the ledger says about this address. `readHere` says whether any recorded run read one of
+ * `addresses`, and `observed` holds every commit that production's own document named in a
+ * recorded run, whatever changes the run judged: together they let a change that has
  * no sighting and was never in a build seen here be left to the next deploy. `addresses` are
  * where production's own document may have been read: every discovery path on the origin when the
  * document is discovered, since a build can move it from one to another. For the same reason a
@@ -167,7 +167,7 @@ function historyAt(
   const observed = new Set([...addresses].flatMap((a) => [...(ledger.readAt.get(a) ?? [])]));
   return {
     sightings: [...latest.values()].sort((a, b) => (a.change + a.marker < b.change + b.marker ? -1 : 1)),
-    readHere: ledger.readAt.has(primaryUrl),
+    readHere: [...addresses].some((a) => ledger.readAt.has(a)),
     observed: [...observed].sort(),
   };
 }
@@ -237,7 +237,10 @@ export async function gatherReadback(
   const subjects = new Set<string>();
   const defaulted = new Set<string>();
   let drafts = commits.map((c) => toChange(c, req.url, primary, subjects, defaulted));
-  const addresses = new Set(req.versionUrl !== undefined ? [primary.url] : VERSION_PATHS.map((p) => new URL(p, origin).href));
+  // Production's own document may be read at any usual path of its origin, as a build can move it,
+  // whether discovered or named at one of them; a document named elsewhere counts only itself.
+  const usual = VERSION_PATHS.map((p) => new URL(p, new URL(primary.url).origin).href);
+  const addresses = new Set(req.versionUrl === undefined || usual.includes(primary.url) ? usual : [primary.url]);
   const own = new Map(drafts.map((d) => [d.commit, new Set(d.markers.map(markerKey))]));
   const loaded = ledger === null ? null : historyAt(ledger, primary.url, addresses, defaulted, own);
   const history = loaded === null ? null : loaded.sightings;

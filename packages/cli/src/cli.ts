@@ -28,7 +28,7 @@ import {
 } from '@seamkit/core';
 import { GitStateStore, NotAGitRepository, STATE_BRANCH, type StoredFile } from '@seamkit/state';
 import { auditAdvice, gatherReadback, type ReadbackRequest } from './readback.js';
-import { StampError, makeStamp, writeStamp } from './stamp.js';
+import { makeStamp, writeStamp } from './stamp.js';
 
 export interface Io {
   out(text: string): void;
@@ -166,10 +166,11 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         throw new UsageError(`unknown command: ${command}`);
     }
   } catch (err) {
-    if (err instanceof UsageError) io.err(`seamkit: ${err.message}\nRun "seamkit help" for usage.\n`);
-    else if (err instanceof InputError) io.err(`seamkit: input error: ${err.message}\n`);
-    else if (err instanceof NotAGitRepository || err instanceof StampError) io.err(`seamkit: ${err.message}\n`);
-    else io.err(`seamkit: ${(err as Error).message}\n`);
+    // A message can quote a ledger path, git's output or an input, so it is shown as one plain line.
+    const message = oneLine((err as Error).message);
+    if (err instanceof UsageError) io.err(`seamkit: ${message}\nRun "seamkit help" for usage.\n`);
+    else if (err instanceof InputError) io.err(`seamkit: input error: ${message}\n`);
+    else io.err(`seamkit: ${message}\n`);
     return EXIT_USAGE;
   }
 }
@@ -441,7 +442,7 @@ async function cmdState(args: string[], flags: Flags, cwd: string, io: Io): Prom
         // carry a terminal escape or a line break.
         for (const r of rows) {
           const row = r.ok
-            ? `${String(r.at)}  ${(r.id as string).slice(0, 12)}  ${r.kind}  ${r.check ?? ''}  ${outcomesText(r.outcomes ?? [])}`
+            ? `${typeof r.at === 'string' ? r.at : '(no time)'}  ${(r.id as string).slice(0, 12)}  ${r.kind}  ${r.check ?? ''}  ${outcomesText(r.outcomes ?? [])}`
             : `${r.path}  CORRUPT  ${(r.problems ?? []).join('; ')}`;
           io.out(`${oneLine(row)}\n`);
         }

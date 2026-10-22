@@ -176,12 +176,25 @@ export function displayUrl(raw: string): string {
 }
 
 /**
+ * Whether a raw value could carry a credential or a query: an absolute URL, or anything with an @,
+ * ? or #. A plain path such as /version.json cannot, and is left as written wherever it appears.
+ */
+function mayHoldSecret(raw: string): boolean {
+  try {
+    new URL(raw);
+    return true;
+  } catch {
+    return /[@?#]/.test(raw);
+  }
+}
+
+/**
  * A message with every appearance of the given raw values replaced by how they may be shown. One
  * pass, longest first, so a value inside another cannot garble the other's replacement; a value
  * shorter than any address is left alone, because it would match ordinary words.
  */
 export function scrub(message: string, raws: readonly string[]): string {
-  const given = [...new Set(raws)].filter((r) => r.length >= 8).sort((a, b) => b.length - a.length);
+  const given = [...new Set(raws)].filter((r) => r.length >= 8 && mayHoldSecret(r)).sort((a, b) => b.length - a.length);
   if (given.length === 0) return message;
   const pattern = new RegExp(given.map((r) => r.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g');
   return message.replace(pattern, (raw) => displayUrl(raw));

@@ -176,7 +176,10 @@ export class GitStateStore {
       const pushed = await runGit(['push', '--quiet', remote, `${toPush}:${STATE_REF}`], { cwd: this.cwd });
       if (pushed.code === 0) return { status, remote, local: toPush, attempts: attempt };
       if ((await this.remoteHead(remote)) === remoteHead) stalled++;
-      if (attempt === MAX_SYNC_ATTEMPTS || stalled === MAX_STALLED_PUSHES) throw new GitError(['push', remote, STATE_REF], pushed);
+      if (stalled === MAX_STALLED_PUSHES) {
+        throw new Error(`${remote} refused the push to ${STATE_BRANCH} while no other writer was pushing: ${pushed.stderr.trim()}`);
+      }
+      if (attempt === MAX_SYNC_ATTEMPTS) throw new GitError(['push', remote, STATE_REF], pushed);
       // Writers that collided each wait a random time, up to twice as long after each collision, so
       // that runs which started together stop moving in step.
       await sleep(Math.floor(Math.random() * Math.min(8000, 500 * 2 ** attempt)));
@@ -208,7 +211,7 @@ export class GitStateStore {
       const other = theirs.get(e.path);
       if (other === undefined) added.push(e);
       else if (other !== e.oid && e.path.startsWith('events/')) {
-        throw new Error(`state branches disagree about ${e.path}; one copy has been altered, run seamkit state verify`);
+        throw new Error(`state branches disagree about ${JSON.stringify(e.path)}; one copy has been altered, run seamkit state verify`);
       }
     }
     const tree = await this.treeWith(remoteHead, added);

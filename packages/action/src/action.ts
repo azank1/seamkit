@@ -334,6 +334,18 @@ async function written(deps: ActionDeps, write: () => Promise<void>): Promise<vo
 
 const PERMISSION = /\b403\b|denied|permission|not allowed|authentication/i;
 
+/** What to change when the ledger could not be pushed, or undefined when the error does not say. */
+export function pushAdvice(err: string): string | undefined {
+  if (PERMISSION.test(err)) return 'give the job "permissions: contents: write"';
+  if (/refused the push to seamkit\/state while no other writer was pushing/.test(err)) {
+    return 'allow this workflow to push the seamkit/state branch, which a ruleset or branch protection may block, or set ledger: false';
+  }
+  if (/\bgit push \S+ refs\/heads\/seamkit\/state exited|could not synchronise/.test(err)) {
+    return 'other runs kept pushing while this one retried; when many readbacks record at once, give them one concurrency group so they take turns';
+  }
+  return undefined;
+}
+
 /** Runs the action and returns its exit code: seamkit's own, 0 only for a pass or a skipped event. */
 export async function runAction(deps: ActionDeps): Promise<number> {
   let ctx: GitHubContext;
@@ -434,10 +446,8 @@ export async function runAction(deps: ActionDeps): Promise<number> {
     const pushed = await cli(['state', 'sync']);
     if (pushed.code === 0) deps.log(`seamkit: ${pushed.out.trim()}`);
     else {
-      const why = PERMISSION.test(pushed.err)
-        ? 'give the job "permissions: contents: write"'
-        : 'other runs kept pushing while this one retried; when many readbacks record at once, give them one concurrency group so they take turns';
-      deps.warn(`seamkit: ${recorded ? 'the verdict was recorded here but not pushed, so it is lost with this runner' : 'the ledger could not be pushed'}; ${why}: ${pushed.err.trim()}`);
+      const why = pushAdvice(pushed.err);
+      deps.warn(`seamkit: ${recorded ? 'the verdict was recorded here but not pushed, so it is lost with this runner' : 'the ledger could not be pushed'}${why === undefined ? '' : `; ${why}`}: ${pushed.err.trim()}`);
     }
   }
 

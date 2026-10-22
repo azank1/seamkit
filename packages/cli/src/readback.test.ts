@@ -422,6 +422,36 @@ describe('seamkit readback', () => {
     assert.deepEqual(states, { [`commit:${direct.slice(0, 12)}`]: 'not_live', 'pr#2': 'not_live', 'pr#1': 'live', [`commit:${first.slice(0, 12)}`]: 'live' });
   });
 
+  it('reads a rollback across a move as not live when --version-url names one of the discovery paths', async () => {
+    const { dir, merges, direct } = await repo({ card: false });
+    assert.equal((await cli(['state', 'init'], dir)).code, 0);
+    const build = (commit: string, path: string): void =>
+      prod.deploy({ 'index.html': '<!doctype html>', [path]: JSON.stringify({ schema: 'seamkit.version/1', commit, dirty: false, source: 'git' }) });
+    build(direct, 'api/version');
+    assert.match((await cli(['readback', '--url', prod.url], dir)).err, /recorded as event/);
+    build(merges[0] as string, 'version.json');
+    const r = await cli(['readback', '--url', prod.url, '--version-url', `${prod.url}version.json`, '--deployed', merges[0] as string, '--json'], dir);
+    assert.equal(r.code, 1, r.out);
+    const states = Object.fromEntries(JSON.parse(r.out).verdicts.slice(1).map((v: { subject: string; state: string }) => [v.subject, v.state]));
+    assert.equal(states[`commit:${direct.slice(0, 12)}`], 'not_live', r.out);
+    assert.equal(states['pr#2'], 'not_live', r.out);
+  });
+
+  it('leaves later changes to the next deploy when earlier runs read the version document at another discovery path', async () => {
+    const { dir, merges } = await repo();
+    assert.equal((await cli(['state', 'init'], dir)).code, 0);
+    const build = (path: string): void =>
+      prod.deploy({ 'index.html': '<!doctype html>', [path]: JSON.stringify({ schema: 'seamkit.version/1', commit: merges[0], dirty: false, source: 'git' }) });
+    build('version.json');
+    assert.match((await cli(['readback', '--url', prod.url], dir)).err, /recorded as event/);
+    build('api/version');
+    const r = await cli(['readback', '--url', prod.url, '--deployed', merges[0] as string, '--json'], dir);
+    assert.equal(r.code, 0, r.out);
+    const gaps = JSON.parse(r.out).verdicts[0].notExamined as { item: string; reason: string }[];
+    assert.ok(gaps.some((g) => / merged after the deployed commit /.test(g.item) && /never seen running them/.test(g.reason)), JSON.stringify(gaps));
+    assert.ok(!gaps.some((g) => /holds no earlier run/.test(g.reason)), JSON.stringify(gaps));
+  });
+
   it('counts a sighting at another version path for a card whose version marker names none, or a broken card', async () => {
     for (const card of ['card: 1\nintent: Add the badge.\nlayers: [frontend]\ntargets: [web]\nmarkers:\n  - kind: version', 'card: 1\nintent: [broken']) {
       const { dir, merges } = await repo({ card });

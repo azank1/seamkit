@@ -583,4 +583,12 @@ again, and at most one read follows each fetch before the next poll. A sighting 
 production's own document only for a change whose card names no such path itself, and `seamkit state list` folds
 control characters in ledger file names and fields as reports do. Readback follows redirects as a browser does, so an
 address that redirects to another origin, such as `http://` to `https://` or the bare domain to `www`, is judged by what
-it redirects to; only production's operator can make it redirect.
+it redirects to; only production's operator can make it redirect. A `--version-url` at one of the discovery paths
+counts the others as discovery does, and a run that read any of them counts as a run at this address, so moving the
+document does not stop a change on its way from being left to the next deploy. A second production on the same origin
+whose version document is at one of those paths shares their history: its sightings count here, and its runs count as
+runs at this address. Serving its document at another path keeps the two apart. A ledger push that the remote refuses
+while no other writer pushes ends with its own error, and the Action's advice names the change to make for a refusal,
+a missing permission or a lost race. The Action rewrites only absolute URLs, and values that could carry a credential,
+in the errors it reports, so a path such as `/version.json` in advice stays as written. Every CLI error prints on one
+line, and `seamkit state list` shows a well-formed event that has no time as `(no time)`.

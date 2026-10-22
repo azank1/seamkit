@@ -9127,7 +9127,10 @@ var GitStateStore = class _GitStateStore {
         return { status, remote, local: toPush, attempts: attempt };
       if (await this.remoteHead(remote) === remoteHead)
         stalled++;
-      if (attempt === MAX_SYNC_ATTEMPTS || stalled === MAX_STALLED_PUSHES)
+      if (stalled === MAX_STALLED_PUSHES) {
+        throw new Error(`${remote} refused the push to ${STATE_BRANCH} while no other writer was pushing: ${pushed.stderr.trim()}`);
+      }
+      if (attempt === MAX_SYNC_ATTEMPTS)
         throw new GitError(["push", remote, STATE_REF], pushed);
       await sleep(Math.floor(Math.random() * Math.min(8e3, 500 * 2 ** attempt)));
     }
@@ -9154,7 +9157,7 @@ var GitStateStore = class _GitStateStore {
       if (other === void 0)
         added.push(e);
       else if (other !== e.oid && e.path.startsWith("events/")) {
-        throw new Error(`state branches disagree about ${e.path}; one copy has been altered, run seamkit state verify`);
+        throw new Error(`state branches disagree about ${JSON.stringify(e.path)}; one copy has been altered, run seamkit state verify`);
       }
     }
     const tree = await this.treeWith(remoteHead, added);
@@ -9706,7 +9709,7 @@ function historyAt(ledger, primaryUrl, addresses, defaulted, own) {
   const observed2 = new Set([...addresses].flatMap((a) => [...ledger.readAt.get(a) ?? []]));
   return {
     sightings: [...latest.values()].sort((a, b) => a.change + a.marker < b.change + b.marker ? -1 : 1),
-    readHere: ledger.readAt.has(primaryUrl),
+    readHere: [...addresses].some((a) => ledger.readAt.has(a)),
     observed: [...observed2].sort()
   };
 }
@@ -9759,7 +9762,8 @@ async function gatherReadback(cwd, req, now, http) {
   const subjects = /* @__PURE__ */ new Set();
   const defaulted = /* @__PURE__ */ new Set();
   let drafts = commits.map((c) => toChange(c, req.url, primary, subjects, defaulted));
-  const addresses = new Set(req.versionUrl !== void 0 ? [primary.url] : VERSION_PATHS.map((p) => new URL(p, origin).href));
+  const usual = VERSION_PATHS.map((p) => new URL(p, new URL(primary.url).origin).href);
+  const addresses = new Set(req.versionUrl === void 0 || usual.includes(primary.url) ? usual : [primary.url]);
   const own = new Map(drafts.map((d) => [d.commit, new Set(d.markers.map(markerKey))]));
   const loaded = ledger === null ? null : historyAt(ledger, primary.url, addresses, defaulted, own);
   const history = loaded === null ? null : loaded.sightings;
@@ -10067,18 +10071,16 @@ ${HELP}`);
         throw new UsageError(`unknown command: ${command}`);
     }
   } catch (err) {
+    const message = oneLine(err.message);
     if (err instanceof UsageError)
-      io.err(`seamkit: ${err.message}
+      io.err(`seamkit: ${message}
 Run "seamkit help" for usage.
 `);
     else if (err instanceof InputError)
-      io.err(`seamkit: input error: ${err.message}
-`);
-    else if (err instanceof NotAGitRepository || err instanceof StampError)
-      io.err(`seamkit: ${err.message}
+      io.err(`seamkit: input error: ${message}
 `);
     else
-      io.err(`seamkit: ${err.message}
+      io.err(`seamkit: ${message}
 `);
     return EXIT_USAGE;
   }
@@ -10374,7 +10376,7 @@ async function cmdState(args, flags, cwd, io) {
         io.out(jsonLine(rows));
       else {
         for (const r of rows) {
-          const row = r.ok ? `${String(r.at)}  ${r.id.slice(0, 12)}  ${r.kind}  ${r.check ?? ""}  ${outcomesText(r.outcomes ?? [])}` : `${r.path}  CORRUPT  ${(r.problems ?? []).join("; ")}`;
+          const row = r.ok ? `${typeof r.at === "string" ? r.at : "(no time)"}  ${r.id.slice(0, 12)}  ${r.kind}  ${r.check ?? ""}  ${outcomesText(r.outcomes ?? [])}` : `${r.path}  CORRUPT  ${(r.problems ?? []).join("; ")}`;
           io.out(`${oneLine(row)}
 `);
         }
@@ -10564,8 +10566,16 @@ function displayUrl(raw) {
     return "the url input";
   }
 }
+function mayHoldSecret(raw) {
+  try {
+    new URL(raw);
+    return true;
+  } catch {
+    return /[@?#]/.test(raw);
+  }
+}
 function scrub(message, raws) {
-  const given = [...new Set(raws)].filter((r) => r.length >= 8).sort((a, b) => b.length - a.length);
+  const given = [...new Set(raws)].filter((r) => r.length >= 8 && mayHoldSecret(r)).sort((a, b) => b.length - a.length);
   if (given.length === 0)
     return message;
   const pattern = new RegExp(given.map((r) => r.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
@@ -10946,6 +10956,17 @@ async function written(deps, write) {
   }
 }
 var PERMISSION = /\b403\b|denied|permission|not allowed|authentication/i;
+function pushAdvice(err) {
+  if (PERMISSION.test(err))
+    return 'give the job "permissions: contents: write"';
+  if (/refused the push to seamkit\/state while no other writer was pushing/.test(err)) {
+    return "allow this workflow to push the seamkit/state branch, which a ruleset or branch protection may block, or set ledger: false";
+  }
+  if (/\bgit push \S+ refs\/heads\/seamkit\/state exited|could not synchronise/.test(err)) {
+    return "other runs kept pushing while this one retried; when many readbacks record at once, give them one concurrency group so they take turns";
+  }
+  return void 0;
+}
 async function runAction(deps) {
   let ctx;
   try {
@@ -11042,8 +11063,8 @@ async function runAction(deps) {
     if (pushed.code === 0)
       deps.log(`seamkit: ${pushed.out.trim()}`);
     else {
-      const why = PERMISSION.test(pushed.err) ? 'give the job "permissions: contents: write"' : "other runs kept pushing while this one retried; when many readbacks record at once, give them one concurrency group so they take turns";
-      deps.warn(`seamkit: ${recorded ? "the verdict was recorded here but not pushed, so it is lost with this runner" : "the ledger could not be pushed"}; ${why}: ${pushed.err.trim()}`);
+      const why = pushAdvice(pushed.err);
+      deps.warn(`seamkit: ${recorded ? "the verdict was recorded here but not pushed, so it is lost with this runner" : "the ledger could not be pushed"}${why === void 0 ? "" : `; ${why}`}: ${pushed.err.trim()}`);
     }
   }
   await report(ctx, inputs.checkName, inputs.token, sha, out, outcome, code, deps);

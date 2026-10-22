@@ -12,7 +12,7 @@ import type { Verdict } from '@seamkit/core';
 import { FakeProduction } from '@seamkit/adapters';
 import { git } from '@seamkit/state';
 import { run as seamkitRun } from 'seamkit';
-import { runAction, type ActionDeps } from './action.js';
+import { pushAdvice, runAction, type ActionDeps } from './action.js';
 import { CONCLUSIONS, clip, errorReport, readbackReport } from './report.js';
 import { defaultBranchOf, deployedCommit, displayUrl, headSha, plainText, readInputs, scrub, skipReason, type GitHubContext } from './github.js';
 
@@ -304,6 +304,29 @@ describe('the seamkit action', () => {
     assert.equal(ran.code, 0);
     assert.equal(lastPost()['conclusion'], 'success');
     assert.ok(ran.warnings.some((w) => /the verdict was not recorded: .*SEAMKIT_HANDLE must be a handle/.test(w)));
+  });
+
+  it('says what to change when the remote refuses the ledger push, by why it refused', async () => {
+    for (const [refusal, advice] of [
+      ['refused by policy', /the verdict was recorded here but not pushed, so it is lost with this runner; allow this workflow to push the seamkit\/state branch, which a ruleset or branch protection may block, or set ledger: false: .*refused by policy/],
+      ['Permission to o/r denied', /not pushed, so it is lost with this runner; give the job "permissions: contents: write": /],
+    ] as const) {
+      const { remote, ci, commits } = await project();
+      await writeFile(join(remote, 'hooks', 'pre-receive'), `#!/bin/sh\nwhile read old new ref; do [ "$ref" = refs/heads/seamkit/state ] && { echo '${refusal}' >&2; exit 1; }; done\nexit 0\n`, { mode: 0o755 });
+      deploy(commits[2]);
+      const ran = await act(ci, { ledger: 'true' }, success(commits[2] as string));
+      assert.equal(ran.code, 0, ran.warnings.join('\n'));
+      assert.ok(ran.warnings.some((w) => advice.test(w)), ran.warnings.join('\n'));
+      assert.ok(!ran.warnings.some((w) => /concurrency group/.test(w)), ran.warnings.join('\n'));
+    }
+  });
+
+  it('advises on a failed ledger push by what the error says, and only then', () => {
+    assert.match(pushAdvice('seamkit: git ls-remote origin refs/heads/seamkit/state exited 128: remote: Permission to o/r denied; fatal: ... 403') ?? '', /contents: write/);
+    assert.match(pushAdvice('seamkit: origin refused the push to seamkit/state while no other writer was pushing: hook declined') ?? '', /ledger: false$/);
+    assert.match(pushAdvice('seamkit: git push origin refs/heads/seamkit/state exited 1: ! [rejected] (fetch first)') ?? '', /concurrency group/);
+    assert.match(pushAdvice('seamkit: could not synchronise seamkit/state with origin after 12 attempts') ?? '', /concurrency group/);
+    assert.equal(pushAdvice('seamkit: state branches disagree about "events/x.json"; one copy has been altered, run seamkit state verify'), undefined);
   });
 
   it('records nothing when there is no ledger and ledger is auto', async () => {
@@ -883,6 +906,9 @@ describe('action inputs and reports', () => {
     assert.equal(scrub(`x ${short}&u=s3cr3t`, [short, `${short}&u=s3cr3t`]), 'x https://a.example/app');
     assert.equal(scrub('a b c', ['a', 'b c']), 'a b c');
     assert.equal(scrub('cost $& and $1', ['https://x.example/$&']), 'cost $& and $1');
+    // A plain path holds no secret, so the advice that names one keeps it.
+    assert.equal(scrub('serve /version.json, such as https://your.app/version.json', ['/version.json']), 'serve /version.json, such as https://your.app/version.json');
+    assert.ok(!scrub('read /version.json?token=s3cr3t', ['/version.json?token=s3cr3t']).includes('s3cr3t'));
   });
 
   it('cuts a report that is too long between characters, never inside one', () => {
