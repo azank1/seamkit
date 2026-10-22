@@ -67,8 +67,9 @@ change's seamkit-card. audit is readback over the last changes with advice for e
 production URL can also come from SEAMKIT_URL. After a deploy, --deployed names the commit just
 deployed. When the ledger holds a run that read this address, a change merged after it that was
 never seen live here, nor in any build production was seen running here, is left to the next
-deploy; any other is still judged, so a rollback fails. Without such a run every change is judged.
---last counts the changes judged.
+deploy; any other is still judged, so a rollback fails. Without such a run, or once production here
+was seen running a commit this repository does not have, every change is judged. --last counts
+the changes judged.
 
 Every command that produces a verdict exits with its outcome:
   0 pass   1 fail   3 examined nothing   4 unclassified (stops for a human)

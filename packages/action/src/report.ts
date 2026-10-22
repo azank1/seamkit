@@ -48,7 +48,8 @@ export function stateCounts(parts: readonly Verdict[]): { state: ReadbackState; 
 /**
  * Text from a merged change, as one line of Markdown that shows it as written: one line whatever
  * ends it (Markdown ends a line at a lone CR too), HTML as text, and every character that would
- * start a link, an image, emphasis, code or the table's next column escaped.
+ * start a link, an image, emphasis, code or the table's next column escaped. GitHub still links a
+ * bare URL, which shows its own address.
  */
 export const cell = (s: string): string =>
   s

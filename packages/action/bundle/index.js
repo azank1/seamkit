@@ -7872,6 +7872,7 @@ function replayVerdict(registry, eventId2, run2, at2) {
 }
 
 // packages/core/dist/render.js
+var asLines = (lines) => lines.map((l) => l.replace(/[\r\n\u0085\u2028\u2029]+/g, " ")).join("\n");
 function examinedText(e) {
   if (e.count === void 0)
     return e.item;
@@ -7891,7 +7892,7 @@ function renderVerdict(v) {
     lines.push(`  not examined: ${g.item} (${g.reason})`);
   for (const ev of v.evidence)
     lines.push(`  evidence: ${ev.label ? `${ev.label} ` : ""}${ev.value}`);
-  return lines.join("\n");
+  return asLines(lines);
 }
 function renderSummary(verdicts) {
   const counts = /* @__PURE__ */ new Map();
@@ -7959,7 +7960,7 @@ function renderReadback(verdicts) {
     lines.push(`  not examined: ${perChange} item${perChange === 1 ? "" : "s"} listed with the changes above`);
   if (summary.notExamined.length === 0)
     lines.push("  not examined: none listed");
-  return lines.join("\n");
+  return asLines(lines);
 }
 
 // packages/core/dist/validate.js
@@ -9275,6 +9276,31 @@ var GitRepo = class _GitRepo {
     const full = rev.startsWith("-") ? void 0 : await this.rev(rev);
     return full === void 0 ? void 0 : (await this.read([full]))[0];
   }
+  /** How many commits on the first-parent line of `head` are not reachable from `exclude`. */
+  async countFirstParent(head, exclude) {
+    return Number(await git(["rev-list", "--first-parent", "--count", head, `^${exclude}`], { cwd: this.cwd }));
+  }
+  /**
+   * The full ids of many abbreviated commits in one git process, in order: undefined for one that
+   * is missing, ambiguous or not a commit.
+   */
+  async resolveAll(abbrevs) {
+    const asked = abbrevs.filter((a) => HEX.test(a));
+    if (asked.length === 0)
+      return abbrevs.map(() => void 0);
+    const r = await runGit(["cat-file", `--batch-check=%(objectname) %(objecttype)`], { cwd: this.cwd, input: asked.map((a) => `${a}^{commit}
+`).join("") });
+    if (r.code !== 0)
+      throw new GitError(["cat-file", "--batch-check"], r);
+    const answers = r.stdout.toString("utf8").split("\n");
+    const found = /* @__PURE__ */ new Map();
+    asked.forEach((a, i) => {
+      const [id, type] = (answers[i] ?? "").split(" ");
+      if (type === "commit" && id !== void 0 && /^[0-9a-f]{40,64}$/.test(id))
+        found.set(a, id);
+    });
+    return abbrevs.map((a) => found.get(a));
+  }
   /** The full id of an abbreviated commit, or undefined when it is missing or ambiguous. */
   async resolve(abbrev) {
     return HEX.test(abbrev) ? this.rev(abbrev) : void 0;
@@ -9603,7 +9629,7 @@ function toChange(c, pageUrl, primary, subjects) {
   const unique2 = markers.filter((m, i) => markers.findIndex((o) => JSON.stringify(o) === JSON.stringify(m)) === i);
   return { subject, commit: c.commit, title: message.title, markerSource: "card", markers: unique2, cardFound: true };
 }
-async function loadHistory(cwd, primaryUrl, commits) {
+async function loadHistory(cwd, primaryUrl, addresses, commits) {
   let store;
   try {
     store = await GitStateStore.open(cwd);
@@ -9631,8 +9657,9 @@ async function loadHistory(cwd, primaryUrl, commits) {
       continue;
     }
     const first = input2.versions[0];
-    if (first !== void 0 && first.url === primaryUrl && first.status === "ok") {
-      readHere = true;
+    if (first !== void 0 && addresses.has(first.url) && first.status === "ok") {
+      if (first.url === primaryUrl)
+        readHere = true;
       const named = first.commit ?? first.reported;
       if (named !== void 0 && COMMIT_ID.test(named))
         observed2.add(named);
@@ -9655,6 +9682,13 @@ async function gatherReadback(cwd, req, now, http) {
   const origin = new URL(req.url).origin;
   const primary = req.versionUrl !== void 0 ? await observeVersion(req.versionUrl, now(), resolve3, http) : await discoverVersion(origin, now(), resolve3, http);
   const runGaps = [];
+  let deployed;
+  if (req.deployed !== void 0) {
+    const d = await repo.commit(req.deployed);
+    if (d === void 0)
+      throw new Error(`there is no commit called ${req.deployed} in this repository; fetch it, or check the --deployed value`);
+    deployed = d.commit;
+  }
   let commits;
   let subject;
   let window;
@@ -9665,7 +9699,8 @@ async function gatherReadback(cwd, req, now, http) {
     commits = [c];
     subject = `commit:${short2(c.commit)}`;
   } else {
-    const depth = req.pr !== void 0 ? Math.max(req.last, PR_SEARCH_DEPTH) : req.deployed !== void 0 ? req.last + PR_SEARCH_DEPTH : req.last;
+    const after = deployed !== void 0 && req.pr === void 0 ? await repo.countFirstParent(branch.head, deployed) : 0;
+    const depth = req.pr !== void 0 ? Math.max(req.last, PR_SEARCH_DEPTH) : req.last + after;
     const history2 = await repo.firstParent(branch.head, req.pr === void 0 ? depth + 1 : depth);
     if (req.pr === void 0) {
       commits = history2.slice(0, depth);
@@ -9682,32 +9717,28 @@ async function gatherReadback(cwd, req, now, http) {
       }
     }
   }
-  let deployed;
-  if (req.deployed !== void 0) {
-    const d = await repo.commit(req.deployed);
-    if (d === void 0)
-      throw new Error(`there is no commit called ${req.deployed} in this repository; fetch it, or check the --deployed value`);
-    deployed = d.commit;
-  }
   const shallow = await repo.isShallow();
   if (shallow)
     runGaps.push({ item: "history beyond the shallow clone", reason: "the clone is shallow; run git fetch --unshallow to examine older changes" });
   const subjects = /* @__PURE__ */ new Set();
   let drafts = commits.map((c) => toChange(c, req.url, primary, subjects));
-  const loaded = await loadHistory(cwd, primary.url, new Set(drafts.map((c) => c.commit)));
+  const addresses = new Set(req.versionUrl !== void 0 ? [primary.url] : VERSION_PATHS.map((p) => new URL(p, origin).href));
+  const loaded = await loadHistory(cwd, primary.url, addresses, new Set(drafts.map((c) => c.commit)));
   const history = loaded === null ? null : loaded.sightings;
   if (deployed !== void 0) {
     const ran = [];
     const missing = [];
     if (loaded !== null && loaded.readHere) {
       const now2 = primary.status === "ok" ? primary.commit ?? primary.reported : void 0;
-      for (const named of /* @__PURE__ */ new Set([...loaded.observed, ...now2 !== void 0 && COMMIT_ID.test(now2) ? [now2] : []])) {
-        const full = await repo.resolve(named);
-        if (full === void 0)
-          missing.push(named);
+      const named = [.../* @__PURE__ */ new Set([...loaded.observed, ...now2 !== void 0 && COMMIT_ID.test(now2) ? [now2] : []])];
+      const full = await repo.resolveAll(named);
+      named.forEach((n, i) => {
+        const id = full[i];
+        if (id === void 0)
+          missing.push(n);
         else
-          ran.push(full);
-      }
+          ran.push(id);
+      });
     }
     if (loaded === null || !loaded.readHere || missing.length > 0) {
       const because = loaded === null ? "no ledger was read, so" : !loaded.readHere ? "the ledger holds no earlier run that read this address, so" : `production at this address was seen running ${missing.map(short2).join(", ")}, which this repository does not have (fetch the branch it came from), so`;
@@ -9718,12 +9749,12 @@ async function gatherReadback(cwd, req, now, http) {
     } else {
       const seen = new Set(loaded.sightings.map((s) => `${s.change} ${s.marker}`));
       const wasRunning = await repo.reachableFrom(ran, deployed);
+      const afterDeploy = await repo.reachableFrom([branch.head], deployed);
       const kept2 = [];
       const later = [];
       for (const d of drafts) {
-        const inDeploy = (await repo.contains(deployed, d.commit)).contains;
         const seenHere = d.markers.some((m) => seen.has(`${d.commit} ${markerKey(m)}`));
-        if (inDeploy !== false || seenHere || wasRunning.has(d.commit))
+        if (!afterDeploy.has(d.commit) || seenHere || wasRunning.has(d.commit))
           kept2.push(d);
         else
           later.push(d.subject);
@@ -9919,8 +9950,9 @@ change's seamkit-card. audit is readback over the last changes with advice for e
 production URL can also come from SEAMKIT_URL. After a deploy, --deployed names the commit just
 deployed. When the ledger holds a run that read this address, a change merged after it that was
 never seen live here, nor in any build production was seen running here, is left to the next
-deploy; any other is still judged, so a rollback fails. Without such a run every change is judged.
---last counts the changes judged.
+deploy; any other is still judged, so a rollback fails. Without such a run, or once production here
+was seen running a commit this repository does not have, every change is judged. --last counts
+the changes judged.
 
 Every command that produces a verdict exits with its outcome:
   0 pass   1 fail   3 examined nothing   4 unclassified (stops for a human)
@@ -10406,7 +10438,8 @@ ${text}
 }
 var rawInput = input;
 function branchName(raw) {
-  return raw.replace(/^(?:refs\/heads\/|refs\/remotes\/origin\/|origin\/)/, "");
+  const bare = raw.replace(/^(?:refs\/heads\/|heads\/|refs\/remotes\/origin\/|remotes\/origin\/|origin\/)/, "");
+  return bare === "HEAD" && bare !== raw ? "" : bare;
 }
 function readInputs(env) {
   const url2 = input(env, "url");
@@ -10722,6 +10755,10 @@ async function openLedger(inputs, cli, deps) {
   deps.log(`seamkit: ${init.out.trim()}`);
   return true;
 }
+async function fetchBranch(cwd, name) {
+  const tip = await runGit(["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${name}:refs/remotes/origin/${name}`], { cwd });
+  return tip.code === 0 ? void 0 : tip.stderr.trim() || `git exited ${tip.code}`;
+}
 async function prepareCheckout(cwd, defaultBranch, branchInput, deps) {
   const shallow = await runGit(["rev-parse", "--is-shallow-repository"], { cwd });
   if (shallow.stdout.toString("utf8").trim() === "true") {
@@ -10732,23 +10769,22 @@ async function prepareCheckout(cwd, defaultBranch, branchInput, deps) {
   }
   const read = branchInput !== "" ? branchInput : defaultBranch;
   if (read !== void 0) {
-    if (await isBranchName(cwd, read)) {
-      const tip = await runGit(["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${read}:refs/remotes/origin/${read}`], { cwd });
-      if (tip.code !== 0)
-        deps.warn(`seamkit: could not fetch ${read} from origin, so changes merged since this job's commit may not be examined: ${tip.stderr.trim()}`);
-    } else {
-      deps.warn(`seamkit: ${read} is not a branch name, so it was not fetched from origin and is read as this checkout has it`);
-    }
+    if (!await isBranchName(cwd, read))
+      return `${branchInput !== "" ? "the branch input" : "the event's default branch"} ${read} is not a branch name; give the branch changes are merged into, such as main`;
+    const failed = await fetchBranch(cwd, read);
+    if (failed !== void 0)
+      return `could not fetch ${read} from origin, so changes merged since this job's commit cannot be examined: ${failed}`;
   }
   if (defaultBranch === void 0 || !await isBranchName(cwd, defaultBranch))
-    return;
+    return void 0;
   const target = `refs/remotes/origin/${defaultBranch}`;
   if ((await runGit(["rev-parse", "--verify", "--quiet", target], { cwd })).code !== 0)
-    return;
+    return void 0;
   const head = await runGit(["symbolic-ref", "-q", "refs/remotes/origin/HEAD"], { cwd });
   if (head.code === 0 && head.stdout.toString("utf8").trim() === target)
-    return;
+    return void 0;
   await runGit(["symbolic-ref", "refs/remotes/origin/HEAD", target], { cwd });
+  return void 0;
 }
 async function fullCommit(cwd, rev) {
   const r = await runGit(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], { cwd });
@@ -10770,18 +10806,26 @@ async function landing(prod, deployed, cwd) {
     return "later";
   return "other";
 }
-async function waitForLive(args, deployed, inputs, cli, cwd, deps) {
+async function waitForLive(args, deployed, read, inputs, cli, cwd, deps) {
   const poll = (deps.pollSeconds ?? 10) * 1e3;
   const clock = deps.clock ?? Date.now;
   const start = clock();
   const deadline = start + inputs.waitSeconds * 1e3;
   let lastKnown;
+  const refetched = /* @__PURE__ */ new Set();
   const done = (result) => ({ result, ...lastKnown ? { lastKnown } : {}, seconds: Math.round((clock() - start) / 1e3) });
   for (; ; ) {
     const r = await cli([...args, "--no-record"]);
     if (r.code === EXIT_USAGE2 || r.code === 4 || deployed === void 0)
       return done(r);
     const prod = productionOf(r);
+    if (prod?.status === "ok" && prod.reported !== void 0 && prod.commit === void 0 && read !== void 0 && !refetched.has(prod.reported)) {
+      refetched.add(prod.reported);
+      const failed = await fetchBranch(cwd, read);
+      if (failed === void 0)
+        continue;
+      deps.warn(`seamkit: could not fetch ${read} from origin again: ${failed}`);
+    }
     const where = await landing(prod, deployed, cwd);
     if (where !== "unknown")
       lastKnown = prod;
@@ -10807,9 +10851,19 @@ async function deployNote(read, deployed, waited, cwd) {
   if (where === "later") {
     return { notLive: false, note: `Production runs ${running}, which comes after the deployed commit ${d}. A later deploy has landed, or, if this deploy is a rollback, it has not landed yet. The verdict is for what production runs.` };
   }
+  if (where === "other" && prod?.commit === void 0) {
+    return {
+      notLive: true,
+      note: `Production runs ${running}, a commit this repository does not have even after fetching the branch, so whether it contains the deployed commit ${d} is not known, after waiting ${waited}s.`,
+      title: `FAIL: production runs ${running}, which this repository does not have`
+    };
+  }
   if (where === "other") {
-    const what = prod?.commit === void 0 ? "a commit this repository does not have" : `which does not contain the deployed commit ${d}`;
-    return { notLive: true, note: `Production runs ${running}, ${what}, after waiting ${waited}s. The deploy of ${d} has not landed at this address.` };
+    return {
+      notLive: true,
+      note: `Production runs ${running}, which does not contain the deployed commit ${d}, after waiting ${waited}s. The deploy of ${d} has not landed at this address.`,
+      title: `FAIL: production does not run the deployed commit ${d}`
+    };
   }
   if (where === "unknown") {
     return { notLive: false, note: `Production's version document gave no commit, so whether it runs the deployed commit ${d} is not known. The verdict rests on the markers that were read.` };
@@ -10872,14 +10926,21 @@ async function runAction(deps) {
   const cli = cliRunner(cwd, deps);
   const given = deployedCommit(ctx, event, inputs.sha);
   const where = displayUrl(inputs.url);
-  await prepareCheckout(cwd, defaultBranchOf(ctx, event), inputs.branch, deps);
+  const defaultBranch = defaultBranchOf(ctx, event);
+  const unready = await prepareCheckout(cwd, defaultBranch, inputs.branch, deps);
   const deployed = given === void 0 ? void 0 : await fullCommit(cwd, given);
   let sha = headSha(ctx, event, inputs.sha);
   if (given !== void 0 && sha === given && deployed !== void 0)
     sha = deployed;
+  if (unready !== void 0) {
+    deps.warn(`seamkit: ${unready}`);
+    await report(ctx, inputs.checkName, inputs.token, sha, errorReport(unready, where), "error", EXIT_USAGE2, deps);
+    return EXIT_USAGE2;
+  }
+  const read = inputs.branch !== "" ? inputs.branch : defaultBranch;
   const recording = await openLedger(inputs, cli, deps);
   const args = readbackArgs(inputs, deployed);
-  const waited = await waitForLive(args, deployed, inputs, cli, cwd, deps);
+  const waited = await waitForLive(args, deployed, read, inputs, cli, cwd, deps);
   let result = waited.result;
   let recorded = false;
   const clean = (text) => scrub(text, [inputs.url, inputs.versionUrl]);
@@ -10887,6 +10948,9 @@ async function runAction(deps) {
     const resync = await cli(["state", "sync", "--json"]);
     if (resync.code !== 0)
       deps.warn(`seamkit: the ledger could not be fetched again after the wait, so this run judges it as it was: ${clean(resync.err.trim())}`);
+    const refetch = read === void 0 ? void 0 : await fetchBranch(cwd, read);
+    if (refetch !== void 0)
+      deps.warn(`seamkit: could not fetch ${read} from origin again: ${refetch}`);
     const again = await cli(args);
     if (again.code === EXIT_USAGE2)
       deps.warn(`seamkit: the verdict was not recorded: ${clean(again.err.trim())}`);
@@ -10911,8 +10975,8 @@ async function runAction(deps) {
       code = 1;
     }
     out = readbackReport(outcome, parsed.verdicts, where, deploy.note === void 0 ? [] : [deploy.note]);
-    if (overruled && deployed !== void 0)
-      out = { ...out, title: `FAIL: production does not run the deployed commit ${deployed.slice(0, 12)}` };
+    if (overruled && deploy.title !== void 0)
+      out = { ...out, title: deploy.title };
     deps.log(renderReadback(parsed.verdicts));
     if (deploy.note !== void 0)
       deps.log(`seamkit: ${deploy.note}`);

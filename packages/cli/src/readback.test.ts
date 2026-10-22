@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
+import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { FakeProduction } from '@seamkit/adapters';
 import { git } from '@seamkit/state';
 import { run, type Io } from './cli.js';
 
 const AT = '2026-10-14T09:00:00.000Z';
+const MAIN = fileURLToPath(new URL('./main.js', import.meta.url));
 const ID = ['-c', 'user.name=dev', '-c', 'user.email=dev@example.invalid'];
 
 let root: string;
@@ -349,6 +352,82 @@ describe('seamkit readback', () => {
     );
   });
 
+  it('keeps a change in scope that a run saw live here, even when no build seen here contained it', async () => {
+    const { dir, merges } = await repo();
+    assert.equal((await cli(['state', 'init'], dir)).code, 0);
+    deploy(merges[0] as string);
+    assert.equal((await cli(['readback', '--url', prod.url], dir)).code, 1);
+    // Production serves #2's marker but no version document, so the run sees #2 live by its card alone.
+    prod.deploy({ 'index.html': '<!doctype html><script src="/app.js"></script>', 'app.js': 'el.id = "sync-badge-v2";' });
+    assert.match((await cli(['readback', '--url', prod.url, '--pr', '2'], dir)).err, /recorded as event/);
+    deploy(merges[0] as string, '');
+    const r = await cli(['readback', '--url', prod.url, '--deployed', merges[0] as string, '--json'], dir);
+    assert.equal(r.code, 1, r.out);
+    assert.ok(JSON.parse(r.out).verdicts.some((v: { subject: string; state: string }) => v.subject === 'pr#2' && v.state === 'not_live'), r.out);
+  });
+
+  it('counts the build production runs now among those seen here, dirty or unknown', async () => {
+    const { dir, merges } = await repo();
+    assert.equal((await cli(['state', 'init'], dir)).code, 0);
+    deploy(merges[0] as string);
+    assert.equal((await cli(['readback', '--url', prod.url], dir)).code, 1);
+    // A dirty build of #2 now serves: #2 is judged, so this run records it live.
+    prod.deploy({
+      'index.html': '<!doctype html><script src="/app.js"></script>',
+      'app.js': 'el.id = "sync-badge-v2";',
+      'version.json': JSON.stringify({ schema: 'seamkit.version/1', commit: merges[1], dirty: true, source: 'git' }),
+    });
+    const dirty = JSON.parse((await cli(['readback', '--url', prod.url, '--deployed', merges[0] as string, '--json'], dir)).out);
+    assert.ok(dirty.verdicts.some((v: { subject: string; state: string }) => v.subject === 'pr#2' && v.state === 'live'), JSON.stringify(dirty.verdicts.map((v: { subject: string }) => v.subject)));
+    // A build this repository cannot place: nothing is scoped out.
+    prod.deploy({ 'version.json': JSON.stringify({ schema: 'seamkit.version/1', commit: 'd'.repeat(40), dirty: false, source: 'git' }) });
+    const unknown = JSON.parse((await cli(['readback', '--url', prod.url, '--deployed', merges[0] as string, '--json'], dir)).out).verdicts[0];
+    assert.ok(unknown.notExamined.some((g: { reason: string }) => g.reason.startsWith(`production at this address was seen running ${'d'.repeat(12)}, which this repository does not have`)), JSON.stringify(unknown.notExamined));
+  });
+
+  it('keeps a change in scope that production ran here, when its version document moved to another discovery path', async () => {
+    for (const [before, after] of [['api/version', 'version.json'], ['version.json', 'api/version']] as const) {
+      const { dir, merges } = await repo();
+      assert.equal((await cli(['state', 'init'], dir)).code, 0);
+      const build = (commit: string, path: string, script: string): void =>
+        prod.deploy({ 'index.html': '<!doctype html><script src="/app.js"></script>', 'app.js': script, [path]: JSON.stringify({ schema: 'seamkit.version/1', commit, dirty: false, source: 'git' }) });
+      build(merges[0] as string, before, '');
+      assert.match((await cli(['readback', '--url', prod.url], dir)).err, /recorded as event/);
+      // #2's build runs, but its marker is not served, so only the version document saw it.
+      build(merges[1] as string, after, '');
+      assert.match((await cli(['readback', '--url', prod.url], dir)).err, /recorded as event/);
+      // The rollback serves the old build, with its document at the old path.
+      build(merges[0] as string, before, '');
+      const r = await cli(['readback', '--url', prod.url, '--deployed', merges[0] as string, '--json'], dir);
+      assert.equal(r.code, 1, `${before} then ${after}: ${r.out}`);
+      assert.ok(JSON.parse(r.out).verdicts.some((v: { subject: string; outcome: string }) => v.subject === 'pr#2' && v.outcome === 'fail'), r.out);
+    }
+  });
+
+  it('judges --last changes however many were merged after the deployed commit', async () => {
+    const { dir, merges, direct } = await repo();
+    assert.equal((await cli(['state', 'init'], dir)).code, 0);
+    deploy(direct);
+    assert.equal((await cli(['readback', '--url', prod.url], dir)).code, 0);
+    for (let i = 0; i < 230; i++) await git([...ID, 'commit', '-q', '--allow-empty', '-m', `step ${i}`], { cwd: dir });
+    const r = await cli(['readback', '--url', prod.url, '--last', '2', '--deployed', direct, '--json'], dir);
+    assert.equal(r.code, 0, r.out);
+    const [summary, ...parts] = JSON.parse(r.out).verdicts;
+    assert.deepEqual(parts.map((v: { subject: string }) => v.subject), [`commit:${direct.slice(0, 12)}`, 'pr#2']);
+    assert.ok(summary.notExamined.some((g: { item: string }) => g.item === `230 changes merged after the deployed commit ${direct.slice(0, 12)}`), JSON.stringify(summary.notExamined));
+    assert.equal(merges.length, 2);
+  });
+
+  it('records --url and --version-url without their fragment', async () => {
+    const { dir, direct } = await repo();
+    deploy(direct);
+    const r = await cli(['readback', '--url', `${prod.url}#top`, '--version-url', `${prod.url}version.json#v`, '--json'], dir);
+    assert.equal(r.code, 0, r.out);
+    const out = JSON.parse(r.out);
+    assert.equal(out.production.url, `${prod.url}version.json`);
+    assert.ok(!r.out.includes('#top') && !r.out.includes('#v'), r.out);
+  });
+
   it('says --last left changes out when it did, with or without a deploy', async () => {
     const { dir, direct } = await repo();
     deploy(direct);
@@ -402,6 +481,11 @@ describe('seamkit readback', () => {
     const json = await cli(['readback', '--url', prod.url, '--json'], dir);
     assert.ok(!json.out.includes('##['), json.out);
     assert.ok(JSON.stringify(JSON.parse(json.out)).includes('##['));
+    // The CLI as a process, in a GitHub Actions step: its report reaches stdout made inert.
+    const spawned = await new Promise<string>((resolve) =>
+      execFile(process.execPath, [MAIN, 'readback', '--url', prod.url], { cwd: dir, env: { ...process.env, GITHUB_ACTIONS: 'true' } }, (_err, stdout) => resolve(stdout)),
+    );
+    assert.ok(spawned.includes('Tidy ##\u200b[warning]forged') && !spawned.includes('##[warning]'), spawned);
   });
 
   it('takes the URL from SEAMKIT_URL', async () => {

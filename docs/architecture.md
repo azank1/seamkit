@@ -559,10 +559,16 @@ production runs a commit that does not contain the deployed one is reported as a
 that address. Before reading, the Action fetches the branch it reads, because `actions/checkout` points
 `origin/<branch>` at the job's commit when the branch has moved on, and a `--branch` that git accepts as a branch name
 (`git check-ref-format --branch`) now prefers `origin/<name>` over a local branch of that name, while `HEAD` and other
-revisions mean what git says. The Action reads `refs/heads/<name>`, `origin/<name>` and `refs/remotes/origin/<name>` as
-`<name>`, and warns when the branch cannot be fetched. It points `origin/HEAD` at the event's default branch, which
+revisions mean what git says. The Action reads `refs/heads/<name>`, `heads/<name>`, `origin/<name>`,
+`remotes/origin/<name>` and `refs/remotes/origin/<name>` as `<name>`, and `origin/HEAD` as the default branch. When its
+branch is not a branch name or cannot be fetched, it gives no verdict, since the checkout's own branch could hide a
+rollback. While it waits, a commit production reports that the clone lacks makes it fetch the branch once more. It points `origin/HEAD` at the event's default branch, which
 `actions/checkout` leaves unset, and for a schedule, whose payload names none, at the branch the schedule runs on. When
 it records, it fetches the ledger again after the wait, so the run that counts sees what other runs pushed meanwhile.
 In a GitHub Actions step the CLI's output cannot run a workflow command: a zero-width space goes before a line that would
 start one and inside `##[`, and JSON output writes `[` after `##` as `\u005b`. `--version-url` is checked as `--url` is,
-and the Action's tables show a change's words as text, never as Markdown or HTML.
+and the Action's tables escape a change's words as Markdown and HTML, though GitHub still links a bare URL, which shows
+its own address. Text output puts each change's words on one line, so they cannot pass for lines of the report. A build
+seen running at any of the version document paths at an address counts, so moving the document from `/api/version` to
+`/version.json` does not hide a rollback, and `--deployed` reads as many commits as were merged after the deployed one
+before applying `--last`.

@@ -115,14 +115,22 @@ async function openLedger(inputs: ActionInputs, cli: (args: string[]) => Promise
   return true;
 }
 
+/** Fetches a branch as origin has it now. Returns git's reason when it cannot. */
+async function fetchBranch(cwd: string, name: string): Promise<string | undefined> {
+  const tip = await runGit(['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/${name}:refs/remotes/origin/${name}`], { cwd });
+  return tip.code === 0 ? undefined : tip.stderr.trim() || `git exited ${tip.code}`;
+}
+
 /**
  * Prepares the checkout as readback expects a clone: the full history, because readback decides by
  * ancestry; the branch it reads as the remote has it, because actions/checkout points
  * origin/<branch> at the job's own commit when the branch has moved on, which would hide every
  * change merged since; and origin/HEAD pointing at the default branch the event names, which
- * actions/checkout does not set and a cached or self-hosted checkout may keep stale.
+ * actions/checkout does not set and a cached or self-hosted checkout may keep stale. Returns why
+ * there can be no verdict: a branch that is not a branch name, or one that cannot be fetched,
+ * would leave readback on the job's own commit, where a rollback passes.
  */
-async function prepareCheckout(cwd: string, defaultBranch: string | undefined, branchInput: string, deps: ActionDeps): Promise<void> {
+async function prepareCheckout(cwd: string, defaultBranch: string | undefined, branchInput: string, deps: ActionDeps): Promise<string | undefined> {
   const shallow = await runGit(['rev-parse', '--is-shallow-repository'], { cwd });
   if (shallow.stdout.toString('utf8').trim() === 'true') {
     deps.log('seamkit: the checkout is shallow; fetching the full history (set fetch-depth: 0 on actions/checkout to skip this)');
@@ -131,19 +139,17 @@ async function prepareCheckout(cwd: string, defaultBranch: string | undefined, b
   }
   const read = branchInput !== '' ? branchInput : defaultBranch;
   if (read !== undefined) {
-    if (await isBranchName(cwd, read)) {
-      const tip = await runGit(['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/${read}:refs/remotes/origin/${read}`], { cwd });
-      if (tip.code !== 0) deps.warn(`seamkit: could not fetch ${read} from origin, so changes merged since this job's commit may not be examined: ${tip.stderr.trim()}`);
-    } else {
-      deps.warn(`seamkit: ${read} is not a branch name, so it was not fetched from origin and is read as this checkout has it`);
-    }
+    if (!(await isBranchName(cwd, read))) return `${branchInput !== '' ? 'the branch input' : "the event's default branch"} ${read} is not a branch name; give the branch changes are merged into, such as main`;
+    const failed = await fetchBranch(cwd, read);
+    if (failed !== undefined) return `could not fetch ${read} from origin, so changes merged since this job's commit cannot be examined: ${failed}`;
   }
-  if (defaultBranch === undefined || !(await isBranchName(cwd, defaultBranch))) return;
+  if (defaultBranch === undefined || !(await isBranchName(cwd, defaultBranch))) return undefined;
   const target = `refs/remotes/origin/${defaultBranch}`;
-  if ((await runGit(['rev-parse', '--verify', '--quiet', target], { cwd })).code !== 0) return;
+  if ((await runGit(['rev-parse', '--verify', '--quiet', target], { cwd })).code !== 0) return undefined;
   const head = await runGit(['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'], { cwd });
-  if (head.code === 0 && head.stdout.toString('utf8').trim() === target) return;
+  if (head.code === 0 && head.stdout.toString('utf8').trim() === target) return undefined;
   await runGit(['symbolic-ref', 'refs/remotes/origin/HEAD', target], { cwd });
+  return undefined;
 }
 
 /** The full id of a commit given perhaps abbreviated, or the text unchanged when git does not know it. */
@@ -202,6 +208,7 @@ interface Waited {
 async function waitForLive(
   args: string[],
   deployed: string | undefined,
+  read: string | undefined,
   inputs: ActionInputs,
   cli: (args: string[]) => Promise<CliResult>,
   cwd: string,
@@ -212,11 +219,20 @@ async function waitForLive(
   const start = clock();
   const deadline = start + inputs.waitSeconds * 1000;
   let lastKnown: Production | undefined;
+  // A commit production reports that this clone lacks may be one merged and deployed since the
+  // branch was fetched: the branch is fetched again, once for each such commit, and read at once.
+  const refetched = new Set<string>();
   const done = (result: CliResult): Waited => ({ result, ...(lastKnown ? { lastKnown } : {}), seconds: Math.round((clock() - start) / 1000) });
   for (;;) {
     const r = await cli([...args, '--no-record']);
     if (r.code === EXIT_USAGE || r.code === 4 || deployed === undefined) return done(r);
     const prod = productionOf(r);
+    if (prod?.status === 'ok' && prod.reported !== undefined && prod.commit === undefined && read !== undefined && !refetched.has(prod.reported)) {
+      refetched.add(prod.reported);
+      const failed = await fetchBranch(cwd, read);
+      if (failed === undefined) continue;
+      deps.warn(`seamkit: could not fetch ${read} from origin again: ${failed}`);
+    }
     const where = await landing(prod, deployed, cwd);
     if (where !== 'unknown') lastKnown = prod;
     if (where === 'runs_it') {
@@ -237,7 +253,7 @@ async function waitForLive(
  * deployed commit, and, when it runs a commit that does not contain it, a fail in place of a pass,
  * because a check on the deployed commit must not read as success while that commit is not live.
  */
-async function deployNote(read: Production | undefined, deployed: string, waited: number, cwd: string): Promise<{ note?: string; notLive: boolean }> {
+async function deployNote(read: Production | undefined, deployed: string, waited: number, cwd: string): Promise<{ note?: string; notLive: boolean; title?: string }> {
   const prod = read;
   const where = await landing(prod, deployed, cwd);
   const d = deployed.slice(0, 12);
@@ -245,9 +261,19 @@ async function deployNote(read: Production | undefined, deployed: string, waited
   if (where === 'later') {
     return { notLive: false, note: `Production runs ${running}, which comes after the deployed commit ${d}. A later deploy has landed, or, if this deploy is a rollback, it has not landed yet. The verdict is for what production runs.` };
   }
+  if (where === 'other' && prod?.commit === undefined) {
+    return {
+      notLive: true,
+      note: `Production runs ${running}, a commit this repository does not have even after fetching the branch, so whether it contains the deployed commit ${d} is not known, after waiting ${waited}s.`,
+      title: `FAIL: production runs ${running}, which this repository does not have`,
+    };
+  }
   if (where === 'other') {
-    const what = prod?.commit === undefined ? 'a commit this repository does not have' : `which does not contain the deployed commit ${d}`;
-    return { notLive: true, note: `Production runs ${running}, ${what}, after waiting ${waited}s. The deploy of ${d} has not landed at this address.` };
+    return {
+      notLive: true,
+      note: `Production runs ${running}, which does not contain the deployed commit ${d}, after waiting ${waited}s. The deploy of ${d} has not landed at this address.`,
+      title: `FAIL: production does not run the deployed commit ${d}`,
+    };
   }
   if (where === 'unknown') {
     return { notLive: false, note: `Production's version document gave no commit, so whether it runs the deployed commit ${d} is not known. The verdict rests on the markers that were read.` };
@@ -327,23 +353,33 @@ export async function runAction(deps: ActionDeps): Promise<number> {
   const given = deployedCommit(ctx, event, inputs.sha);
   const where = displayUrl(inputs.url);
 
-  await prepareCheckout(cwd, defaultBranchOf(ctx, event), inputs.branch, deps);
+  const defaultBranch = defaultBranchOf(ctx, event);
+  const unready = await prepareCheckout(cwd, defaultBranch, inputs.branch, deps);
   const deployed = given === undefined ? undefined : await fullCommit(cwd, given);
   let sha = headSha(ctx, event, inputs.sha);
   if (given !== undefined && sha === given && deployed !== undefined) sha = deployed;
+  if (unready !== undefined) {
+    deps.warn(`seamkit: ${unready}`);
+    await report(ctx, inputs.checkName, inputs.token, sha, errorReport(unready, where), 'error', EXIT_USAGE, deps);
+    return EXIT_USAGE;
+  }
+  const read = inputs.branch !== '' ? inputs.branch : defaultBranch;
   const recording = await openLedger(inputs, cli, deps);
   const args = readbackArgs(inputs, deployed);
-  const waited = await waitForLive(args, deployed, inputs, cli, cwd, deps);
+  const waited = await waitForLive(args, deployed, read, inputs, cli, cwd, deps);
   let result = waited.result;
   let recorded = false;
   // CLI messages can repeat an input; a URL in one is shown as displayUrl shows it.
   const clean = (text: string): string => scrub(text, [inputs.url, inputs.versionUrl]);
   if (recording && result.code !== EXIT_USAGE) {
     // The run that counts is read again and recorded, so the ledger holds what was judged. Other
-    // runs may have pushed to the ledger during the wait, so it is fetched again first. A
-    // recording that fails leaves the verdict as it was read, and says it was not recorded.
+    // runs may have pushed to the ledger, and changes may have merged, during the wait, so both
+    // are fetched again first. A recording that fails leaves the verdict as it was read, and says
+    // it was not recorded.
     const resync = await cli(['state', 'sync', '--json']);
     if (resync.code !== 0) deps.warn(`seamkit: the ledger could not be fetched again after the wait, so this run judges it as it was: ${clean(resync.err.trim())}`);
+    const refetch = read === undefined ? undefined : await fetchBranch(cwd, read);
+    if (refetch !== undefined) deps.warn(`seamkit: could not fetch ${read} from origin again: ${refetch}`);
     const again = await cli(args);
     if (again.code === EXIT_USAGE) deps.warn(`seamkit: the verdict was not recorded: ${clean(again.err.trim())}`);
     else result = again;
@@ -369,7 +405,7 @@ export async function runAction(deps: ActionDeps): Promise<number> {
       code = 1;
     }
     out = readbackReport(outcome, parsed.verdicts, where, deploy.note === undefined ? [] : [deploy.note]);
-    if (overruled && deployed !== undefined) out = { ...out, title: `FAIL: production does not run the deployed commit ${deployed.slice(0, 12)}` };
+    if (overruled && deploy.title !== undefined) out = { ...out, title: deploy.title };
     deps.log(renderReadback(parsed.verdicts));
     if (deploy.note !== undefined) deps.log(`seamkit: ${deploy.note}`);
     if (parsed.recorded) {

@@ -16,6 +16,7 @@ import {
   digest,
   exitCodeFor,
   invariantCheck,
+  renderReadback,
   renderSummary,
   renderVerdict,
   replayRun,
@@ -263,5 +264,15 @@ describe('rendering', () => {
     assert.equal(renderSummary([v('pass'), v('fail'), v('pass')]), '3 verdicts: 2 pass, 1 fail');
     assert.equal(renderSummary([]), '0 verdicts');
     assert.match(renderVerdict(v('examined_nothing')), /^EXAMINED NOTHING/);
+  });
+
+  it('keeps text from a change on its own line, so it cannot write lines that look like the report', () => {
+    const forged = 'docs only\n\nPASS  readback  main\r  proven live 3 of 3 changes\u2028x\u0085y';
+    const summary = v('fail', { check: 'readback', subject: 'main', notExamined: [{ item: 'pr#1: card', reason: forged }] });
+    const change = v('fail', { check: 'readback', subject: 'pr#1', state: 'not_proven', reasons: [forged], evidence: [{ kind: 'text', value: `Fix\nPASS  readback  main`, label: 'title' }] });
+    for (const text of [renderReadback([summary, change]), renderVerdict(change)]) {
+      assert.ok(!text.split(/\r\n|\r|\n|\u2028|\u2029|\u0085/).some((line) => /^(?:PASS|  proven live)/.test(line)), text);
+      assert.ok(text.includes('docs only PASS  readback  main   proven live 3 of 3 changes x y'), text);
+    }
   });
 });

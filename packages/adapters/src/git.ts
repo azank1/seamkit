@@ -81,6 +81,29 @@ export class GitRepo {
     return full === undefined ? undefined : (await this.read([full]))[0];
   }
 
+  /** How many commits on the first-parent line of `head` are not reachable from `exclude`. */
+  async countFirstParent(head: string, exclude: string): Promise<number> {
+    return Number(await git(['rev-list', '--first-parent', '--count', head, `^${exclude}`], { cwd: this.cwd }));
+  }
+
+  /**
+   * The full ids of many abbreviated commits in one git process, in order: undefined for one that
+   * is missing, ambiguous or not a commit.
+   */
+  async resolveAll(abbrevs: readonly string[]): Promise<(string | undefined)[]> {
+    const asked = abbrevs.filter((a) => HEX.test(a));
+    if (asked.length === 0) return abbrevs.map(() => undefined);
+    const r = await runGit(['cat-file', `--batch-check=%(objectname) %(objecttype)`], { cwd: this.cwd, input: asked.map((a) => `${a}^{commit}\n`).join('') });
+    if (r.code !== 0) throw new GitError(['cat-file', '--batch-check'], r);
+    const answers = r.stdout.toString('utf8').split('\n');
+    const found = new Map<string, string>();
+    asked.forEach((a, i) => {
+      const [id, type] = (answers[i] ?? '').split(' ');
+      if (type === 'commit' && id !== undefined && /^[0-9a-f]{40,64}$/.test(id)) found.set(a, id);
+    });
+    return abbrevs.map((a) => found.get(a));
+  }
+
   /** The full id of an abbreviated commit, or undefined when it is missing or ambiguous. */
   async resolve(abbrev: string): Promise<string | undefined> {
     return HEX.test(abbrev) ? this.rev(abbrev) : undefined;

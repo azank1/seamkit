@@ -1,6 +1,12 @@
 import { OUTCOME_LABELS, OUTCOMES, type Outcome } from './outcome.js';
 import type { Verdict } from './verdict.js';
 
+/**
+ * Each entry is one line of the report. Text from a change (a title, a card's reason) can hold line
+ * breaks, which would let it write lines that look like the report's own, so they become spaces.
+ */
+const asLines = (lines: readonly string[]): string => lines.map((l) => l.replace(/[\r\n\u0085\u2028\u2029]+/g, ' ')).join('\n');
+
 function examinedText(e: Verdict['examined'][number]): string {
   if (e.count === undefined) return e.item;
   return e.of === undefined ? `${e.item} (${e.count})` : `${e.item} (${e.count} of ${e.of})`;
@@ -18,7 +24,7 @@ export function renderVerdict(v: Verdict): string {
   if (v.notExamined.length === 0) lines.push('  not examined: none listed');
   for (const g of v.notExamined) lines.push(`  not examined: ${g.item} (${g.reason})`);
   for (const ev of v.evidence) lines.push(`  evidence: ${ev.label ? `${ev.label} ` : ''}${ev.value}`);
-  return lines.join('\n');
+  return asLines(lines);
 }
 
 /** "3 verdicts: 1 pass, 1 fail, 1 examined nothing", listing every outcome that occurred. */
@@ -90,5 +96,5 @@ export function renderReadback(verdicts: readonly Verdict[]): string {
   const perChange = summary.notExamined.length - runGaps.length;
   if (perChange > 0) lines.push(`  not examined: ${perChange} item${perChange === 1 ? '' : 's'} listed with the changes above`);
   if (summary.notExamined.length === 0) lines.push('  not examined: none listed');
-  return lines.join('\n');
+  return asLines(lines);
 }

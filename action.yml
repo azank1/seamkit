@@ -16,7 +16,8 @@ inputs:
     description: >-
       How many of the latest changes on the default branch to judge. After a deploy, once the ledger holds a run at this
       address, changes merged after the deployed commit that were never seen live there, nor in a build production was
-      seen running there, are listed as not examined, left to the next deploy, and not counted.
+      seen running there, are listed as not examined, left to the next deploy, and not counted. Once production there
+      was seen running a commit this repository does not have, every change is judged.
     default: '20'
   pr:
     description: Read back one merged pull request by number instead of the latest changes.
@@ -25,8 +26,9 @@ inputs:
     description: >-
       The branch changes are merged into. Defaults to the repository's default branch, as the event names it. A branch
       name such as production, also written refs/heads/production or origin/production, means the remote's branch,
-      which the Action fetches before reading; anything else, such as HEAD, is read as the checkout has it, with a
-      warning. It does not change which commit counts as deployed.
+      which the Action fetches before reading; origin/HEAD means the default branch. When the input is not a branch
+      name, such as HEAD, or the branch cannot be fetched, there is no verdict. It does not change which commit counts
+      as deployed.
     default: ''
   version-url:
     description: Where production's version document is, when it is not at one of the usual paths.
@@ -51,7 +53,8 @@ inputs:
     description: >-
       The deployed commit, full or abbreviated. The check run goes on it, and once the ledger holds a run at this
       address, a change merged after it is left to the next deploy unless it was seen live there or in a build
-      production was seen running there. Defaults to the deployed commit for
+      production was seen running there, and nothing is left once production there was seen running a commit this
+      repository does not have. Defaults to the deployed commit for
       deployment and deployment_status, and to the other workflow's commit for workflow_run. For other events nothing
       counts as deployed, and the check goes on the job's commit, or a pull request's head commit.
     default: ''

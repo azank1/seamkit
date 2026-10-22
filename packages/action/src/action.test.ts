@@ -547,7 +547,7 @@ describe('the seamkit action', () => {
     // The deploy of #1 finishes after the deploy of #2. actions/checkout with fetch-depth: 0 points
     // origin/main and main at the event's commit, because main has moved on.
     // Every spelling of the branch means the remote's main: github.ref's form, and origin's.
-    for (const branch of ['', 'main', 'refs/heads/main', 'origin/main', 'refs/remotes/origin/main']) {
+    for (const branch of ['', 'main', 'refs/heads/main', 'heads/main', 'origin/main', 'remotes/origin/main', 'refs/remotes/origin/main', 'origin/HEAD', 'refs/remotes/origin/HEAD']) {
       const late = join(root, `ci-late-${++counter}`);
       await git(['clone', '-q', `file://${remote}`, late], { cwd: root });
       await git(['update-ref', 'refs/remotes/origin/main', commits[1] as string], { cwd: late });
@@ -577,13 +577,77 @@ describe('the seamkit action', () => {
     }
   });
 
-  it('warns when the branch it reads cannot be fetched, or is not a branch at all', async () => {
+  it('gives no verdict when the branch it reads cannot be fetched or is not a branch, since the job\'s own commit would hide a rollback', async () => {
     const { ci, commits } = await project();
     deploy(commits[2]);
-    const missing = await act(ci, { branch: 'nope' }, success(commits[2] as string));
-    assert.ok(missing.warnings.some((w) => /^seamkit: could not fetch nope from origin, so changes merged since this job's commit may not be examined/.test(w)), missing.warnings.join('\n'));
-    const head = await act(ci, { branch: 'HEAD' }, success(commits[2] as string));
-    assert.ok(head.warnings.some((w) => w === 'seamkit: HEAD is not a branch name, so it was not fetched from origin and is read as this checkout has it'), head.warnings.join('\n'));
+    for (const [branch, message] of [
+      ['nope', /^could not fetch nope from origin, so changes merged since this job's commit cannot be examined: /],
+      ['HEAD', /^the branch input HEAD is not a branch name; give the branch changes are merged into, such as main$/],
+      ['refs/tags/v1', /^could not fetch refs\/tags\/v1 from origin/],
+    ] as const) {
+      const ran = await act(ci, { branch }, success(commits[2] as string));
+      assert.equal(ran.code, 2, branch);
+      assert.equal(output(ran, 'outcome'), 'error');
+      const post = lastPost();
+      assert.equal(post['conclusion'], 'failure');
+      assert.match((post['output'] as { title: string }).title, /^No verdict: /);
+      assert.ok(ran.warnings.some((w) => message.test(w.replace(/^seamkit: /, ''))), `${branch}: ${ran.warnings.join('\n')}`);
+    }
+  });
+
+  it('fetches the branch again when production reports a commit merged and deployed since the fetch', async () => {
+    const { remote, ci, commits } = await project();
+    deploy(commits[1]);
+    let once = false;
+    let third = '';
+    const ran = await act(ci, { wait: '60' }, success(commits[2] as string), {
+      sleep: async () => {
+        if (once) return;
+        once = true;
+        // #3 merges and its deploy lands before this run sees the deploy of #2.
+        const dev = join(root, `dev-later-${++counter}`);
+        await git(['clone', '-q', `file://${remote}`, dev], { cwd: root });
+        await writeFile(join(dev, 'c.txt'), 'c\n');
+        await git(['add', 'c.txt'], { cwd: dev });
+        await git([...ID, 'commit', '-q', '-m', 'Add the chart (#3)'], { cwd: dev });
+        await git(['push', '-q', 'origin', 'main'], { cwd: dev });
+        third = await git(['rev-parse', 'HEAD'], { cwd: dev });
+        deploy(third);
+      },
+    });
+    assert.equal(ran.code, 0, ran.logs.join('\n'));
+    const post = lastPost();
+    assert.equal(post['conclusion'], 'success');
+    const out = post['output'] as { title: string; summary: string };
+    assert.match(out.summary, new RegExp(`Production runs ${third.slice(0, 12)}, which comes after the deployed commit`));
+    // The verdict is read again once the branch holds #3, so #3 is judged and nothing is left unknown.
+    assert.equal(out.title, 'PASS: 4 live of 4');
+    assert.ok(!out.summary.includes('does not have'), out.summary);
+  });
+
+  it('reads production again after fetching the branch, even when the wait ends at that read', async () => {
+    const { remote, ci, commits } = await project();
+    deploy(commits[1]);
+    let third = '';
+    // One poll: #3 merges and deploys during it, after this job fetched the branch, and the read
+    // that first reports #3 is the wait's last.
+    const ran = await act(ci, { wait: '10' }, success(commits[2] as string), {
+      sleep: async () => {
+        const dev = join(root, `dev-last-${++counter}`);
+        await git(['clone', '-q', `file://${remote}`, dev], { cwd: root });
+        await writeFile(join(dev, 'c.txt'), 'c\n');
+        await git(['add', 'c.txt'], { cwd: dev });
+        await git([...ID, 'commit', '-q', '-m', 'Add the chart (#3)'], { cwd: dev });
+        await git(['push', '-q', 'origin', 'main'], { cwd: dev });
+        third = await git(['rev-parse', 'HEAD'], { cwd: dev });
+        deploy(third);
+      },
+    });
+    assert.equal(ran.sleeps.length, 1);
+    assert.equal(ran.code, 0, ran.logs.join('\n'));
+    const out = lastPost()['output'] as { title: string; summary: string };
+    assert.equal(out.title, 'PASS: 4 live of 4');
+    assert.match(out.summary, new RegExp(`Production runs ${third.slice(0, 12)}, which comes after`));
   });
 
   it('fetches the ledger again after the wait, so the run that counts sees what other runs pushed meanwhile', async () => {
@@ -699,11 +763,12 @@ describe('action inputs and reports', () => {
     assert.equal(scrub('cost $& and $1', ['https://x.example/$&']), 'cost $& and $1');
   });
 
-  it('reads every spelling of a branch input as the bare branch name', () => {
-    for (const given of ['main', 'refs/heads/main', 'origin/main', 'refs/remotes/origin/main']) {
-      assert.equal(readInputs({ INPUT_URL: 'https://a.example', INPUT_BRANCH: given }).branch, 'main');
-    }
-    assert.equal(readInputs({ INPUT_URL: 'https://a.example', INPUT_BRANCH: 'release/2.0' }).branch, 'release/2.0');
+  it('reads the spellings of a branch input as the bare branch name, and origin/HEAD as the default branch', () => {
+    const branch = (given: string): string => readInputs({ INPUT_URL: 'https://a.example', INPUT_BRANCH: given }).branch;
+    for (const given of ['main', 'refs/heads/main', 'heads/main', 'origin/main', 'remotes/origin/main', 'refs/remotes/origin/main']) assert.equal(branch(given), 'main');
+    for (const given of ['origin/HEAD', 'remotes/origin/HEAD', 'refs/remotes/origin/HEAD']) assert.equal(branch(given), '');
+    assert.equal(branch('release/2.0'), 'release/2.0');
+    assert.equal(branch('HEAD'), 'HEAD');
   });
 
   it('validates wait and ledger', () => {

@@ -910,8 +910,12 @@ fi</pre></div>
     <code>Production – &lt;project&gt;</code>; give each project its own job, with that exact name and its own
     <code>url</code>; the group, keyed by environment, keeps them from cancelling each other.</p>
   <p class="note">Other CI systems run the CLI: Node 20 or later, the full history (no shallow clone), and push access to
-    the <code>seamkit/state</code> branch if you keep the ledger there. With <code>BRANCH</code> set to your default
-    branch, fetch it as it is now (<code>git fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"</code>), run
+    the <code>seamkit/state</code> branch if you keep the ledger there. On GitHub Actions, set <code>BRANCH</code> from
+    <code>github.event.repository.default_branch || github.ref_name</code>, because a schedule's event names no
+    repository, and remove the problem matchers <code>actions/setup-node</code> adds
+    (<code>echo "::remove-matcher owner=tsc::"</code>, and the same for <code>eslint-stylish</code> and
+    <code>eslint-compact</code>), which would read a change's title as an error. With <code>BRANCH</code> set to your
+    default branch, fetch it as it is now (<code>git fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"</code>), run
     <code>npx --yes seamkit@0.2 state sync</code>, then
     <code>npx --yes seamkit@0.2 readback --url https://your.app --last 20 --branch "$BRANCH" --deployed &lt;deployed commit&gt;</code>
     in the job that deployed, where the deployed commit is usually <code>$GITHUB_SHA</code> or your CI's equivalent,
@@ -935,6 +939,8 @@ fi</pre></div>
         <tr><td>Marker absent although the version contains the change</td><td>The marker text is in source but not in the built output.</td><td>Use text the bundle really ships, such as an attribute value or a user-facing string.</td></tr>
         <tr><td>"No change carries a seamkit-card"</td><td>The merge setting drops pull request descriptions.</td><td>Step 4: "Pull request title and description".</td></tr>
         <tr><td>Exit 2: URL refused</td><td>The URL carries a query string or credentials, and URLs are recorded.</td><td>Use a plain URL. Readback only needs public <code>GET</code>s.</td></tr>
+        <tr><td>No verdict: "could not fetch &lt;branch&gt; from origin" or "is not a branch name"</td><td>The Action reads the branch as origin has it, because the checkout's copy stops at the job's commit and would hide a rollback.</td><td>Set <code>branch</code> to the branch changes merge into, such as <code>main</code>, and keep the checkout's credentials.</td></tr>
+        <tr><td>An error annotation quoting a change's title</td><td>A problem matcher from an earlier step, such as <code>actions/setup-node</code>, read the readback's output.</td><td><code>echo "::remove-matcher owner=tsc::"</code> before readback, and the same for <code>eslint-stylish</code> and <code>eslint-compact</code>.</td></tr>
         <tr><td>"no ledger was read"</td><td>There is no ledger yet, so a change that left production shows as not proven rather than not live.</td><td>Step 3: <code>seamkit state init</code>.</td></tr>
       </tbody>
     </table>
@@ -986,7 +992,7 @@ fi</pre></div>
   var BUILD = {
     updated: '2026-10-22',
     version: '0.2.0',
-    tests: '184',
+    tests: '192',
     dogfood: '20 of 20',
     milestones: [
       { m: 'M1', title: 'Verdict core and ledger', state: 'done', when: '2026-10-15',
@@ -1042,7 +1048,8 @@ fi</pre></div>
       ['2026-10-22', 'Two review rounds (one reviewer, then 19 agents with skeptics) found an action.yml that GitHub could not load and a false pass after a rollback deploy; both fixed and tested. Readback gains --deployed; 0.2.0 candidate, 145 tests, Node 20, 22 and 24.'],
       ['2026-10-22', 'Third review round (a workflow with skeptics): the Action now waits on production\'s own version document, scopes a deploy only when a ledger was read, keeps secrets in a refused URL out of reports, and fences workflow commands in the log. 159 tests; the bundle smoke now covers a fail and a ledger push.'],
       ['2026-10-22', 'Fourth review round (52 agents): a deploy is scoped only once the ledger holds a run at that address, changes production runs stay in scope, --last counts the changes judged, a failed read no longer ends the wait, and the Action fetches the branch it reads because actions/checkout pins it. 172 tests.'],
-      ['2026-10-22', 'Fifth review round (38 agents): a change production was ever seen running stays in a deploy\'s scope, whatever the run that saw it judged; every spelling of a branch input is fetched; the ledger is fetched again after the wait; and the CLI\'s output cannot run a workflow command in a GitHub Actions step. 184 tests.'],
+      ['2026-10-22', 'Fifth review round (38 agents): a change production was ever seen running stays in a deploy\'s scope, whatever the run that saw it judged; a branch input written refs/heads/, origin/ or refs/remotes/origin/ is fetched by its bare name; the ledger is fetched again after the wait; and the CLI\'s output cannot run a workflow command in a GitHub Actions step. 184 tests.'],
+      ['2026-10-22', 'Sixth review round (15 findings confirmed by skeptics): a branch input that is not a branch, or a branch that cannot be fetched, now gives no verdict instead of a warning; origin/HEAD reads as the default branch; a build seen at any version document path counts; any number of changes after the deployed commit is read; production reporting a commit the checkout lacks makes the Action fetch the branch again; and a change\'s words stay on one line of the report. 192 tests; every new rule\'s mutant is caught but one equivalent.'],
     ],
     decisions: [
       ['Program readback adapter (requested by an internal project)', 'Accept with changes, scheduled after M4. Notes in the knowledge base.', 'azank', 'wait'],

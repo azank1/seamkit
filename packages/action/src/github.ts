@@ -67,10 +67,13 @@ export const rawInput = input;
 
 /**
  * A branch input as the bare name of the remote's branch: refs/heads/main, the form github.ref
- * takes, and origin/main or refs/remotes/origin/main all mean main, which is what is fetched.
+ * takes, heads/main, and origin/main, remotes/origin/main or refs/remotes/origin/main all mean
+ * main, which is what is fetched. origin/HEAD is the remote's default branch, which an empty input
+ * already reads.
  */
 export function branchName(raw: string): string {
-  return raw.replace(/^(?:refs\/heads\/|refs\/remotes\/origin\/|origin\/)/, '');
+  const bare = raw.replace(/^(?:refs\/heads\/|heads\/|refs\/remotes\/origin\/|remotes\/origin\/|origin\/)/, '');
+  return bare === 'HEAD' && bare !== raw ? '' : bare;
 }
 
 export function readInputs(env: Env): ActionInputs {

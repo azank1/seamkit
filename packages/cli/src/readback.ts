@@ -12,7 +12,7 @@ import {
   type Sighting,
   type VersionObservation,
 } from '@seamkit/core';
-import { discoverVersion, GitRepo, observeBundle, observeVersion, type GitCommit, type HttpOptions } from '@seamkit/adapters';
+import { discoverVersion, GitRepo, observeBundle, observeVersion, VERSION_PATHS, type GitCommit, type HttpOptions } from '@seamkit/adapters';
 import { parseChangeMessage, readCard } from '@seamkit/formats';
 import { GitStateStore, NotAGitRepository } from '@seamkit/state';
 
@@ -28,7 +28,8 @@ export interface ReadbackRequest {
    * The commit just deployed. When the ledger holds a run that read this address, a change merged
    * after it that was never seen live here, nor in any build production was seen running here
    * (now included), is left to the next deploy and listed as not examined. Any other is judged, so
-   * a deploy that drops it fails. Without such a run every change is judged.
+   * a deploy that drops it fails. Without such a run, or once production here was seen running a
+   * commit this repository does not have, every change is judged.
    * `last` counts the changes judged, so changes left to the next deploy do not crowd the window.
    */
   deployed?: string;
@@ -83,12 +84,16 @@ function toChange(c: GitCommit, pageUrl: string, primary: VersionObservation, su
 /**
  * Sightings of these changes in earlier recorded readback runs, or null when there is no ledger.
  * `readHere` says whether any recorded run read this address's version document, and `observed`
- * holds every commit those runs saw it name, whatever changes each run judged: together they let
- * a change that has no sighting and was never in a build seen here be left to the next deploy.
+ * holds every commit that production's own document named in a recorded run, whatever changes
+ * the run judged: together they let a change that has no sighting and was never in a build seen
+ * here be left to the next deploy. `addresses` are where production's own document may have been
+ * read: every discovery path on the origin when the document is discovered, since a build can
+ * move it from one to another.
  */
 async function loadHistory(
   cwd: string,
   primaryUrl: string,
+  addresses: ReadonlySet<string>,
   commits: ReadonlySet<string>,
 ): Promise<{ sightings: Sighting[]; readHere: boolean; observed: string[] } | null> {
   let store: GitStateStore;
@@ -114,8 +119,8 @@ async function loadHistory(
       continue; // `seamkit state verify` and `seamkit replay` report broken events; history skips them.
     }
     const first = input.versions[0];
-    if (first !== undefined && first.url === primaryUrl && first.status === 'ok') {
-      readHere = true;
+    if (first !== undefined && addresses.has(first.url) && first.status === 'ok') {
+      if (first.url === primaryUrl) readHere = true;
       const named = first.commit ?? first.reported;
       if (named !== undefined && COMMIT_ID.test(named)) observed.add(named);
     }
@@ -150,6 +155,12 @@ export async function gatherReadback(
       : await discoverVersion(origin, now(), resolve, http);
 
   const runGaps: { item: string; reason: string }[] = [];
+  let deployed: string | undefined;
+  if (req.deployed !== undefined) {
+    const d = await repo.commit(req.deployed);
+    if (d === undefined) throw new Error(`there is no commit called ${req.deployed} in this repository; fetch it, or check the --deployed value`);
+    deployed = d.commit;
+  }
   let commits: GitCommit[];
   let subject: string;
   // The latest changes are cut to --last after scoping; `more` says the branch goes on past those read.
@@ -160,8 +171,10 @@ export async function gatherReadback(
     commits = [c];
     subject = `commit:${short(c.commit)}`;
   } else {
-    // After a deploy, changes left to the next one do not count toward --last, so read further.
-    const depth = req.pr !== undefined ? Math.max(req.last, PR_SEARCH_DEPTH) : req.deployed !== undefined ? req.last + PR_SEARCH_DEPTH : req.last;
+    // After a deploy, changes left to the next one do not count toward --last, so every change
+    // after the deployed commit is read as well as the window.
+    const after = deployed !== undefined && req.pr === undefined ? await repo.countFirstParent(branch.head, deployed) : 0;
+    const depth = req.pr !== undefined ? Math.max(req.last, PR_SEARCH_DEPTH) : req.last + after;
     // One more than the window is read, so that a gap for older changes is reported only when there are some.
     const history = await repo.firstParent(branch.head, req.pr === undefined ? depth + 1 : depth);
     if (req.pr === undefined) {
@@ -179,18 +192,13 @@ export async function gatherReadback(
       }
     }
   }
-  let deployed: string | undefined;
-  if (req.deployed !== undefined) {
-    const d = await repo.commit(req.deployed);
-    if (d === undefined) throw new Error(`there is no commit called ${req.deployed} in this repository; fetch it, or check the --deployed value`);
-    deployed = d.commit;
-  }
   const shallow = await repo.isShallow();
   if (shallow) runGaps.push({ item: 'history beyond the shallow clone', reason: 'the clone is shallow; run git fetch --unshallow to examine older changes' });
 
   const subjects = new Set<string>();
   let drafts = commits.map((c) => toChange(c, req.url, primary, subjects));
-  const loaded = await loadHistory(cwd, primary.url, new Set(drafts.map((c) => c.commit)));
+  const addresses = new Set(req.versionUrl !== undefined ? [primary.url] : VERSION_PATHS.map((p) => new URL(p, origin).href));
+  const loaded = await loadHistory(cwd, primary.url, addresses, new Set(drafts.map((c) => c.commit)));
   const history = loaded === null ? null : loaded.sightings;
 
   if (deployed !== undefined) {
@@ -200,11 +208,13 @@ export async function gatherReadback(
     const missing: string[] = [];
     if (loaded !== null && loaded.readHere) {
       const now = primary.status === 'ok' ? (primary.commit ?? primary.reported) : undefined;
-      for (const named of new Set([...loaded.observed, ...(now !== undefined && COMMIT_ID.test(now) ? [now] : [])])) {
-        const full = await repo.resolve(named);
-        if (full === undefined) missing.push(named);
-        else ran.push(full);
-      }
+      const named = [...new Set([...loaded.observed, ...(now !== undefined && COMMIT_ID.test(now) ? [now] : [])])];
+      const full = await repo.resolveAll(named);
+      named.forEach((n, i) => {
+        const id = full[i];
+        if (id === undefined) missing.push(n);
+        else ran.push(id);
+      });
     }
     if (loaded === null || !loaded.readHere || missing.length > 0) {
       // Without a run that read this address, a change still on its way looks exactly like one a
@@ -228,12 +238,12 @@ export async function gatherReadback(
       // check judges every change that stays.
       const seen = new Set(loaded.sightings.map((s) => `${s.change} ${s.marker}`));
       const wasRunning = await repo.reachableFrom(ran, deployed);
+      const afterDeploy = await repo.reachableFrom([branch.head], deployed);
       const kept: typeof drafts = [];
       const later: string[] = [];
       for (const d of drafts) {
-        const inDeploy = (await repo.contains(deployed, d.commit)).contains;
         const seenHere = d.markers.some((m) => seen.has(`${d.commit} ${markerKey(m)}`));
-        if (inDeploy !== false || seenHere || wasRunning.has(d.commit)) kept.push(d);
+        if (!afterDeploy.has(d.commit) || seenHere || wasRunning.has(d.commit)) kept.push(d);
         else later.push(d.subject);
       }
       if (later.length > 0) {

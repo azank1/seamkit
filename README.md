@@ -115,8 +115,8 @@ watch is part of the setup. When one repository feeds several Vercel projects, e
 group is keyed by the environment, so the projects do not cancel each other's readbacks.
 
 The check covers the last 20 changes on the default branch. The Action keeps reading production for up to `wait`
-seconds until production's version document reports the deployed commit, then records the run that counts and pushes
-the ledger. When production still runs another commit at the end of the wait, the summary says which. If that commit
+seconds until production's version document reports the deployed commit, fetching the branch again if production
+reports a commit the checkout does not have yet, then records the run that counts and pushes the ledger. When production still runs another commit at the end of the wait, the summary says which. If that commit
 does not contain the deployed one, the deploy is not live at this address, and a pass is reported as a fail.
 
 Once the ledger holds a run that read this address, a change merged after the deployed commit is listed as not
@@ -125,7 +125,8 @@ there, so a merge landing while this deploy builds does not fail it. Every other
 drops one, as a rollback does, fails. Without a ledger, on the first run at an address, and once production there has
 been seen running a commit this repository does not have, seamkit cannot tell a change still on its way from one a
 rollback removed, so it judges every change: a merge landing during the build fails the deploy as not proven until the
-next deploy carries it, and a rollback fails as not proven rather than not live. After a deploy, `last` counts the changes judged, not the ones left to the next deploy.
+next deploy carries it. A rollback fails too, as not live when the ledger saw the dropped change live, and as not
+proven without a ledger or on the first run. After a deploy, `last` counts the changes judged, not the ones left to the next deploy.
 
 Only a pass posts a success. A change that is not live or not proven fails the check, and an unclassified result is
 marked action required. Examined nothing fails it too, whether production could not be read, a marker could not be
@@ -164,12 +165,13 @@ again.
 | `ledger` | `auto` | `auto` records when a `seamkit/state` branch exists, `true` starts one, `false` never records |
 | `check-name` | `seamkit readback (<host>)` | one check per production address |
 | `sha` | the deployed commit | where the check goes, and what counts as deployed |
-| `branch`, `version-url`, `token` | | for unusual layouts; a bare `branch` name reads the remote's branch |
+| `branch`, `version-url`, `token` | | for unusual layouts; `branch` names the remote's branch, and one that is not a branch gives no verdict |
 
 The Action runs on GitHub-hosted runners, and on self-hosted runners that support the `node24` runtime. Recording
 pushes with the checkout's credentials, so keep `actions/checkout`'s default `persist-credentials`. Before reading, the
 Action fetches the branch it reads from origin: when the branch has moved past the job's commit, `actions/checkout`
-leaves `origin/<branch>` at that commit, which would hide every change merged since.
+leaves `origin/<branch>` at that commit, which would hide every change merged since. So when the `branch` input is not
+a branch name, or the branch cannot be fetched, the Action gives no verdict (exit 2) and says why.
 
 Anywhere else, run readback as a step of the job that deploys, once the deploy is live, naming the commit it shipped:
 
@@ -182,6 +184,10 @@ Anywhere else, run readback as a step of the job that deploys, once the deploy i
     node-version: 22
 # … your deploy steps …
 - run: |
+    : "${BRANCH:?set BRANCH to the default branch}"
+    echo "::remove-matcher owner=tsc::"   # setup-node's problem matchers would read a change's title as an error
+    echo "::remove-matcher owner=eslint-stylish::"
+    echo "::remove-matcher owner=eslint-compact::"
     git fetch --quiet --no-tags origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"   # the branch as it is now
     npx --yes seamkit@0.2 state sync || true   # fetch the ledger, when there is one
     status=0
@@ -189,7 +195,7 @@ Anywhere else, run readback as a step of the job that deploys, once the deploy i
     npx --yes seamkit@0.2 state sync || echo '::warning::seamkit: the ledger was not pushed'
     exit $status
   env:
-    BRANCH: ${{ github.event.repository.default_branch }}
+    BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}   # a schedule's event names no repository
     DEPLOYED_COMMIT: ${{ github.sha }}   # the commit this job deployed
 ```
 
@@ -197,7 +203,9 @@ The step exits with readback's code: it fails when a change is not live or not p
 be examined, so a broken read never passes silently. Readback records the run when the checkout has a ledger
 (`seamkit state init` starts one), and pushing it needs `permissions: contents: write`. In a GitHub Actions step, the
 CLI's output cannot run a workflow command: where a change's own words would read as one, a zero-width space keeps them
-plain text.
+plain text. Problem matchers are different: they read every line of the log, so a matcher an earlier step added, such
+as the ones `actions/setup-node` adds, can turn a change's title into an error annotation. The recipe removes those; do
+the same for any matcher of your own, in this job and in a job that runs the Action.
 
 ## Use it from an agent
 
@@ -315,7 +323,7 @@ cover, is in [`docs/prior-art.md`](docs/prior-art.md).
 
 ```sh
 npm ci
-npm test             # 184 tests, using temporary repositories and a local fake production
+npm test             # 192 tests, using temporary repositories and a local fake production
 npm run demo         # add -- --keep to keep the demo repository
 npm run pack:cli     # builds the npm package into release/seamkit
 npm run smoke:pack   # installs that package into an empty project and runs it
