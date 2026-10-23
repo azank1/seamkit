@@ -687,6 +687,47 @@ describe('the seamkit action', () => {
     assert.match((lastPost()['output'] as { summary: string }).summary, /a commit this repository does not have even after fetching the branch again/);
   });
 
+  it('says the branch was fetched again when the fetch during the wait succeeded, though the one after it failed', async () => {
+    const { remote, ci, commits } = await project({ card: true });
+    servePage('0123456789abcdef0123456789abcdef01234567');
+    const ran = await act(ci, { ledger: 'true', wait: '0', pr: '2' }, success(commits[2] as string), {
+      log: (line) => {
+        if (/fetched main again/.test(line)) renameSync(remote, `${remote}.away`);
+      },
+    });
+    renameSync(`${remote}.away`, remote);
+    assert.equal(ran.code, 1, ran.logs.join('\n'));
+    assert.ok(ran.warnings.some((w) => /could not fetch main from origin again/.test(w)), ran.warnings.join('\n'));
+    assert.match((lastPost()['output'] as { summary: string }).summary, /a commit this repository does not have even after fetching the branch again/);
+  });
+
+  it('says fetching failed for a commit whose own fetches all failed, though one made for another commit succeeded', async () => {
+    const { remote, ci, commits } = await project({ card: true });
+    const dev = join(root, `dev-later-${++counter}`);
+    await git(['clone', '-q', `file://${remote}`, dev], { cwd: root });
+    await git([...ID, 'commit', '-q', '--allow-empty', '-m', 'Add the chart (#3)'], { cwd: dev });
+    const later = await git(['rev-parse', 'HEAD'], { cwd: dev });
+    // A hand deploy on no branch; fetching main for it succeeds and still does not bring it in.
+    servePage('0123456789abcdef0123456789abcdef01234567');
+    let landed = false;
+    const ran = await act(ci, { wait: '20', pr: '2', ledger: 'false' }, success(commits[2] as string), {
+      log: (line) => {
+        if (landed || !/fetched main again/.test(line)) return;
+        // Then a real merge is deployed, and origin cannot be reached for any fetch after it.
+        execFileSync('git', ['push', '-q', 'origin', 'main'], { cwd: dev });
+        servePage(later);
+        renameSync(remote, `${remote}.away`);
+        landed = true;
+      },
+    });
+    renameSync(`${remote}.away`, remote);
+    assert.equal(ran.code, 1, ran.logs.join('\n'));
+    assert.ok(ran.warnings.some((w) => /could not fetch main from origin again/.test(w)), ran.warnings.join('\n'));
+    const output = lastPost()['output'] as { title: string; summary: string };
+    assert.equal(output.title, `FAIL: production runs ${later.slice(0, 12)}, which this repository does not have`);
+    assert.match(output.summary, /a commit this repository does not have because fetching the branch again failed/);
+  });
+
   it('resolves a commit that the fetch after the wait brought in, when the counted read cannot read the version document', async () => {
     const { remote, ci, commits } = await project({ card: true });
     const dev = join(root, `dev-later-${++counter}`);

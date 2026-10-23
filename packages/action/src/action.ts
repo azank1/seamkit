@@ -473,11 +473,13 @@ export async function runAction(deps: ActionDeps): Promise<number> {
       const commit = await knownCommit(cwd, reading.reported);
       if (commit !== undefined && commit.startsWith(reading.reported)) reading = { ...reading, commit };
     }
-    // The note says what this repository holds now: any fetch of the branch that succeeded during
-    // the job counts, whichever commit it was made for.
+    // The note says what this repository holds now. The fetch after the wait, then the fetches made
+    // for the reported commit, decide; only for a commit no fetch was made for does a fetch that
+    // succeeded for another commit count.
     const during = reading?.reported === undefined ? undefined : waited.fetched.get(reading.reported);
     const fetchedOnce = [...waited.fetched.values()].some((ok) => ok);
-    const refetch = fetchedAfter === true || fetchedOnce ? 'fetched' : fetchedAfter === false || during === false ? 'failed' : undefined;
+    const refetch =
+      fetchedAfter === true || during === true ? 'fetched' : fetchedAfter === false || during === false ? 'failed' : fetchedOnce ? 'fetched' : undefined;
     const deploy = deployed === undefined || result.code === 4 ? { notLive: false } : await deployNote(reading, deployed, waited.seconds, refetch, cwd);
     const overruled = deploy.notLive && outcome === 'pass';
     if (overruled) {
