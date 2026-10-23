@@ -545,9 +545,17 @@ describe('the seamkit action', () => {
     assert.equal(ran.code, 2, ran.logs.join('\n'));
     assert.notEqual(lastPost()['head_sha'], commits[1]);
     assert.equal(lastPost()['conclusion'], 'failure');
-    assert.match((lastPost()['output'] as { title: string }).title, /^No verdict: the deployed commit [0-9a-f]{7} is also the name of a tag or branch/);
-    // Hex in capitals is the same abbreviation, and a ref of that name shadows it too.
+    assert.equal((lastPost()['output'] as { title: string }).title.split(';')[0], `No verdict: the deployed commit ${shadow} is also the name of a tag or branch that points at another commit`);
+    // A branch and a tag of that name together are still refs, though git finds the name ambiguous.
+    await git(['branch', shadow, commits[1] as string], { cwd: ci });
+    assert.equal((await act(ci, { sha: shadow, wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' })).code, 2);
+    assert.match((lastPost()['output'] as { title: string }).title, /is also the name of a tag or branch/);
+    // A branch alone is a ref too.
     await git(['tag', '-d', shadow], { cwd: ci });
+    assert.equal((await act(ci, { sha: shadow, wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' })).code, 2);
+    assert.match((lastPost()['output'] as { title: string }).title, /is also the name of a tag or branch/);
+    await git(['branch', '-D', shadow], { cwd: ci });
+    // Hex in capitals is the same abbreviation, and a ref of that name shadows it too.
     await git(['tag', shadow.toUpperCase(), commits[1] as string], { cwd: ci });
     assert.equal((await act(ci, { sha: shadow.toUpperCase(), wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' })).code, 2);
     // The full id is the commit itself, whatever a ref is named.
