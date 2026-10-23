@@ -10944,19 +10944,24 @@ async function waitForLive(args, deployed, read, inputs, cli, cwd, deps) {
   const deadline = start + inputs.waitSeconds * 1e3;
   let lastKnown;
   const fetched = /* @__PURE__ */ new Map();
+  const fetches = [];
+  const seenAt = /* @__PURE__ */ new Map();
   let reread = false;
-  const done = (result) => ({ result, ...lastKnown ? { lastKnown } : {}, seconds: Math.round((clock() - start) / 1e3), fetched });
+  const done = (result) => ({ result, ...lastKnown ? { lastKnown } : {}, seconds: Math.round((clock() - start) / 1e3), fetches, seenAt });
   for (; ; ) {
     const r = await cli([...args, "--no-record"]);
     if (r.code === EXIT_USAGE2 || r.code === 4 || deployed === void 0)
       return done(r);
     const prod = productionOf(r);
+    if (prod?.reported !== void 0 && !seenAt.has(prod.reported))
+      seenAt.set(prod.reported, fetches.length);
     const where = await landing(prod, deployed, cwd);
     if (where !== "unknown")
       lastKnown = prod;
     if (!reread && prod?.status === "ok" && prod.reported !== void 0 && prod.commit === void 0 && read !== void 0 && fetched.get(prod.reported) !== true) {
       const failed = await fetchBranch(cwd, read);
       fetched.set(prod.reported, failed === void 0);
+      fetches.push(failed === void 0);
       if (failed === void 0) {
         const commit2 = await knownCommit(cwd, prod.reported);
         if (commit2 !== void 0 && commit2.startsWith(prod.reported))
@@ -11129,9 +11134,11 @@ async function runAction(deps) {
       if (commit2 !== void 0 && commit2.startsWith(reading.reported))
         reading = { ...reading, commit: commit2 };
     }
-    const during = reading?.reported === void 0 ? void 0 : waited.fetched.get(reading.reported);
-    const fetchedOnce = [...waited.fetched.values()].some((ok) => ok);
-    const refetch = fetchedAfter === true || during === true ? "fetched" : fetchedAfter === false || during === false ? "failed" : fetchedOnce ? "fetched" : void 0;
+    const fetches = fetchedAfter === void 0 ? waited.fetches : [...waited.fetches, fetchedAfter];
+    const seen = reading?.reported === void 0 ? void 0 : waited.seenAt.get(reading.reported);
+    const since = fetches.slice(seen ?? fetches.length);
+    const told = since.length > 0 ? since : fetches;
+    const refetch = told.includes(true) ? "fetched" : told.includes(false) ? "failed" : void 0;
     const deploy = deployed === void 0 || result.code === 4 ? { notLive: false } : await deployNote(reading, deployed, waited.seconds, refetch, cwd);
     const overruled = deploy.notLive && outcome === "pass";
     if (overruled) {

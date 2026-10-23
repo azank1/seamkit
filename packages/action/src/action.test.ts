@@ -701,6 +701,52 @@ describe('the seamkit action', () => {
     assert.match((lastPost()['output'] as { summary: string }).summary, /a commit this repository does not have even after fetching the branch again/);
   });
 
+  it('says fetching failed when the only fetch, the one after the wait, failed', async () => {
+    const { remote, ci, commits } = await project({ card: true });
+    servePage(commits[2] as string);
+    let swapped = false;
+    const ran = await act(ci, { ledger: 'true', wait: '0', pr: '2' }, success(commits[2] as string), {
+      // The wait ends on the deployed commit with no fetch; then a hand deploy lands and origin goes away.
+      log: (line) => {
+        if (swapped || !/production runs the deployed commit/.test(line)) return;
+        swapped = true;
+        servePage('0123456789abcdef0123456789abcdef01234567');
+        renameSync(remote, `${remote}.away`);
+      },
+    });
+    renameSync(`${remote}.away`, remote);
+    assert.equal(ran.code, 1, ran.logs.join('\n'));
+    assert.ok(ran.warnings.some((w) => /could not fetch main from origin again/.test(w)), ran.warnings.join('\n'));
+    assert.match((lastPost()['output'] as { summary: string }).summary, /a commit this repository does not have because fetching the branch again failed/);
+  });
+
+  it('says the branch was fetched again for a commit whose own fetch failed, when a fetch after it succeeded', async () => {
+    const { remote, ci, commits } = await project({ card: true });
+    const hand = '0123456789abcdef0123456789abcdef01234567';
+    servePage(hand);
+    let flipped = false;
+    const ran = await act(ci, { wait: '10', pr: '2', ledger: 'auto' }, success(commits[2] as string), {
+      // The fetch for the hand deploy fails; after the sleep another instance reports a second
+      // unknown commit, whose fetch succeeds; the read right after it reports the hand deploy again.
+      log: (line) => {
+        if (/no ledger here/.test(line)) renameSync(remote, `${remote}.away`);
+        if (!flipped && /fetched main again/.test(line)) {
+          flipped = true;
+          servePage(hand);
+        }
+      },
+      sleep: async () => {
+        renameSync(`${remote}.away`, remote);
+        servePage('fedcba9876543210fedcba9876543210fedcba98');
+      },
+    });
+    assert.equal(ran.code, 1, ran.logs.join('\n'));
+    assert.ok(ran.warnings.some((w) => /could not fetch main from origin again/.test(w)), ran.warnings.join('\n'));
+    const output = lastPost()['output'] as { title: string; summary: string };
+    assert.equal(output.title, 'FAIL: production runs 0123456789ab, which this repository does not have');
+    assert.match(output.summary, /a commit this repository does not have even after fetching the branch again/);
+  });
+
   it('says fetching failed for a commit whose own fetches all failed, though one made for another commit succeeded', async () => {
     const { remote, ci, commits } = await project({ card: true });
     const dev = join(root, `dev-later-${++counter}`);

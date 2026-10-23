@@ -218,7 +218,10 @@ interface Waited {
   result: CliResult;
   lastKnown?: Production;
   seconds: number;
-  fetched: ReadonlyMap<string, boolean>;
+  /** Whether each fetch of the branch during the wait succeeded, in order. */
+  fetches: readonly boolean[];
+  /** For each commit production reported, how many fetches had been made when it first did. */
+  seenAt: ReadonlyMap<string, number>;
 }
 
 /**
@@ -249,18 +252,22 @@ async function waitForLive(
   // and read at once. At most one fetch and one such read follow each poll, so a document that
   // names a new commit every time cannot keep the wait from ending.
   const fetched = new Map<string, boolean>();
+  const fetches: boolean[] = [];
+  const seenAt = new Map<string, number>();
   let reread = false;
-  const done = (result: CliResult): Waited => ({ result, ...(lastKnown ? { lastKnown } : {}), seconds: Math.round((clock() - start) / 1000), fetched });
+  const done = (result: CliResult): Waited => ({ result, ...(lastKnown ? { lastKnown } : {}), seconds: Math.round((clock() - start) / 1000), fetches, seenAt });
   for (;;) {
     const r = await cli([...args, '--no-record']);
     if (r.code === EXIT_USAGE || r.code === 4 || deployed === undefined) return done(r);
     const prod = productionOf(r);
+    if (prod?.reported !== undefined && !seenAt.has(prod.reported)) seenAt.set(prod.reported, fetches.length);
     // Kept before any fetch, so a read that fails afterwards cannot undo what this one saw.
     const where = await landing(prod, deployed, cwd);
     if (where !== 'unknown') lastKnown = prod;
     if (!reread && prod?.status === 'ok' && prod.reported !== undefined && prod.commit === undefined && read !== undefined && fetched.get(prod.reported) !== true) {
       const failed = await fetchBranch(cwd, read);
       fetched.set(prod.reported, failed === undefined);
+      fetches.push(failed === undefined);
       if (failed === undefined) {
         // As the CLI resolves it: a tag or a ref named like the abbreviation is not that commit.
         const commit = await knownCommit(cwd, prod.reported);
@@ -473,13 +480,15 @@ export async function runAction(deps: ActionDeps): Promise<number> {
       const commit = await knownCommit(cwd, reading.reported);
       if (commit !== undefined && commit.startsWith(reading.reported)) reading = { ...reading, commit };
     }
-    // The note says what this repository holds now. The fetch after the wait, then the fetches made
-    // for the reported commit, decide; only for a commit no fetch was made for does a fetch that
-    // succeeded for another commit count.
-    const during = reading?.reported === undefined ? undefined : waited.fetched.get(reading.reported);
-    const fetchedOnce = [...waited.fetched.values()].some((ok) => ok);
-    const refetch =
-      fetchedAfter === true || during === true ? 'fetched' : fetchedAfter === false || during === false ? 'failed' : fetchedOnce ? 'fetched' : undefined;
+    // The note says why this repository lacks the commit production reports, from the fetches of
+    // the branch made since production first reported it: one that succeeded would have brought it
+    // in from the branch, so it is on none; if every one failed, that is why. With none made since,
+    // the fetches made before it was reported say what this repository holds.
+    const fetches = fetchedAfter === undefined ? waited.fetches : [...waited.fetches, fetchedAfter];
+    const seen = reading?.reported === undefined ? undefined : waited.seenAt.get(reading.reported);
+    const since = fetches.slice(seen ?? fetches.length);
+    const told = since.length > 0 ? since : fetches;
+    const refetch = told.includes(true) ? 'fetched' : told.includes(false) ? 'failed' : undefined;
     const deploy = deployed === undefined || result.code === 4 ? { notLive: false } : await deployNote(reading, deployed, waited.seconds, refetch, cwd);
     const overruled = deploy.notLive && outcome === 'pass';
     if (overruled) {
