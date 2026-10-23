@@ -90,20 +90,24 @@ export class GitRepo {
 
   /**
    * The full ids of many abbreviated commits in one git process, in order: undefined for one that
-   * is missing, ambiguous or not a commit.
+   * is missing, ambiguous or not a commit. With `peelTags`, an id that names an annotated tag
+   * gives the commit the tag points at.
    */
-  async resolveAll(abbrevs: readonly string[]): Promise<(string | undefined)[]> {
+  async resolveAll(abbrevs: readonly string[], options: { peelTags?: boolean } = {}): Promise<(string | undefined)[]> {
     const asked = abbrevs.filter((a) => HEX.test(a));
     if (asked.length === 0) return abbrevs.map(() => undefined);
-    const r = await runGit(['cat-file', `--batch-check=%(objectname) %(objecttype)`], { cwd: this.cwd, input: asked.map((a) => `${a}^{commit}\n`).join('') });
+    const input = asked.map((a) => `${a}\n${a}^{commit}\n`).join('');
+    const r = await runGit(['cat-file', `--batch-check=%(objectname) %(objecttype)`], { cwd: this.cwd, input });
     if (r.code !== 0) throw new GitError(['cat-file', '--batch-check'], r);
     const answers = r.stdout.toString('utf8').split('\n');
     const found = new Map<string, string>();
     asked.forEach((a, i) => {
-      const [id, type] = (answers[i] ?? '').split(' ');
-      // git peels a tag to its commit and prefers a ref named like the abbreviation; neither is
-      // the commit asked for.
-      if (type === 'commit' && id !== undefined && /^[0-9a-f]{40,64}$/.test(id) && id.startsWith(a.toLowerCase())) found.set(a, id);
+      const [named, kind] = (answers[2 * i] ?? '').split(' ');
+      const [id, type] = (answers[2 * i + 1] ?? '').split(' ');
+      // git prefers a ref named like the abbreviation, which is not the object asked for, and
+      // peels a tag to its commit, which is that commit only when tags are asked to be peeled.
+      const asks = named !== undefined && named.startsWith(a) && (kind === 'commit' || (kind === 'tag' && options.peelTags === true));
+      if (asks && type === 'commit' && id !== undefined && /^[0-9a-f]{40,64}$/.test(id)) found.set(a, id);
     });
     return abbrevs.map((a) => found.get(a));
   }

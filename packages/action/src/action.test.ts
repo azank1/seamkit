@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
@@ -586,6 +586,44 @@ describe('the seamkit action', () => {
     assert.equal((lastPost()['output'] as { title: string }).title, `FAIL: production runs ${tag.slice(0, 12)}, which this repository does not have`);
   });
 
+  it('fetches the branch again on a later poll when fetching it for a new commit fails, and says when it never could', async () => {
+    for (const restore of [true, false]) {
+      const { remote, ci, commits } = await project();
+      let away = false;
+      // After the job's own fetch, a later change is merged and deployed, and origin cannot be
+      // reached for the first fetch after that.
+      const dev = join(root, `dev-later-${++counter}`);
+      await git(['clone', '-q', `file://${remote}`, dev], { cwd: root });
+      await git([...ID, 'commit', '-q', '--allow-empty', '-m', 'Add the chart (#3)'], { cwd: dev });
+      const later = await git(['rev-parse', 'HEAD'], { cwd: dev });
+      const ran = await act(ci, { wait: '30' }, success(commits[2] as string), {
+        log: (line) => {
+          if (!/no ledger here or on the remote/.test(line)) return;
+          execFileSync('git', ['push', '-q', 'origin', 'main'], { cwd: dev });
+          deploy(later);
+          renameSync(remote, `${remote}.away`);
+          away = true;
+        },
+        sleep: async () => {
+          if (restore && away) {
+            renameSync(`${remote}.away`, remote);
+            away = false;
+          }
+        },
+      });
+      if (away) renameSync(`${remote}.away`, remote);
+      assert.ok(ran.warnings.some((w) => /could not fetch main from origin again/.test(w)), ran.warnings.join('\n'));
+      const output = lastPost()['output'] as { title: string; summary: string };
+      if (restore) {
+        assert.equal(ran.code, 0, output.summary);
+        assert.match(output.title, /^PASS/);
+      } else {
+        assert.notEqual(ran.code, 0);
+        assert.match(output.summary, /a commit this repository does not have because fetching the branch again failed/);
+      }
+    }
+  });
+
   it('keeps a read that named a commit this repository lacks, though every read after the fetch fails', async () => {
     const { ci, commits } = await project({ card: true });
     // A rollback to #1 while production still runs #2, whose card's marker the page serves.
@@ -968,6 +1006,17 @@ describe('action inputs and reports', () => {
     assert.ok(r.title.length <= 1000);
     assert.match(r.summary, /cut to fit/);
     assert.match(r.summary, /cut to fit; the full report is in the job log\n```$/);
+    // A long run of backticks shows as its count, so the fence cannot fill the limit.
+    const ticks = errorReport(`seamkit: x${'`'.repeat(40000)}y`, 'https://a.example');
+    assert.ok(ticks.summary.length <= 65535);
+    assert.match(ticks.summary, /x\[40000 backticks\]y\n```$/);
+    const title = readbackReport('fail', [readbackSummary, { ...readbackSummary, subject: 'pr#1', state: 'not_live', reasons: [`fix ${'`'.repeat(40000)}`] }], 'https://a.example');
+    assert.ok(title.text.length <= 65535, String(title.text.length));
+    assert.match(title.text, /\[40000 backticks\]/);
+    assert.match(title.text, /\n```$/);
+    // A limit too small for the note is still a limit.
+    assert.equal(clip('x'.repeat(100), 10), 'x'.repeat(10));
+    assert.equal(clip('x'.repeat(100), 60), `${'x'.repeat(12)}\n… cut to fit; the full report is in the job log`);
   });
 
   it('keeps the closing fence of a report cut to fit, so the job summary closes its details', () => {

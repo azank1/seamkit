@@ -305,7 +305,8 @@ export async function gatherReadback(
     if (loaded !== null && loaded.readHere) {
       const now = primary.status === 'ok' ? (primary.commit ?? primary.reported) : undefined;
       const named = [...new Set([...loaded.observed, ...(now !== undefined && COMMIT_ID.test(now) ? [now] : [])])];
-      const full = await repo.resolveAll(named);
+      // A build seen here whose document named a tag ran the commit the tag points at.
+      const full = await repo.resolveAll(named, { peelTags: true });
       named.forEach((n, i) => {
         const id = full[i];
         if (id === undefined) missing.push(n);
@@ -391,8 +392,10 @@ export async function gatherReadback(
     }
   }
 
-  const kept = new Set(changes.map((c) => c.commit));
-  const input: ReadbackInput = { subject, changes, versions, ancestry, bundles, history: history === null ? null : history.filter((s) => kept.has(s.change)) };
+  // Only the sightings the check looks up: one per marker of each change judged, however many
+  // addresses the ledger has recorded.
+  const wanted = new Set(changes.flatMap((c) => c.markers.map((m) => `${c.commit} ${markerKey(m)}`)));
+  const input: ReadbackInput = { subject, changes, versions, ancestry, bundles, history: history === null ? null : history.filter((s) => wanted.has(`${s.change} ${s.marker}`)) };
   if (runGaps.length > 0) input.notExamined = runGaps;
   return {
     input,

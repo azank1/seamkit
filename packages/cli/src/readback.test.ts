@@ -10,6 +10,7 @@ import { git } from '@seamkit/state';
 import { execFileSync } from 'node:child_process';
 import { run, type Io } from './cli.js';
 import { gatherReadback } from './readback.js';
+import { markerKey } from '@seamkit/core';
 
 const AT = '2026-10-14T09:00:00.000Z';
 const MAIN = fileURLToPath(new URL('./main.js', import.meta.url));
@@ -346,6 +347,38 @@ describe('seamkit readback', () => {
     }
   });
 
+  it('scopes a deploy after a recorded run read a version document naming a tag, as the commit the tag points at', async () => {
+    const { dir, merges } = await repo();
+    assert.equal((await cli(['state', 'init'], dir)).code, 0);
+    await git([...ID, 'tag', '-a', '-m', 'release', 'v1', merges[0] as string], { cwd: dir });
+    const tag = await git(['rev-parse', 'v1'], { cwd: dir });
+    prod.deploy({ 'index.html': '<!doctype html>', 'version.json': JSON.stringify({ sha: tag }) });
+    assert.match((await cli(['readback', '--url', prod.url], dir)).err, /recorded as event/);
+    deploy(merges[0] as string);
+    const r = await cli(['readback', '--url', prod.url, '--deployed', merges[0] as string, '--json'], dir);
+    assert.equal(r.code, 0, r.out);
+    const gaps = JSON.parse(r.out).verdicts[0].notExamined as { reason: string }[];
+    assert.ok(gaps.some((g) => /never seen running them/.test(g.reason)), JSON.stringify(gaps));
+  });
+
+  it('hands the check only the sightings it looks up, however many addresses the ledger records', async () => {
+    const { dir, direct } = await repo();
+    assert.equal((await cli(['state', 'init'], dir)).code, 0);
+    const staging = await FakeProduction.start({ spaFallback: true });
+    try {
+      staging.deploy({ 'index.html': '<!doctype html><script src="/app.js"></script>', 'app.js': 'el.id = "sync-badge-v2";', 'version.json': JSON.stringify({ schema: 'seamkit.version/1', commit: direct, dirty: false, source: 'git' }) });
+      assert.match((await cli(['readback', '--url', staging.url], dir)).err, /recorded as event/);
+    } finally {
+      await staging.close();
+    }
+    deploy(direct);
+    assert.match((await cli(['readback', '--url', prod.url], dir)).err, /recorded as event/);
+    const { input } = await gatherReadback(dir, { url: prod.url, last: 20 }, () => AT, {});
+    const wanted = new Set(input.changes.flatMap((c) => c.markers.map((m) => `${c.commit} ${markerKey(m)}`)));
+    assert.ok((input.history ?? []).length > 0);
+    assert.ok((input.history ?? []).every((s) => wanted.has(`${s.change} ${s.marker}`)), JSON.stringify(input.history));
+  });
+
   it('gives a verdict when a card lists more markers than the check takes, and a rollback across it fails', async () => {
     const markers = Array.from({ length: 21 }, (_, i) => `  - kind: bundle\n    text: "marker-${i}-x"`).join('\n');
     const { dir, merges, direct } = await repo({ card: `card: 1\nintent: Add the badge.\nlayers: [frontend]\ntargets: [web]\nmarkers:\n${markers}` });
@@ -373,23 +406,30 @@ describe('seamkit readback', () => {
       { cards: 51, demoted: 1, marker: (n: number, k: number) => `  - kind: bundle\n    text: "marker-${n}-${k}"` },
     ];
     for (const { cards, demoted, marker } of cases) {
-      const dir = join(root, `repo-${++counter}`);
-      await git(['init', '-q', '-b', 'main', dir], { cwd: root });
-      for (let n = 1; n <= cards; n++) {
-        const markers = Array.from({ length: 20 }, (_, k) => marker(n, k)).join('\n');
-        await writeFile(join(dir, `f${n}.txt`), `${n}\n`);
-        await git(['add', `f${n}.txt`], { cwd: dir });
-        await git([...ID, 'commit', '-q', '-m', `change ${n}\n\n\`\`\`seamkit-card\ncard: 1\nintent: Change ${n}.\nlayers: [frontend]\ntargets: [web]\nmarkers:\n${markers}\n\`\`\``], { cwd: dir });
-      }
-      deploy(await git(['rev-parse', 'HEAD'], { cwd: dir }));
-      const r = await cli(['readback', '--url', prod.url, '--last', String(cards), '--json'], dir);
-      assert.notEqual(r.code, 2, r.err);
-      const budget = (v: { notExamined: { reason: string }[] }): boolean => v.notExamined.some((g) => /one run reads at most 100 version documents, 100 pages/.test(g.reason));
-      const parts = JSON.parse(r.out).verdicts.slice(1);
-      assert.deepEqual(parts.map(budget), parts.map((_: unknown, i: number) => i >= cards - demoted), r.out.slice(0, 2000));
-      assert.equal(parts[cards - 1].state, 'live');
+      await budgetCase(Array.from({ length: cards }, () => 20), marker, (i) => i >= cards - demoted);
     }
+    // The oldest card, of 19, fits exactly once the card before it is refused, which spends nothing.
+    await budgetCase([19, 20, 20, 20, 20, 20], (n, k) => `  - kind: version\n    url: /w${n}-${k}`, (i) => i === 4);
   });
+
+  /** One readback over cards of `sizes` markers, oldest first; `demotedAt(i)` says which change, newest first, the budget proves by version. */
+  async function budgetCase(sizes: number[], marker: (n: number, k: number) => string, demotedAt: (i: number) => boolean): Promise<void> {
+    const cards = sizes.length;
+    const dir = join(root, `repo-${++counter}`);
+    await git(['init', '-q', '-b', 'main', dir], { cwd: root });
+    for (let n = 1; n <= cards; n++) {
+      const markers = Array.from({ length: sizes[n - 1] as number }, (_, k) => marker(n, k)).join('\n');
+      await writeFile(join(dir, `f${n}.txt`), `${n}\n`);
+      await git(['add', `f${n}.txt`], { cwd: dir });
+      await git([...ID, 'commit', '-q', '-m', `change ${n}\n\n\`\`\`seamkit-card\ncard: 1\nintent: Change ${n}.\nlayers: [frontend]\ntargets: [web]\nmarkers:\n${markers}\n\`\`\``], { cwd: dir });
+    }
+    deploy(await git(['rev-parse', 'HEAD'], { cwd: dir }));
+    const r = await cli(['readback', '--url', prod.url, '--last', String(cards), '--json'], dir);
+    assert.notEqual(r.code, 2, r.err);
+    const budget = (v: { notExamined: { reason: string }[] }): boolean => v.notExamined.some((g) => /one run reads at most 100 version documents, 100 pages/.test(g.reason));
+    const parts = JSON.parse(r.out).verdicts.slice(1);
+    assert.deepEqual(parts.map(budget), parts.map((_: unknown, i: number) => demotedAt(i)), r.out.slice(0, 2000));
+  }
 
   it('counts the discovery paths of the --version-url\'s own origin, when the version document is on another host', async () => {
     const { dir, merges, direct } = await repo({ card: false });

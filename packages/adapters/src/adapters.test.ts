@@ -226,5 +226,7 @@ describe('the repository', () => {
     assert.equal(await repo.resolve(shadow), undefined);
     assert.equal(await repo.resolve(commits[0] as string), commits[0]);
     assert.deepEqual(await repo.resolveAll([tag, shadow, commits[2] as string]), [undefined, undefined, commits[2]]);
+    // Asked to, a tag gives the commit it points at; a ref named like an abbreviation never does.
+    assert.deepEqual(await repo.resolveAll([tag, tag.slice(0, 7), shadow], { peelTags: true }), [commits[0], commits[0], undefined]);
   });
 });

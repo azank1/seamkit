@@ -9301,21 +9301,26 @@ var GitRepo = class _GitRepo {
   }
   /**
    * The full ids of many abbreviated commits in one git process, in order: undefined for one that
-   * is missing, ambiguous or not a commit.
+   * is missing, ambiguous or not a commit. With `peelTags`, an id that names an annotated tag
+   * gives the commit the tag points at.
    */
-  async resolveAll(abbrevs) {
+  async resolveAll(abbrevs, options = {}) {
     const asked = abbrevs.filter((a) => HEX.test(a));
     if (asked.length === 0)
       return abbrevs.map(() => void 0);
-    const r = await runGit(["cat-file", `--batch-check=%(objectname) %(objecttype)`], { cwd: this.cwd, input: asked.map((a) => `${a}^{commit}
-`).join("") });
+    const input2 = asked.map((a) => `${a}
+${a}^{commit}
+`).join("");
+    const r = await runGit(["cat-file", `--batch-check=%(objectname) %(objecttype)`], { cwd: this.cwd, input: input2 });
     if (r.code !== 0)
       throw new GitError(["cat-file", "--batch-check"], r);
     const answers = r.stdout.toString("utf8").split("\n");
     const found = /* @__PURE__ */ new Map();
     asked.forEach((a, i) => {
-      const [id, type] = (answers[i] ?? "").split(" ");
-      if (type === "commit" && id !== void 0 && /^[0-9a-f]{40,64}$/.test(id) && id.startsWith(a.toLowerCase()))
+      const [named, kind] = (answers[2 * i] ?? "").split(" ");
+      const [id, type] = (answers[2 * i + 1] ?? "").split(" ");
+      const asks = named !== void 0 && named.startsWith(a) && (kind === "commit" || kind === "tag" && options.peelTags === true);
+      if (asks && type === "commit" && id !== void 0 && /^[0-9a-f]{40,64}$/.test(id))
         found.set(a, id);
     });
     return abbrevs.map((a) => found.get(a));
@@ -9819,7 +9824,7 @@ async function gatherReadback(cwd, req, now, http) {
     if (loaded !== null && loaded.readHere) {
       const now2 = primary.status === "ok" ? primary.commit ?? primary.reported : void 0;
       const named = [.../* @__PURE__ */ new Set([...loaded.observed, ...now2 !== void 0 && COMMIT_ID.test(now2) ? [now2] : []])];
-      const full = await repo.resolveAll(named);
+      const full = await repo.resolveAll(named, { peelTags: true });
       named.forEach((n, i) => {
         const id = full[i];
         if (id === void 0)
@@ -9838,12 +9843,12 @@ async function gatherReadback(cwd, req, now, http) {
       const seen = new Set(loaded.sightings.map((s) => `${s.change} ${s.marker}`));
       const wasRunning = await repo.reachableFrom(ran, deployed);
       const afterDeploy = await repo.reachableFrom([branch.head], deployed);
-      const kept2 = [];
+      const kept = [];
       const later = [];
       for (const d of drafts) {
         const seenHere = d.markers.some((m) => seen.has(`${d.commit} ${markerKey(m)}`));
         if (!afterDeploy.has(d.commit) || seenHere || wasRunning.has(d.commit))
-          kept2.push(d);
+          kept.push(d);
         else
           later.push(d.subject);
       }
@@ -9855,7 +9860,7 @@ async function gatherReadback(cwd, req, now, http) {
           reason: `production at this address was never seen running ${them}, so the next deploy proves ${them}: ${listed}`
         });
       }
-      drafts = kept2;
+      drafts = kept;
     }
   }
   if (window !== void 0) {
@@ -9895,8 +9900,8 @@ async function gatherReadback(cwd, req, now, http) {
       ancestry.push(answer.reason === void 0 ? { change: c.commit, running: r, contains: answer.contains } : { change: c.commit, running: r, contains: answer.contains, reason: answer.reason });
     }
   }
-  const kept = new Set(changes.map((c) => c.commit));
-  const input2 = { subject, changes, versions, ancestry, bundles, history: history === null ? null : history.filter((s) => kept.has(s.change)) };
+  const wanted = new Set(changes.flatMap((c) => c.markers.map((m) => `${c.commit} ${markerKey(m)}`)));
+  const input2 = { subject, changes, versions, ancestry, bundles, history: history === null ? null : history.filter((s) => wanted.has(`${s.change} ${s.marker}`)) };
   if (runGaps.length > 0)
     input2.notExamined = runGaps;
   return {
@@ -10718,10 +10723,11 @@ function clip(text, limit) {
   if (text.length <= limit)
     return text;
   const note = "\n\u2026 cut to fit; the full report is in the job log";
-  let end = Math.max(0, limit - note.length);
+  const room = limit >= note.length ? limit - note.length : Math.max(0, limit);
+  let end = room;
   if (/[\uD800-\uDBFF]/.test(text[end - 1] ?? ""))
     end--;
-  return text.slice(0, end) + note;
+  return text.slice(0, end) + (limit >= note.length ? note : "");
 }
 function stateCounts(parts) {
   const order = ["not_live", "not_proven", "nothing_to_prove", "live"];
@@ -10729,15 +10735,16 @@ function stateCounts(parts) {
 }
 var cell = (s) => s.replace(/\s*[\r\n]\s*/g, " ").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/[\\`*_[\]!~|]/g, "\\$&");
 function fenced(text, limit = Infinity) {
+  const shown = text.replace(/`{64,}/g, (run2) => `[${run2.length} backticks]`);
   let longest = 0;
-  for (const m of text.matchAll(/`+/g))
+  for (const m of shown.matchAll(/`+/g))
     longest = Math.max(longest, m[0].length);
   const fence = "`".repeat(Math.max(3, longest + 1));
   const open = `${fence}text
 `;
   const close = `
 ${fence}`;
-  return `${open}${clip(text, limit - open.length - close.length)}${close}`;
+  return `${open}${clip(shown, limit - open.length - close.length)}${close}`;
 }
 function readbackReport(outcome, verdicts, url2, notes = []) {
   const [summary, ...parts] = verdicts;
@@ -10918,9 +10925,9 @@ async function waitForLive(args, deployed, read, inputs, cli, cwd, deps) {
   const start = clock();
   const deadline = start + inputs.waitSeconds * 1e3;
   let lastKnown;
-  const refetched = /* @__PURE__ */ new Set();
+  const fetched = /* @__PURE__ */ new Map();
   let reread = false;
-  const done = (result) => ({ result, ...lastKnown ? { lastKnown } : {}, seconds: Math.round((clock() - start) / 1e3) });
+  const done = (result) => ({ result, ...lastKnown ? { lastKnown } : {}, seconds: Math.round((clock() - start) / 1e3), fetched });
   for (; ; ) {
     const r = await cli([...args, "--no-record"]);
     if (r.code === EXIT_USAGE2 || r.code === 4 || deployed === void 0)
@@ -10929,9 +10936,9 @@ async function waitForLive(args, deployed, read, inputs, cli, cwd, deps) {
     const where = await landing(prod, deployed, cwd);
     if (where !== "unknown")
       lastKnown = prod;
-    if (!reread && prod?.status === "ok" && prod.reported !== void 0 && prod.commit === void 0 && read !== void 0 && !refetched.has(prod.reported)) {
-      refetched.add(prod.reported);
+    if (!reread && prod?.status === "ok" && prod.reported !== void 0 && prod.commit === void 0 && read !== void 0 && fetched.get(prod.reported) !== true) {
       const failed = await fetchBranch(cwd, read);
+      fetched.set(prod.reported, failed === void 0);
       if (failed === void 0) {
         const commit2 = await knownCommit(cwd, prod.reported);
         if (commit2 !== void 0 && commit2.startsWith(prod.reported))
@@ -10957,7 +10964,7 @@ async function waitForLive(args, deployed, read, inputs, cli, cwd, deps) {
     reread = false;
   }
 }
-async function deployNote(read, deployed, waited, cwd) {
+async function deployNote(read, deployed, waited, refetch, cwd) {
   const prod = read;
   const where = await landing(prod, deployed, cwd);
   const d = deployed.slice(0, 12);
@@ -10968,7 +10975,7 @@ async function deployNote(read, deployed, waited, cwd) {
   if (where === "other" && prod?.commit === void 0) {
     return {
       notLive: true,
-      note: `Production runs ${running}, a commit this repository does not have even after fetching the branch, so whether it contains the deployed commit ${d} is not known, after waiting ${waited}s.`,
+      note: `Production runs ${running}, a commit this repository does not have ${refetch === "fetched" ? "even after fetching the branch again" : refetch === "failed" ? "because fetching the branch again failed" : "as the branch was fetched for this job"}, so whether it contains the deployed commit ${d} is not known, after waiting ${waited}s.`,
       title: `FAIL: production runs ${running}, which this repository does not have`
     };
   }
@@ -11068,12 +11075,15 @@ async function runAction(deps) {
   const waited = await waitForLive(args, deployed, read, inputs, cli, cwd, deps);
   let result = waited.result;
   let recorded = false;
+  let fetchedAfter;
   const clean = (text) => scrub(text, [inputs.url, inputs.versionUrl]);
   if (recording && result.code !== EXIT_USAGE2) {
     const resync = await cli(["state", "sync", "--json"]);
     if (resync.code !== 0)
       deps.warn(`seamkit: the ledger could not be fetched again after the wait, so this run judges it as it was: ${clean(resync.err.trim())}`);
     const refetch = read === void 0 ? void 0 : await fetchBranch(cwd, read);
+    if (read !== void 0)
+      fetchedAfter = refetch === void 0;
     if (refetch !== void 0)
       deps.warn(`seamkit: could not fetch ${read} from origin again: ${refetch}`);
     const again = await cli(args);
@@ -11093,7 +11103,9 @@ async function runAction(deps) {
     outcome = parsed.outcome;
     const counted = productionOf(result);
     const reading = deployed !== void 0 && await landing(counted, deployed, cwd) === "unknown" && waited.lastKnown !== void 0 ? waited.lastKnown : counted;
-    const deploy = deployed === void 0 || result.code === 4 ? { notLive: false } : await deployNote(reading, deployed, waited.seconds, cwd);
+    const during = reading?.reported === void 0 ? void 0 : waited.fetched.get(reading.reported);
+    const refetch = fetchedAfter === true || during === true ? "fetched" : fetchedAfter === false || during === false ? "failed" : void 0;
+    const deploy = deployed === void 0 || result.code === 4 ? { notLive: false } : await deployNote(reading, deployed, waited.seconds, refetch, cwd);
     const overruled = deploy.notLive && outcome === "pass";
     if (overruled) {
       outcome = "fail";

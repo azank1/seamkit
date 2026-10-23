@@ -600,4 +600,9 @@ starts with `refs/` is read as the remote has it, as any other branch name is, w
 `refs/heads/<name>` that the remote has no branch for means what git says. A commit a version document names is
 resolved only to a commit whose id starts with it, so a tag, which git would peel to its commit, or a ref named like the
 abbreviation reads as a commit the clone does not have. The Action's job summary writes its heading as text, and a
-report cut to fit is cut inside its code block, which still closes.
+report cut to fit is cut inside its code block, which still closes, with a run of 64 or more backticks shown as its
+count so the fence stays short. For scoping only, a build seen running whose document named an annotated tag counts as
+the commit the tag points at; the commit production runs now must still be named as a commit. The check is given only
+the sightings it looks up, one per marker of each change judged, so a ledger kept for many addresses does not grow its
+input. While the Action waits, fetching the branch for a commit the clone lacks is tried again on later polls until it
+succeeds, and the note says whether it was fetched again or the fetch failed.

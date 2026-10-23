@@ -934,7 +934,7 @@ fi</pre></div>
       <thead><tr><th>You see</th><th>Cause</th><th>Fix</th></tr></thead>
       <tbody>
         <tr><td>Exit 3 for every change</td><td>Production serves no version document, or serves a web page in its place.</td><td>Step 2. Check with <code>curl</code> that the URL returns JSON with a full commit id.</td></tr>
-        <tr><td>"which this repository does not have"</td><td>The local clone has not fetched the deployed commit, or it was deployed from a branch that never merged.</td><td><code>git fetch origin</code>. If it persists, someone deployed by hand.</td></tr>
+        <tr><td>"which this repository does not have"</td><td>The local clone has not fetched the deployed commit, it was deployed from a branch that never merged, or the version document names a tag rather than the commit.</td><td><code>git fetch origin</code>. If it persists, check that the build stamps the commit (<code>seamkit stamp</code>), then look for a deploy made by hand.</td></tr>
         <tr><td>"shallow clone"</td><td>CI checked out a single commit.</td><td><code>fetch-depth: 0</code>, or <code>git fetch --unshallow</code>.</td></tr>
         <tr><td>Version unreadable, dirty build</td><td>The build was stamped from uncommitted changes.</td><td>Build from a clean tree; add <code>--require-clean</code>.</td></tr>
         <tr><td>Marker absent although the version contains the change</td><td>The marker text is in source but not in the built output.</td><td>Use text the bundle really ships, such as an attribute value or a user-facing string.</td></tr>
@@ -995,7 +995,7 @@ fi</pre></div>
     updated: '2026-10-22',
     version: '0.2.0',
     npm: '0.1.0',   // the version npm serves; the release commit bumps it
-    tests: '224',
+    tests: '227',
     dogfood: '20 of 20',
     milestones: [
       { m: 'M1', title: 'Verdict core and ledger', state: 'done', when: '2026-10-15',
@@ -1057,6 +1057,7 @@ fi</pre></div>
       ['2026-10-22', 'Eighth review round (21 agents, 5 findings confirmed, all low but one): seamkit state list folds control characters from a tampered ledger; a version sighting is moved to production\'s document only for markers that name no path of their own; a report cut to fit never splits a character; and tests now pin reading the ledger before production and each retried connection error. 210 tests; each fix but the push backoff\'s timing was broken on purpose in the compiled code, and a test catches every break that changes a verdict.'],
       ['2026-10-22', 'Ninth review round (19 agents, 7 findings confirmed, all low): a --version-url at a usual path counts the other discovery paths, so a rollback across a move fails, and runs at any of them let a change on its way be left to the next deploy; CLI errors print on one line; the Action keeps plain paths in its advice and names the setting to change when the remote refuses the ledger push. 215 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
       ['2026-10-23', 'Tenth review round (21 agents, 8 findings confirmed, one high): a card with more than 20 markers, which the check refuses, no longer leaves its window without a verdict, so a rollback across it fails; one run keeps within the check\'s limits on version documents, pages and texts, proving older cards by version when they do not fit; a branch named refs/<x> is read as the remote has it; a version document naming a tag is not taken for the commit; the job summary heading is text, and a report cut to fit keeps its closing fence. 224 tests; each fix was broken on purpose in the compiled code, the check\'s own validation of a card together with the card limit it backs up, and a test caught every break.'],
+      ['2026-10-23', 'Eleventh review round (21 agents, 7 findings, 6 confirmed by both skeptics and 1 split, none high): a fetch for a new commit that fails once is tried again on the next poll, and the note says what happened; the check gets only the sightings it looks up, so a ledger with many addresses cannot overflow it; a run of backticks cannot push a report past GitHub\'s limit; a build seen running a tag counts as the commit the tag points at, so one such read no longer turns scoping off for good; the budget is pinned at its exact boundary. 227 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
     ],
     decisions: [
       ['Program readback adapter (requested by an internal project)', 'Accept with changes, scheduled after M4. Notes in the knowledge base.', 'azank', 'wait'],

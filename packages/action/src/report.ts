@@ -33,13 +33,15 @@ export interface Report {
 /** GitHub refuses check run output fields over 65535 characters. */
 export const OUTPUT_LIMIT = 65535;
 
+/** The text cut to at most `limit` characters, with a note saying so when there is room for it. */
 export function clip(text: string, limit: number): string {
   if (text.length <= limit) return text;
   const note = '\n… cut to fit; the full report is in the job log';
-  let end = Math.max(0, limit - note.length);
+  const room = limit >= note.length ? limit - note.length : Math.max(0, limit);
+  let end = room;
   // Never between the two halves of one character, which GitHub may refuse.
   if (/[\uD800-\uDBFF]/.test(text[end - 1] ?? '')) end--;
-  return text.slice(0, end) + note;
+  return text.slice(0, end) + (limit >= note.length ? note : '');
 }
 
 /** Per-state counts, problems first, each with its denominator. */
@@ -64,15 +66,18 @@ export const cell = (s: string): string =>
 
 /**
  * A fenced block that the text cannot close: its fence is longer than any run of backticks in it.
- * Text that would make the block longer than `limit` is cut inside it, so the block still closes.
+ * Text that would make the block longer than `limit` is cut inside it, so the block still closes,
+ * and a run of 64 or more backticks shows as its count, so the fence never fills the limit.
  */
 function fenced(text: string, limit = Infinity): string {
+  // A long run of backticks is counted rather than shown, so the fence stays short.
+  const shown = text.replace(/`{64,}/g, (run) => `[${run.length} backticks]`);
   let longest = 0;
-  for (const m of text.matchAll(/`+/g)) longest = Math.max(longest, m[0].length);
+  for (const m of shown.matchAll(/`+/g)) longest = Math.max(longest, m[0].length);
   const fence = '`'.repeat(Math.max(3, longest + 1));
   const open = `${fence}text\n`;
   const close = `\n${fence}`;
-  return `${open}${clip(text, limit - open.length - close.length)}${close}`;
+  return `${open}${clip(shown, limit - open.length - close.length)}${close}`;
 }
 
 /**

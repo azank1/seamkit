@@ -194,11 +194,16 @@ async function landing(prod: Production | undefined, deployed: string, cwd: stri
   return 'other';
 }
 
-/** What the wait read: its last result, the last reading that named a commit, and the seconds it took. */
+/**
+ * What the wait read: its last result, the last reading that named a commit, the seconds it took,
+ * and for each commit production reported that the clone lacked, whether fetching the branch
+ * again for it last succeeded.
+ */
 interface Waited {
   result: CliResult;
   lastKnown?: Production;
   seconds: number;
+  fetched: ReadonlyMap<string, boolean>;
 }
 
 /**
@@ -225,12 +230,12 @@ async function waitForLive(
   const deadline = start + inputs.waitSeconds * 1000;
   let lastKnown: Production | undefined;
   // A commit production reports that this clone lacks may be one merged and deployed since the
-  // branch was fetched: the branch is fetched again, once for each such commit, and read at once.
-  // At most one such read follows each poll, so a document that names a new commit every time
-  // cannot keep the wait from ending.
-  const refetched = new Set<string>();
+  // branch was fetched: the branch is fetched again until that succeeds once for each such commit,
+  // and read at once. At most one fetch and one such read follow each poll, so a document that
+  // names a new commit every time cannot keep the wait from ending.
+  const fetched = new Map<string, boolean>();
   let reread = false;
-  const done = (result: CliResult): Waited => ({ result, ...(lastKnown ? { lastKnown } : {}), seconds: Math.round((clock() - start) / 1000) });
+  const done = (result: CliResult): Waited => ({ result, ...(lastKnown ? { lastKnown } : {}), seconds: Math.round((clock() - start) / 1000), fetched });
   for (;;) {
     const r = await cli([...args, '--no-record']);
     if (r.code === EXIT_USAGE || r.code === 4 || deployed === undefined) return done(r);
@@ -238,9 +243,9 @@ async function waitForLive(
     // Kept before any fetch, so a read that fails afterwards cannot undo what this one saw.
     const where = await landing(prod, deployed, cwd);
     if (where !== 'unknown') lastKnown = prod;
-    if (!reread && prod?.status === 'ok' && prod.reported !== undefined && prod.commit === undefined && read !== undefined && !refetched.has(prod.reported)) {
-      refetched.add(prod.reported);
+    if (!reread && prod?.status === 'ok' && prod.reported !== undefined && prod.commit === undefined && read !== undefined && fetched.get(prod.reported) !== true) {
       const failed = await fetchBranch(cwd, read);
+      fetched.set(prod.reported, failed === undefined);
       if (failed === undefined) {
         // As the CLI resolves it: a tag or a ref named like the abbreviation is not that commit.
         const commit = await knownCommit(cwd, prod.reported);
@@ -270,7 +275,13 @@ async function waitForLive(
  * deployed commit, and, when it runs a commit that does not contain it, a fail in place of a pass,
  * because a check on the deployed commit must not read as success while that commit is not live.
  */
-async function deployNote(read: Production | undefined, deployed: string, waited: number, cwd: string): Promise<{ note?: string; notLive: boolean; title?: string }> {
+async function deployNote(
+  read: Production | undefined,
+  deployed: string,
+  waited: number,
+  refetch: 'fetched' | 'failed' | undefined,
+  cwd: string,
+): Promise<{ note?: string; notLive: boolean; title?: string }> {
   const prod = read;
   const where = await landing(prod, deployed, cwd);
   const d = deployed.slice(0, 12);
@@ -281,7 +292,7 @@ async function deployNote(read: Production | undefined, deployed: string, waited
   if (where === 'other' && prod?.commit === undefined) {
     return {
       notLive: true,
-      note: `Production runs ${running}, a commit this repository does not have even after fetching the branch, so whether it contains the deployed commit ${d} is not known, after waiting ${waited}s.`,
+      note: `Production runs ${running}, a commit this repository does not have ${refetch === 'fetched' ? 'even after fetching the branch again' : refetch === 'failed' ? 'because fetching the branch again failed' : 'as the branch was fetched for this job'}, so whether it contains the deployed commit ${d} is not known, after waiting ${waited}s.`,
       title: `FAIL: production runs ${running}, which this repository does not have`,
     };
   }
@@ -398,6 +409,7 @@ export async function runAction(deps: ActionDeps): Promise<number> {
   const waited = await waitForLive(args, deployed, read, inputs, cli, cwd, deps);
   let result = waited.result;
   let recorded = false;
+  let fetchedAfter: boolean | undefined;
   // CLI messages can repeat an input; a URL in one is shown as displayUrl shows it.
   const clean = (text: string): string => scrub(text, [inputs.url, inputs.versionUrl]);
   if (recording && result.code !== EXIT_USAGE) {
@@ -408,6 +420,7 @@ export async function runAction(deps: ActionDeps): Promise<number> {
     const resync = await cli(['state', 'sync', '--json']);
     if (resync.code !== 0) deps.warn(`seamkit: the ledger could not be fetched again after the wait, so this run judges it as it was: ${clean(resync.err.trim())}`);
     const refetch = read === undefined ? undefined : await fetchBranch(cwd, read);
+    if (read !== undefined) fetchedAfter = refetch === undefined;
     if (refetch !== undefined) deps.warn(`seamkit: could not fetch ${read} from origin again: ${refetch}`);
     const again = await cli(args);
     if (again.code === EXIT_USAGE) deps.warn(`seamkit: the verdict was not recorded: ${clean(again.err.trim())}`);
@@ -427,7 +440,9 @@ export async function runAction(deps: ActionDeps): Promise<number> {
     // must not undo what the wait saw.
     const counted = productionOf(result);
     const reading = deployed !== undefined && (await landing(counted, deployed, cwd)) === 'unknown' && waited.lastKnown !== undefined ? waited.lastKnown : counted;
-    const deploy = deployed === undefined || result.code === 4 ? { notLive: false } : await deployNote(reading, deployed, waited.seconds, cwd);
+    const during = reading?.reported === undefined ? undefined : waited.fetched.get(reading.reported);
+    const refetch = fetchedAfter === true || during === true ? 'fetched' : fetchedAfter === false || during === false ? 'failed' : undefined;
+    const deploy = deployed === undefined || result.code === 4 ? { notLive: false } : await deployNote(reading, deployed, waited.seconds, refetch, cwd);
     const overruled = deploy.notLive && outcome === 'pass';
     if (overruled) {
       outcome = 'fail';
