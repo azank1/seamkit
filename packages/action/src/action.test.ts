@@ -568,7 +568,50 @@ describe('the seamkit action', () => {
     const post = lastPost();
     assert.equal(post['conclusion'], 'failure');
     assert.equal((post['output'] as { title: string }).title, 'FAIL: production runs 0123456789ab, which this repository does not have');
-    assert.match((post['output'] as { summary: string }).summary, /a commit this repository does not have/);
+    assert.match((post['output'] as { summary: string }).summary, /a commit this repository does not have even after fetching the branch again/);
+  });
+
+  it('says the branch was fetched again when the fetch after the wait succeeded, though the one during it failed', async () => {
+    const { remote, ci, commits } = await project({ card: true });
+    servePage('0123456789abcdef0123456789abcdef01234567');
+    const ran = await act(ci, { ledger: 'true', pr: '2' }, success(commits[2] as string), {
+      log: (line) => {
+        if (/created seamkit\/state/.test(line)) renameSync(remote, `${remote}.away`);
+      },
+      warn: (line) => {
+        if (/could not fetch main from origin again/.test(line)) renameSync(`${remote}.away`, remote);
+      },
+    });
+    assert.equal(ran.code, 1);
+    assert.match((lastPost()['output'] as { summary: string }).summary, /a commit this repository does not have even after fetching the branch again/);
+  });
+
+  it('resolves a commit that the fetch after the wait brought in, when the counted read cannot read the version document', async () => {
+    const { remote, ci, commits } = await project({ card: true });
+    const dev = join(root, `dev-later-${++counter}`);
+    await git(['clone', '-q', `file://${remote}`, dev], { cwd: root });
+    await git([...ID, 'commit', '-q', '--allow-empty', '-m', 'Add the chart (#3)'], { cwd: dev });
+    const later = await git(['rev-parse', 'HEAD'], { cwd: dev });
+    let away = false;
+    const ran = await act(ci, { wait: '10', ledger: 'true', pr: '2' }, success(commits[2] as string), {
+      log: (line) => {
+        if (!/created seamkit\/state/.test(line)) return;
+        // A later deploy lands, and origin cannot be reached for the fetch during the wait.
+        execFileSync('git', ['push', '-q', 'origin', 'main'], { cwd: dev });
+        servePage(later);
+        renameSync(remote, `${remote}.away`);
+        away = true;
+      },
+      sleep: async () => {
+        if (!away) return;
+        renameSync(`${remote}.away`, remote);
+        away = false;
+        prod.failWith('/version.json', 503);
+      },
+    });
+    const output = lastPost()['output'] as { title: string; summary: string };
+    assert.equal(ran.code, 0, output.summary);
+    assert.match(output.summary, /which comes after the deployed commit/);
   });
 
   it('reads a version document naming a tag as one naming a commit this repository does not have, as the CLI does', async () => {
@@ -612,7 +655,9 @@ describe('the seamkit action', () => {
         },
       });
       if (away) renameSync(`${remote}.away`, remote);
-      assert.ok(ran.warnings.some((w) => /could not fetch main from origin again/.test(w)), ran.warnings.join('\n'));
+      // One fetch a poll at most: one per read while origin stays away.
+      const failures = ran.warnings.filter((w) => /could not fetch main from origin again/.test(w)).length;
+      assert.equal(failures, restore ? 1 : ran.sleeps.length + 1, ran.warnings.join('\n'));
       const output = lastPost()['output'] as { title: string; summary: string };
       if (restore) {
         assert.equal(ran.code, 0, output.summary);

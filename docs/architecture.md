@@ -605,4 +605,7 @@ count so the fence stays short. For scoping only, a build seen running whose doc
 the commit the tag points at; the commit production runs now must still be named as a commit. The check is given only
 the sightings it looks up, one per marker of each change judged, so a ledger kept for many addresses does not grow its
 input. While the Action waits, fetching the branch for a commit the clone lacks is tried again on later polls until it
-succeeds, and the note says whether it was fetched again or the fetch failed.
+succeeds, and the note says whether it was fetched again or the fetch failed; the reading a verdict falls back to is
+resolved again after the fetch that follows the wait. seamkit runs git with its tracing off and removes a URL's user
+name and password from anything git writes, because git's errors can reach a check run that anyone who can read the
+repository can read.

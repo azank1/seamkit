@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { invariantCheck, parseEventFile, runCheck, type SeamEvent } from '@seamkit/core';
-import { git, GitStateStore, NotAGitRepository, STATE_REF } from './index.js';
+import { git, GitStateStore, NotAGitRepository, runGit, STATE_REF } from './index.js';
 
 let root: string;
 
@@ -159,6 +159,27 @@ describe('GitStateStore', () => {
     await store.append(event(50));
     await assert.rejects(store.sync(), /refused by policy/);
     assert.equal((await readFile(tries, 'utf8')).trim().split('\n').length, 3);
+  });
+
+  it('keeps tracing and the credentials in a URL out of the errors git reports', async () => {
+    const cwd = await repo('trace');
+    const url = 'http://x-access-token:s3cr3t-token@127.0.0.1:9/o/r.git';
+    const before = process.env['GIT_TRACE'];
+    process.env['GIT_TRACE'] = '1';
+    try {
+      // A job that turned tracing on for itself does not turn it on for seamkit's git.
+      const quiet = await runGit(['ls-remote', url], { cwd });
+      assert.notEqual(quiet.code, 0);
+      assert.ok(!/trace:/.test(quiet.stderr), quiet.stderr);
+    } finally {
+      if (before === undefined) delete process.env['GIT_TRACE'];
+      else process.env['GIT_TRACE'] = before;
+    }
+    // Whatever git writes, a URL's user name and password are taken out.
+    const traced = await runGit(['ls-remote', url], { cwd, env: { GIT_TRACE: '1' } });
+    assert.match(traced.stderr, /trace:/);
+    assert.match(traced.stderr, /http:\/\/127\.0\.0\.1:9\/o\/r\.git/);
+    assert.ok(!traced.stderr.includes('s3cr3t-token'), traced.stderr);
   });
 
   it('reports a missing remote instead of failing', async () => {

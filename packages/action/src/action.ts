@@ -439,7 +439,12 @@ export async function runAction(deps: ActionDeps): Promise<number> {
     // The counted read decides, unless it named no commit after an earlier read did: a failed read
     // must not undo what the wait saw.
     const counted = productionOf(result);
-    const reading = deployed !== undefined && (await landing(counted, deployed, cwd)) === 'unknown' && waited.lastKnown !== undefined ? waited.lastKnown : counted;
+    let reading = deployed !== undefined && (await landing(counted, deployed, cwd)) === 'unknown' && waited.lastKnown !== undefined ? waited.lastKnown : counted;
+    // A fetch since that read may have brought its commit in; it is resolved as the wait resolves one.
+    if (reading?.status === 'ok' && reading.reported !== undefined && reading.commit === undefined) {
+      const commit = await knownCommit(cwd, reading.reported);
+      if (commit !== undefined && commit.startsWith(reading.reported)) reading = { ...reading, commit };
+    }
     const during = reading?.reported === undefined ? undefined : waited.fetched.get(reading.reported);
     const refetch = fetchedAfter === true || during === true ? 'fetched' : fetchedAfter === false || during === false ? 'failed' : undefined;
     const deploy = deployed === undefined || result.code === 4 ? { notLive: false } : await deployNote(reading, deployed, waited.seconds, refetch, cwd);

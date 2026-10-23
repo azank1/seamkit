@@ -8967,11 +8967,13 @@ var GitError = class extends Error {
     this.result = result;
   }
 };
+var NO_TRACE = Object.fromEntries(["GIT_TRACE", "GIT_TRACE_SETUP", "GIT_TRACE_PERFORMANCE", "GIT_TRACE_PACKET", "GIT_TRACE_PACKFILE", "GIT_TRACE_CURL", "GIT_CURL_VERBOSE", "GIT_TRACE2", "GIT_TRACE2_EVENT", "GIT_TRACE2_PERF"].map((k) => [k, "0"]));
+var USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi;
 function runGit(args, opts) {
   return new Promise((resolve3, reject) => {
     const child = spawn("git", args, {
       cwd: opts.cwd,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...opts.env },
+      env: { ...process.env, ...NO_TRACE, GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...opts.env },
       stdio: ["pipe", "pipe", "pipe"]
     });
     const out = [];
@@ -8979,7 +8981,7 @@ function runGit(args, opts) {
     child.stdout.on("data", (b) => out.push(b));
     child.stderr.on("data", (b) => err.push(b));
     child.on("error", reject);
-    child.on("close", (code) => resolve3({ code: code ?? 1, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString("utf8") }));
+    child.on("close", (code) => resolve3({ code: code ?? 1, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString("utf8").replace(USERINFO, "$1") }));
     child.stdin.on("error", () => void 0);
     child.stdin.end(opts.input ?? "");
   });
@@ -11102,7 +11104,12 @@ async function runAction(deps) {
     const parsed = JSON.parse(result.out);
     outcome = parsed.outcome;
     const counted = productionOf(result);
-    const reading = deployed !== void 0 && await landing(counted, deployed, cwd) === "unknown" && waited.lastKnown !== void 0 ? waited.lastKnown : counted;
+    let reading = deployed !== void 0 && await landing(counted, deployed, cwd) === "unknown" && waited.lastKnown !== void 0 ? waited.lastKnown : counted;
+    if (reading?.status === "ok" && reading.reported !== void 0 && reading.commit === void 0) {
+      const commit2 = await knownCommit(cwd, reading.reported);
+      if (commit2 !== void 0 && commit2.startsWith(reading.reported))
+        reading = { ...reading, commit: commit2 };
+    }
     const during = reading?.reported === void 0 ? void 0 : waited.fetched.get(reading.reported);
     const refetch = fetchedAfter === true || during === true ? "fetched" : fetchedAfter === false || during === false ? "failed" : void 0;
     const deploy = deployed === void 0 || result.code === 4 ? { notLive: false } : await deployNote(reading, deployed, waited.seconds, refetch, cwd);

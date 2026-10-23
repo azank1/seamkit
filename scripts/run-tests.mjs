@@ -22,5 +22,7 @@ if (files.length === 0) {
   console.error('run-tests: no compiled test files found under packages/*/dist; run "npm run build" first');
   process.exit(1);
 }
-const result = spawnSync(process.execPath, ['--test', ...process.argv.slice(2), ...files], { stdio: 'inherit' });
+// A test that hangs fails after two minutes rather than holding the run open; flags given here come
+// after, so they can raise it.
+const result = spawnSync(process.execPath, ['--test', '--test-timeout=120000', ...process.argv.slice(2), ...files], { stdio: 'inherit' });
 process.exit(result.status ?? 1);
