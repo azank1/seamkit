@@ -35,6 +35,8 @@ export interface ReadbackRequest {
    * `last` counts the changes judged, so changes left to the next deploy do not crowd the window.
    */
   deployed?: string;
+  /** Judge as if there were no ledger: it is not read, so nothing in it scopes or proves a change. */
+  noLedger?: boolean;
 }
 
 /** Everything the shell learned while gathering, beyond the check input, for the audit's advice. */
@@ -285,7 +287,7 @@ export async function gatherReadback(
   }
   const shallow = await repo.isShallow();
   if (shallow) runGaps.push({ item: 'history beyond the shallow clone', reason: 'the clone is shallow; run git fetch --unshallow to examine older changes' });
-  const ledger = await readLedger(cwd, new Set(commits.map((c) => c.commit)));
+  const ledger = req.noLedger === true ? null : await readLedger(cwd, new Set(commits.map((c) => c.commit)));
 
   const primary =
     req.versionUrl !== undefined
@@ -326,13 +328,15 @@ export async function gatherReadback(
       // and so is one that saw production run a commit this repository cannot place.
       const because =
         loaded === null
-          ? 'no ledger was read, so'
+          ? req.noLedger === true
+            ? 'the ledger was not read (--no-ledger), so'
+            : 'no ledger was read, so'
           : !loaded.readHere
             ? 'the ledger holds no earlier run that read this address, so'
             : `production at this address was seen running ${missing.map(short).join(', ')}, which this repository does not have (fetch the branch it came from), so`;
       runGaps.push({
         item: 'whether changes merged after the deployed commit are still on their way',
-        reason: `${because} one still on its way cannot be told from one a rollback removed; every change is judged${loaded === null ? ' (keep a ledger with seamkit state init)' : ''}`,
+        reason: `${because} one still on its way cannot be told from one a rollback removed; every change is judged${loaded === null && req.noLedger !== true ? ' (keep a ledger with seamkit state init)' : ''}`,
       });
     } else {
       // Scoping, not judging: which changes this deploy is answerable for. A change seen live at

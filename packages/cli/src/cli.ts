@@ -51,7 +51,7 @@ Usage:
   seamkit audit --url <production-url> [--last <n>] [--branch <ref>] [--json]
   seamkit readback --url <production-url> [--pr <n> | --commit <rev>] [--last <n>]
                    [--branch <ref>] [--deployed <rev>] [--version-url <url>]
-                   [--record|--no-record] [--json]
+                   [--record|--no-record|--no-ledger] [--json]
   seamkit stamp [--out <file>] [--commit <rev>] [--require-clean]
   seamkit check <name> [--input <file>|-] [--record|--no-record] [--json]
   seamkit checks
@@ -70,7 +70,8 @@ deployed. When the ledger holds a run that read this address, a change merged af
 never seen live here, nor in any build production was seen running here, is left to the next
 deploy; any other is still judged, so a rollback fails. Without such a run, or once production here
 was seen running a commit this repository does not have, every change is judged. --last counts
-the changes judged.
+the changes judged. --no-ledger judges without reading the ledger, as if there were none, and
+records nothing.
 
 Every command that produces a verdict exits with its outcome:
   0 pass   1 fail   3 examined nothing   4 unclassified (stops for a human)
@@ -89,6 +90,7 @@ type Flags = {
   json?: boolean;
   record?: boolean;
   'no-record'?: boolean;
+  'no-ledger'?: boolean;
   remote?: string;
   cwd?: string;
   help?: boolean;
@@ -117,6 +119,7 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         json: { type: 'boolean' },
         record: { type: 'boolean' },
         'no-record': { type: 'boolean' },
+        'no-ledger': { type: 'boolean' },
         remote: { type: 'string' },
         cwd: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
@@ -237,7 +240,7 @@ async function cmdCheck(args: string[], flags: Flags, cwd: string, io: Io): Prom
 /** Records a run when the state branch exists, or always with --record; never with --no-record. */
 async function recordRun(run: CheckRun, at: string, flags: Flags, cwd: string, io: Io): Promise<{ id: string; path: string } | undefined> {
   if (flags.record && flags['no-record']) throw new UsageError('--record and --no-record cannot be combined');
-  if (flags['no-record']) return undefined;
+  if (flags['no-record'] || flags['no-ledger']) return undefined;
   let store: GitStateStore | undefined;
   try {
     store = await GitStateStore.open(cwd);
@@ -254,8 +257,8 @@ function noteRecording(recorded: { id: string } | undefined, flags: Flags, io: I
   io.err(
     recorded
       ? `recorded as event ${recorded.id.slice(0, 12)} on ${STATE_BRANCH}\n`
-      : flags['no-record']
-        ? 'not recorded (--no-record)\n'
+      : flags['no-record'] || flags['no-ledger']
+        ? `not recorded (${flags['no-ledger'] ? '--no-ledger' : '--no-record'})\n`
         : `not recorded (no ${STATE_BRANCH} branch; run "seamkit state init" or pass --record)\n`,
   );
 }
@@ -313,6 +316,7 @@ async function cmdReadback(args: string[], flags: Flags, cwd: string, io: Io, au
   if (audit && (flags.pr !== undefined || flags.commit !== undefined)) throw new UsageError('audit covers the last changes; use readback for one pull request or commit');
   if (flags.pr !== undefined && flags.commit !== undefined) throw new UsageError('--pr and --commit cannot be combined');
   if (flags.record && flags['no-record']) throw new UsageError('--record and --no-record cannot be combined');
+  if (flags['no-ledger'] && (audit || flags.record)) throw new UsageError(audit ? 'audit reads the ledger; --no-ledger is for readback' : '--no-ledger records nothing, so it cannot be combined with --record');
   const req: ReadbackRequest = { url: productionUrl(flags, io.env), last: positive(flags.last, '--last', 20, 1000) };
   if (flags.pr !== undefined) req.pr = positive(flags.pr, '--pr', 0, Number.MAX_SAFE_INTEGER);
   if (flags.commit !== undefined) req.commit = flags.commit;
@@ -321,6 +325,7 @@ async function cmdReadback(args: string[], flags: Flags, cwd: string, io: Io, au
     if (flags.deployed === '' || flags.deployed.startsWith('-')) throw new UsageError('--deployed needs a commit, such as the one the host reports for this deploy');
     req.deployed = flags.deployed;
   }
+  if (flags['no-ledger']) req.noLedger = true;
   if (flags['version-url'] !== undefined) req.versionUrl = recordableUrl(flags['version-url'], '--version-url', 'https://your.app/version.json');
   const { input, context } = await gatherReadback(cwd, req, io.now, { userAgent: `seamkit/${VERSION} (${command})` });
   const at = io.now();

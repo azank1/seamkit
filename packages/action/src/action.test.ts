@@ -273,6 +273,15 @@ describe('the seamkit action', () => {
     assert.ok(first.logs.some((l) => /recorded as event [0-9a-f]{12}/.test(l)));
     assert.match(await git(['ls-remote', remote, 'refs/heads/seamkit/state'], { cwd: root }), /refs\/heads\/seamkit\/state$/);
 
+    // ledger: false reads no ledger, even one this checkout holds: the rollback is only not proven.
+    deploy(commits[1]);
+    const off = await act(ci, { ledger: 'false' }, success(commits[1] as string));
+    assert.equal(off.code, 1, off.logs.join('\n'));
+    const offOut = lastPost()['output'] as { title: string; summary: string };
+    assert.doesNotMatch(offOut.title, /not live/);
+    assert.match(offOut.summary, /the ledger was not read \(--no-ledger\)/);
+    assert.doesNotMatch(offOut.summary, /seamkit state init/);
+
     // A fresh checkout, as the next job gets: auto finds the ledger on the remote and uses it. The
     // deploy of an older commit drops a change that was seen live, so it fails as not live.
     const next = join(root, `ci-next-${++counter}`);
@@ -573,6 +582,12 @@ describe('the seamkit action', () => {
       assert.equal((await act(ci, { sha: given, wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' })).code, 2);
       assert.match((lastPost()['output'] as { title: string }).title, /^No verdict: the deployed commit [0-9a-f]+ is an annotated tag, not a commit/);
     }
+    // A ref is matched by its whole name: one that only starts with the abbreviation shadows nothing.
+    const longer = `refs/remotes/${tag.slice(0, 9)}/main`;
+    await git(['update-ref', longer, commits[1] as string], { cwd: ci });
+    assert.equal((await act(ci, { sha: tag.slice(0, 9), wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' })).code, 2);
+    assert.match((lastPost()['output'] as { title: string }).title, /is an annotated tag, not a commit/);
+    await git(['update-ref', '-d', longer], { cwd: ci });
     // So does its abbreviation when a blob shares it, though git then finds no single object for it.
     const prefix = tag.slice(0, 5);
     let content = '';

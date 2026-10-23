@@ -621,9 +621,10 @@ names git tries for it, even when several do and git calls the name ambiguous. T
 own data, so a project's pre-push hook, which may refuse branch names or run its tests, does not run for it. The
 unknown-commit note goes by the fetches of the branch made since production first reported the commit, whichever
 commit each was made for: after one that succeeded the commit is on no branch fetched, and if every one failed, that
-is why. With none made since, the last fetch made says what this repository holds. A URL's user name and password are removed up to the last @ before
-its path, since a password can hold an unencoded @. `ledger: false` neither reads nor records the ledger, and the
-docs and the push advice say what that costs. `--no-record` notes that it kept the run out of
+is why. With none made since, the last fetch made says what this repository holds. A URL's user name and password are removed up to the last @ on the
+line before its path, since a password can hold an unencoded @, quote or space. `ledger: false` neither reads nor
+records the ledger, even one the checkout already holds: the Action passes `--no-ledger`, which judges as if there
+were no ledger and records nothing, and the docs and the push advice say what that costs. `--no-record` notes that it kept the run out of
 the ledger, not that the ledger is missing. A change whose card the run cannot read for lack of room, or cannot check, is still kept in `--deployed`
 scope by a sighting under one of its card's markers. The test runner's time limit is per test from Node 24 and per file
 before it, so it is set well above the slowest file there.

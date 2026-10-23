@@ -123,6 +123,15 @@ describe('readback by version ancestry', () => {
     assert.match(v.reasons[0] ?? '', /seen live at 2026-10-13T09:30:00.000Z \(event eeeeeeeeeeee\)/);
     assert.ok(v.evidence.some((e) => e.kind === 'event' && e.value === EVENT));
 
+    // The latest sighting is cited, wherever it is listed; at the same time, the greater event id.
+    const later = { ...sighting, at: AT, event: 'f'.repeat(64) };
+    const tied = { ...later, event: EVENT };
+    for (const history of [[later, sighting], [sighting, later], [later, tied], [tied, later]]) {
+      const cited = run(input({ changes: [implicit(3)], ancestry: [contains(3, false)], history })).by.get('pr#3') as Verdict;
+      assert.match(cited.reasons[0] ?? '', /seen live at 2026-10-14T12:00:00.000Z \(event ffffffffffff\)/);
+      assert.ok(cited.evidence.some((e) => e.kind === 'event' && e.value === later.event));
+    }
+
     // Negative control: the same observation without the sighting is only not proven.
     assert.equal(run(input({ changes: [implicit(3)], ancestry: [contains(3, false)] })).by.get('pr#3')?.state, 'not_proven');
   });

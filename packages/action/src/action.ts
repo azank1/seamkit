@@ -78,6 +78,8 @@ function readbackArgs(inputs: ActionInputs, deployed: string | undefined): strin
   if (inputs.branch !== '') args.push('--branch', inputs.branch);
   if (deployed !== undefined) args.push('--deployed', deployed);
   if (inputs.versionUrl !== '') args.push('--version-url', inputs.versionUrl);
+  // false is a full opt-out: a ledger the checkout already holds is not read either.
+  if (inputs.ledger === 'false') args.push('--no-ledger');
   return args;
 }
 

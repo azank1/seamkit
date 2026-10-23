@@ -128,6 +128,15 @@ describe('seamkit readback', () => {
     assert.equal((await cli(['replay'], dir)).code, 0);
     // A run kept out of the ledger says so, not that there is no ledger.
     assert.equal((await cli(['readback', '--url', prod.url, '--no-record'], dir)).err, 'not recorded (--no-record)\n');
+    // --no-ledger judges as if there were none, records nothing, and says why.
+    const off = await cli(['readback', '--url', prod.url, '--no-ledger', '--deployed', merges[1] as string], dir);
+    assert.equal(off.err, 'not recorded (--no-ledger)\n');
+    assert.match(off.out, /the ledger was not read \(--no-ledger\), so/);
+    assert.doesNotMatch(off.out, /seamkit state init/);
+    assert.equal((await cli(['readback', '--url', prod.url, '--no-ledger', '--record'], dir)).code, 2);
+    assert.equal((await cli(['audit', '--url', prod.url, '--no-ledger'], dir)).code, 2);
+    const events = await git(['ls-tree', '-r', '--name-only', 'seamkit/state', 'events/'], { cwd: dir });
+    assert.equal(events.split('\n').length, 1);
   });
 
   it('cites the latest run that saw a change live, also when that run read the version document at another path', async () => {

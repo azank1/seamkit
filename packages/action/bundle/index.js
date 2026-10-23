@@ -8975,7 +8975,7 @@ function quietEnv(extra) {
   }
   return { ...env, GIT_TRACE2: "0", GIT_TRACE2_PERF: "0", GIT_TRACE2_EVENT: "0", GIT_TRACE_REDACT: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...extra };
 }
-var USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^\s/'"]*@/gi;
+var USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^\r\n/]*@/gi;
 function runGit(args, opts) {
   return new Promise((resolve3, reject) => {
     const child = spawn("git", args, {
@@ -9816,7 +9816,7 @@ async function gatherReadback(cwd, req, now, http) {
   const shallow = await repo.isShallow();
   if (shallow)
     runGaps.push({ item: "history beyond the shallow clone", reason: "the clone is shallow; run git fetch --unshallow to examine older changes" });
-  const ledger = await readLedger(cwd, new Set(commits.map((c) => c.commit)));
+  const ledger = req.noLedger === true ? null : await readLedger(cwd, new Set(commits.map((c) => c.commit)));
   const primary = req.versionUrl !== void 0 ? await observeVersion(req.versionUrl, now(), resolve3, http) : await discoverVersion(origin, now(), resolve3, http);
   const subjects = /* @__PURE__ */ new Set();
   const defaulted = /* @__PURE__ */ new Set();
@@ -9843,10 +9843,10 @@ async function gatherReadback(cwd, req, now, http) {
       });
     }
     if (loaded === null || !loaded.readHere || missing.length > 0) {
-      const because = loaded === null ? "no ledger was read, so" : !loaded.readHere ? "the ledger holds no earlier run that read this address, so" : `production at this address was seen running ${missing.map(short2).join(", ")}, which this repository does not have (fetch the branch it came from), so`;
+      const because = loaded === null ? req.noLedger === true ? "the ledger was not read (--no-ledger), so" : "no ledger was read, so" : !loaded.readHere ? "the ledger holds no earlier run that read this address, so" : `production at this address was seen running ${missing.map(short2).join(", ")}, which this repository does not have (fetch the branch it came from), so`;
       runGaps.push({
         item: "whether changes merged after the deployed commit are still on their way",
-        reason: `${because} one still on its way cannot be told from one a rollback removed; every change is judged${loaded === null ? " (keep a ledger with seamkit state init)" : ""}`
+        reason: `${because} one still on its way cannot be told from one a rollback removed; every change is judged${loaded === null && req.noLedger !== true ? " (keep a ledger with seamkit state init)" : ""}`
       });
     } else {
       const seen = new Set(loaded.sightings.map((s) => `${s.change} ${s.marker}`));
@@ -10035,7 +10035,7 @@ Usage:
   seamkit audit --url <production-url> [--last <n>] [--branch <ref>] [--json]
   seamkit readback --url <production-url> [--pr <n> | --commit <rev>] [--last <n>]
                    [--branch <ref>] [--deployed <rev>] [--version-url <url>]
-                   [--record|--no-record] [--json]
+                   [--record|--no-record|--no-ledger] [--json]
   seamkit stamp [--out <file>] [--commit <rev>] [--require-clean]
   seamkit check <name> [--input <file>|-] [--record|--no-record] [--json]
   seamkit checks
@@ -10054,7 +10054,8 @@ deployed. When the ledger holds a run that read this address, a change merged af
 never seen live here, nor in any build production was seen running here, is left to the next
 deploy; any other is still judged, so a rollback fails. Without such a run, or once production here
 was seen running a commit this repository does not have, every change is judged. --last counts
-the changes judged.
+the changes judged. --no-ledger judges without reading the ledger, as if there were none, and
+records nothing.
 
 Every command that produces a verdict exits with its outcome:
   0 pass   1 fail   3 examined nothing   4 unclassified (stops for a human)
@@ -10079,6 +10080,7 @@ async function run(argv, io) {
         json: { type: "boolean" },
         record: { type: "boolean" },
         "no-record": { type: "boolean" },
+        "no-ledger": { type: "boolean" },
         remote: { type: "string" },
         cwd: { type: "string" },
         help: { type: "boolean", short: "h" },
@@ -10217,7 +10219,7 @@ async function cmdCheck(args, flags, cwd, io) {
 async function recordRun(run2, at2, flags, cwd, io) {
   if (flags.record && flags["no-record"])
     throw new UsageError("--record and --no-record cannot be combined");
-  if (flags["no-record"])
+  if (flags["no-record"] || flags["no-ledger"])
     return void 0;
   let store;
   try {
@@ -10234,7 +10236,8 @@ async function recordRun(run2, at2, flags, cwd, io) {
 }
 function noteRecording(recorded, flags, io) {
   io.err(recorded ? `recorded as event ${recorded.id.slice(0, 12)} on ${STATE_BRANCH}
-` : flags["no-record"] ? "not recorded (--no-record)\n" : `not recorded (no ${STATE_BRANCH} branch; run "seamkit state init" or pass --record)
+` : flags["no-record"] || flags["no-ledger"] ? `not recorded (${flags["no-ledger"] ? "--no-ledger" : "--no-record"})
+` : `not recorded (no ${STATE_BRANCH} branch; run "seamkit state init" or pass --record)
 `);
 }
 function jsonLine(value) {
@@ -10280,6 +10283,8 @@ async function cmdReadback(args, flags, cwd, io, audit) {
     throw new UsageError("--pr and --commit cannot be combined");
   if (flags.record && flags["no-record"])
     throw new UsageError("--record and --no-record cannot be combined");
+  if (flags["no-ledger"] && (audit || flags.record))
+    throw new UsageError(audit ? "audit reads the ledger; --no-ledger is for readback" : "--no-ledger records nothing, so it cannot be combined with --record");
   const req = { url: productionUrl(flags, io.env), last: positive(flags.last, "--last", 20, 1e3) };
   if (flags.pr !== void 0)
     req.pr = positive(flags.pr, "--pr", 0, Number.MAX_SAFE_INTEGER);
@@ -10292,6 +10297,8 @@ async function cmdReadback(args, flags, cwd, io, audit) {
       throw new UsageError("--deployed needs a commit, such as the one the host reports for this deploy");
     req.deployed = flags.deployed;
   }
+  if (flags["no-ledger"])
+    req.noLedger = true;
   if (flags["version-url"] !== void 0)
     req.versionUrl = recordableUrl(flags["version-url"], "--version-url", "https://your.app/version.json");
   const { input: input2, context } = await gatherReadback(cwd, req, io.now, { userAgent: `seamkit/${VERSION} (${command})` });
@@ -10843,6 +10850,8 @@ function readbackArgs(inputs, deployed) {
     args.push("--deployed", deployed);
   if (inputs.versionUrl !== "")
     args.push("--version-url", inputs.versionUrl);
+  if (inputs.ledger === "false")
+    args.push("--no-ledger");
   return args;
 }
 async function openLedger(inputs, cli, deps) {
