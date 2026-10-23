@@ -385,7 +385,12 @@ export async function runAction(deps: ActionDeps): Promise<number> {
     // A misconfigured step still shows on the commit, as a check with no verdict.
     deps.warn(`seamkit: ${err.message}`);
     const url = rawInput(deps.env, 'url');
-    await report(ctx, checkNameFor(deps.env), rawInput(deps.env, 'token'), headSha(ctx, event, rawInput(deps.env, 'sha')), errorReport(err.message, url === '' ? 'the url input' : displayUrl(url)), 'error', EXIT_USAGE, deps);
+    // An abbreviated sha input is expanded as the normal path expands it, since a check run needs
+    // the full commit; one git does not know, or knows as something else, is used as given.
+    const given = headSha(ctx, event, rawInput(deps.env, 'sha'));
+    const known = /^[0-9a-f]{4,64}$/i.test(given) ? await knownCommit(ctx.workspace, given) : undefined;
+    const sha = known !== undefined && known.startsWith(given.toLowerCase()) ? known : given;
+    await report(ctx, checkNameFor(deps.env), rawInput(deps.env, 'token'), sha, errorReport(err.message, url === '' ? 'the url input' : displayUrl(url)), 'error', EXIT_USAGE, deps);
     return EXIT_USAGE;
   }
   const cwd = ctx.workspace;

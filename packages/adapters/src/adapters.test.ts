@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -228,5 +229,35 @@ describe('the repository', () => {
     assert.deepEqual(await repo.resolveAll([tag, shadow, commits[2] as string]), [undefined, undefined, commits[2]]);
     // Asked to, a tag gives the commit it points at; a ref named like an abbreviation never does.
     assert.deepEqual(await repo.resolveAll([tag, tag.slice(0, 7), shadow], { peelTags: true }), [commits[0], commits[0], undefined]);
+  });
+
+  it('resolves a commit whose abbreviation a blob also matches, as resolve does', async () => {
+    const copy = join(root, 'blob-shares-prefix');
+    await git(['clone', '-q', dir, copy], { cwd: root });
+    const prefix = (commits[1] as string).slice(0, 4);
+    let content = '';
+    for (let i = 0; ; i++) {
+      content = `blob ${i}\n`;
+      const id = createHash('sha1').update(`blob ${Buffer.byteLength(content)}\0${content}`).digest('hex');
+      if (id.startsWith(prefix)) break;
+    }
+    const blob = await git(['hash-object', '-w', '--stdin'], { cwd: copy, input: content });
+    assert.ok(blob.startsWith(prefix));
+    const repo = await GitRepo.open(copy);
+    assert.equal(await repo.resolve(prefix), commits[1]);
+    assert.deepEqual(await repo.resolveAll([prefix]), [commits[1]]);
+    assert.deepEqual(await repo.resolveAll([prefix], { peelTags: true }), [commits[1]]);
+    // A tag and a blob sharing a prefix that no commit has: asked as a commit, git peels the tag,
+    // which gives a commit the abbreviation does not name.
+    await git(['-c', 'user.name=dev', '-c', 'user.email=dev@example.invalid', 'tag', '-a', '-m', 'release', 'v1', commits[0] as string], { cwd: copy });
+    const tag = await git(['rev-parse', 'v1'], { cwd: copy });
+    const tagPrefix = tag.slice(0, 4);
+    for (let i = 0; ; i++) {
+      content = `tag blob ${i}\n`;
+      if (createHash('sha1').update(`blob ${Buffer.byteLength(content)}\0${content}`).digest('hex').startsWith(tagPrefix)) break;
+    }
+    await git(['hash-object', '-w', '--stdin'], { cwd: copy, input: content });
+    assert.equal(await repo.resolve(tagPrefix), undefined);
+    assert.deepEqual(await repo.resolveAll([tagPrefix]), [undefined]);
   });
 });

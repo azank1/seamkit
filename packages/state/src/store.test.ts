@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { invariantCheck, parseEventFile, runCheck, type SeamEvent } from '@seamkit/core';
@@ -180,6 +182,35 @@ describe('GitStateStore', () => {
     assert.match(traced.stderr, /trace:/);
     assert.match(traced.stderr, /http:\/\/127\.0\.0\.1:9\/o\/r\.git/);
     assert.ok(!traced.stderr.includes('s3cr3t-token'), traced.stderr);
+  });
+
+  it('keeps curl tracing and request headers out of the errors an http remote gives', async () => {
+    const cwd = await repo('curl');
+    const server = createServer((_req, res) => {
+      res.writeHead(403);
+      res.end('no');
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const { port } = server.address() as AddressInfo;
+    const url = `http://s3cr3t-user@127.0.0.1:${port}/o/r.git`;
+    const header = ['-c', 'http.extraheader=X-Deploy-Token: s3cr3t-header'];
+    const set = { GIT_CURL_VERBOSE: '1', GIT_TRACE_REDACT: '0', GIT_TRACE_REFS: '1', GIT_TRACE_CURL_NO_DATA: '1' };
+    const saved = Object.fromEntries(Object.keys(set).map((k) => [k, process.env[k]]));
+    try {
+      for (const env of [{}, set]) {
+        Object.assign(process.env, env);
+        const r = await runGit([...header, 'ls-remote', url], { cwd });
+        assert.notEqual(r.code, 0);
+        assert.match(r.stderr, /^fatal: unable to access '[^']*': The requested URL returned error: 403\n$/);
+        assert.ok(!/http\.c:|== Info|Send header|refs\.c|s3cr3t/.test(r.stderr), r.stderr);
+      }
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      await new Promise((done) => server.close(done));
+    }
   });
 
   it('reports a missing remote instead of failing', async () => {

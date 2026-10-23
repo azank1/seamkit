@@ -82,6 +82,12 @@ function spend(budget: Budget, markers: readonly Marker[]): boolean {
 }
 
 /**
+ * A change as read from git. `seenAs` holds the card's markers when the change is judged by
+ * version alone instead, so a sighting under one still keeps the change in --deployed scope.
+ */
+type Draft = ReadbackChange & { cardFound: boolean; seenAs: readonly Marker[] };
+
+/**
  * Turns a commit into a change, with its card's markers or, failing that, the implicit version
  * marker. `defaulted` collects the changes whose version marker is production's own document
  * because nothing named another. A card the check would refuse, or one whose markers no longer
@@ -95,17 +101,17 @@ function toChange(
   subjects: Set<string>,
   defaulted: Set<string>,
   budget: Budget,
-): ReadbackChange & { cardFound: boolean } {
+): Draft {
   const message = parseChangeMessage(c.message, c.parents.length);
   // The same pull request number can appear twice (a revert, say); later ones fall back to the commit.
   let subject = subjectOf(c, message.pr);
   if (subjects.has(subject)) subject = `commit:${short(c.commit)}`;
   subjects.add(subject);
   const card = readCard(c.message);
-  const implicit = (problems?: string[]): ReadbackChange & { cardFound: boolean } => {
+  const implicit = (problems?: string[], seenAs: Marker[] = []): Draft => {
     defaulted.add(c.commit);
     const change = { subject, commit: c.commit, title: message.title, markerSource: 'implicit' as const, markers: [{ kind: 'version' as const, url: primary.url }] };
-    return problems === undefined ? { ...change, cardFound: false } : { ...change, cardProblems: problems.slice(0, 20), cardFound: true };
+    return problems === undefined ? { ...change, cardFound: false, seenAs } : { ...change, cardProblems: problems.slice(0, 20), cardFound: true, seenAs };
   };
   if (!card.found) return implicit();
   if (!card.ok) return implicit(card.problems);
@@ -127,14 +133,14 @@ function toChange(
   try {
     parseReadbackChange(change);
   } catch (err) {
-    return implicit([`the card cannot be checked: ${(err as Error).message}`]);
+    return implicit([`the card cannot be checked: ${(err as Error).message}`], unique);
   }
   if (!spend(budget, unique)) {
     return implicit([
       `one run reads at most ${READBACK_LIMITS.versions} version documents, ${READBACK_LIMITS.bundles} pages and ${READBACK_LIMITS.searched} marker texts on a page, and newer changes in the window use them up, so this change is proven by version alone`,
-    ]);
+    ], unique);
   }
-  return { ...change, cardFound: true };
+  return { ...change, cardFound: true, seenAs: [] };
 }
 
 /** What the ledger holds for readback. */
@@ -339,7 +345,7 @@ export async function gatherReadback(
       const kept: typeof drafts = [];
       const later: string[] = [];
       for (const d of drafts) {
-        const seenHere = d.markers.some((m) => seen.has(`${d.commit} ${markerKey(m)}`));
+        const seenHere = [...d.markers, ...d.seenAs].some((m) => seen.has(`${d.commit} ${markerKey(m)}`));
         if (!afterDeploy.has(d.commit) || seenHere || wasRunning.has(d.commit)) kept.push(d);
         else later.push(d.subject);
       }
@@ -358,7 +364,7 @@ export async function gatherReadback(
     if (drafts.length > req.last || window.more) runGaps.push({ item: `changes before the last ${req.last} on ${branch.name}`, reason: 'outside --last' });
     drafts = drafts.slice(0, req.last);
   }
-  const changes: ReadbackChange[] = drafts.map(({ cardFound: _, ...change }) => change);
+  const changes: ReadbackChange[] = drafts.map(({ cardFound: _, seenAs: __, ...change }) => change);
 
   const versions: VersionObservation[] = [primary];
   const markerUrls = new Set(changes.flatMap((c) => c.markers.flatMap((m) => (m.kind === 'version' ? [m.url] : []))));

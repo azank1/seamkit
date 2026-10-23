@@ -23,12 +23,18 @@ export interface GitOptions {
 }
 
 /**
- * git's tracing, switched off: its lines would mix with the errors seamkit reports, and they show a
- * remote's URL as configured, credentials included.
+ * The environment git runs with, its tracing off: trace lines would mix with the errors seamkit
+ * reports, and they show a remote's URL and request headers as sent, credentials included. git
+ * traces curl whenever GIT_CURL_VERBOSE is set, whatever its value, so the variables are removed
+ * rather than set to 0.
  */
-const NO_TRACE: Record<string, string> = Object.fromEntries(
-  ['GIT_TRACE', 'GIT_TRACE_SETUP', 'GIT_TRACE_PERFORMANCE', 'GIT_TRACE_PACKET', 'GIT_TRACE_PACKFILE', 'GIT_TRACE_CURL', 'GIT_CURL_VERBOSE', 'GIT_TRACE2', 'GIT_TRACE2_EVENT', 'GIT_TRACE2_PERF'].map((k) => [k, '0']),
-);
+function quietEnv(extra: Record<string, string> | undefined): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('GIT_TRACE') || key === 'GIT_CURL_VERBOSE') delete env[key];
+  }
+  return { ...env, GIT_TRACE_REDACT: '1', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C', ...extra };
+}
 
 /** A URL's user name and password, removed from text git wrote. */
 const USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi;
@@ -41,7 +47,7 @@ export function runGit(args: readonly string[], opts: GitOptions): Promise<GitRe
   return new Promise((resolve, reject) => {
     const child = spawn('git', args, {
       cwd: opts.cwd,
-      env: { ...process.env, ...NO_TRACE, GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C', ...opts.env },
+      env: quietEnv(opts.env),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const out: Buffer[] = [];

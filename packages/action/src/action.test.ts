@@ -513,6 +513,20 @@ describe('the seamkit action', () => {
     assert.doesNotMatch(ran.summary, /comes after the deployed commit/);
   });
 
+  it('puts the check run of a misconfigured step on the full commit when the sha input is abbreviated', async () => {
+    const { ci, commits } = await project();
+    deploy(commits[2]);
+    const ran = await act(ci, { sha: (commits[2] as string).slice(0, 7), wait: 'abc' }, {}, {}, { eventName: 'workflow_dispatch' });
+    assert.equal(ran.code, 2, ran.warnings.join('\n'));
+    assert.equal(lastPost()['head_sha'], commits[2]);
+    assert.match((lastPost()['output'] as { title: string }).title, /^No verdict: /);
+    // A branch named like the abbreviation is not the commit it abbreviates; the input is kept.
+    const shadow = (commits[1] as string).slice(0, 7);
+    await git(['branch', shadow, commits[0] as string], { cwd: ci });
+    await act(ci, { sha: shadow, wait: 'abc' }, {}, {}, { eventName: 'workflow_dispatch' });
+    assert.equal(lastPost()['head_sha'], shadow);
+  });
+
   it('does not let a failed read of the version document end the wait or undo what it saw', async () => {
     const { remote, ci } = await project({ card: true });
     const preview = await previewCommit(remote, ci);
@@ -569,6 +583,17 @@ describe('the seamkit action', () => {
     assert.equal(post['conclusion'], 'failure');
     assert.equal((post['output'] as { title: string }).title, 'FAIL: production runs 0123456789ab, which this repository does not have');
     assert.match((post['output'] as { summary: string }).summary, /a commit this repository does not have even after fetching the branch again/);
+  });
+
+  it('does not claim the branch was fetched again when there was no branch to fetch', async () => {
+    const { ci, commits } = await project({ card: true });
+    servePage('0123456789abcdef0123456789abcdef01234567');
+    const ran = await act(ci, { sha: commits[2] as string, wait: '10', pr: '2' }, {}, {}, { eventName: 'workflow_dispatch' });
+    assert.equal(ran.code, 1, ran.logs.join('\n'));
+    assert.doesNotMatch(ran.logs.join('\n'), /fetched main again/);
+    const out = lastPost()['output'] as { title: string; summary: string };
+    assert.equal(out.title, 'FAIL: production runs 0123456789ab, which this repository does not have');
+    assert.match(out.summary, /a commit this repository does not have as the branch was fetched for this job/);
   });
 
   it('says the branch was fetched again when the fetch after the wait succeeded, though the one during it failed', async () => {

@@ -608,4 +608,10 @@ input. While the Action waits, fetching the branch for a commit the clone lacks 
 succeeds, and the note says whether it was fetched again or the fetch failed; the reading a verdict falls back to is
 resolved again after the fetch that follows the wait. seamkit runs git with its tracing off and removes a URL's user
 name and password from anything git writes, because git's errors can reach a check run that anyone who can read the
-repository can read.
+repository can read. Tracing is turned off by removing every `GIT_TRACE*` variable and `GIT_CURL_VERBOSE` from git's
+environment, not by setting them to 0: git traces curl whenever `GIT_CURL_VERBOSE` is set, whatever its value, and
+`GIT_TRACE_REDACT` is kept on. A commit abbreviation that a blob or tree also matches still resolves to the commit when
+scoping, as it does everywhere else. A misconfigured step's check run goes on the full commit when the sha input is
+abbreviated. A change whose card the run cannot read for lack of room, or cannot check, is still kept in `--deployed`
+scope by a sighting under one of its card's markers. The test runner's time limit is per test from Node 24 and per file
+before it, so it is set well above the slowest file there.

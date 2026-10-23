@@ -8967,13 +8967,20 @@ var GitError = class extends Error {
     this.result = result;
   }
 };
-var NO_TRACE = Object.fromEntries(["GIT_TRACE", "GIT_TRACE_SETUP", "GIT_TRACE_PERFORMANCE", "GIT_TRACE_PACKET", "GIT_TRACE_PACKFILE", "GIT_TRACE_CURL", "GIT_CURL_VERBOSE", "GIT_TRACE2", "GIT_TRACE2_EVENT", "GIT_TRACE2_PERF"].map((k) => [k, "0"]));
+function quietEnv(extra) {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("GIT_TRACE") || key === "GIT_CURL_VERBOSE")
+      delete env[key];
+  }
+  return { ...env, GIT_TRACE_REDACT: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...extra };
+}
 var USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi;
 function runGit(args, opts) {
   return new Promise((resolve3, reject) => {
     const child = spawn("git", args, {
       cwd: opts.cwd,
-      env: { ...process.env, ...NO_TRACE, GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...opts.env },
+      env: quietEnv(opts.env),
       stdio: ["pipe", "pipe", "pipe"]
     });
     const out = [];
@@ -9321,7 +9328,7 @@ ${a}^{commit}
     asked.forEach((a, i) => {
       const [named, kind] = (answers[2 * i] ?? "").split(" ");
       const [id, type] = (answers[2 * i + 1] ?? "").split(" ");
-      const asks = named !== void 0 && named.startsWith(a) && (kind === "commit" || kind === "tag" && options.peelTags === true);
+      const asks = named !== void 0 && (named.startsWith(a) && (kind === "commit" || kind === "tag" && options.peelTags === true) || kind === "ambiguous" && id !== void 0 && id.startsWith(a));
       if (asks && type === "commit" && id !== void 0 && /^[0-9a-f]{40,64}$/.test(id))
         found.set(a, id);
     });
@@ -9667,10 +9674,10 @@ function toChange(c, pageUrl, primary, subjects, defaulted, budget) {
     subject = `commit:${short2(c.commit)}`;
   subjects.add(subject);
   const card = readCard(c.message);
-  const implicit = (problems) => {
+  const implicit = (problems, seenAs = []) => {
     defaulted.add(c.commit);
     const change2 = { subject, commit: c.commit, title: message.title, markerSource: "implicit", markers: [{ kind: "version", url: primary.url }] };
-    return problems === void 0 ? { ...change2, cardFound: false } : { ...change2, cardProblems: problems.slice(0, 20), cardFound: true };
+    return problems === void 0 ? { ...change2, cardFound: false, seenAs } : { ...change2, cardProblems: problems.slice(0, 20), cardFound: true, seenAs };
   };
   if (!card.found)
     return implicit();
@@ -9694,14 +9701,14 @@ function toChange(c, pageUrl, primary, subjects, defaulted, budget) {
   try {
     parseReadbackChange(change);
   } catch (err) {
-    return implicit([`the card cannot be checked: ${err.message}`]);
+    return implicit([`the card cannot be checked: ${err.message}`], unique2);
   }
   if (!spend(budget, unique2)) {
     return implicit([
       `one run reads at most ${READBACK_LIMITS.versions} version documents, ${READBACK_LIMITS.bundles} pages and ${READBACK_LIMITS.searched} marker texts on a page, and newer changes in the window use them up, so this change is proven by version alone`
-    ]);
+    ], unique2);
   }
-  return { ...change, cardFound: true };
+  return { ...change, cardFound: true, seenAs: [] };
 }
 async function readLedger(cwd, commits) {
   let store;
@@ -9848,7 +9855,7 @@ async function gatherReadback(cwd, req, now, http) {
       const kept = [];
       const later = [];
       for (const d of drafts) {
-        const seenHere = d.markers.some((m) => seen.has(`${d.commit} ${markerKey(m)}`));
+        const seenHere = [...d.markers, ...d.seenAs].some((m) => seen.has(`${d.commit} ${markerKey(m)}`));
         if (!afterDeploy.has(d.commit) || seenHere || wasRunning.has(d.commit))
           kept.push(d);
         else
@@ -9870,7 +9877,7 @@ async function gatherReadback(cwd, req, now, http) {
       runGaps.push({ item: `changes before the last ${req.last} on ${branch.name}`, reason: "outside --last" });
     drafts = drafts.slice(0, req.last);
   }
-  const changes = drafts.map(({ cardFound: _, ...change }) => change);
+  const changes = drafts.map(({ cardFound: _, seenAs: __, ...change }) => change);
   const versions = [primary];
   const markerUrls = new Set(changes.flatMap((c) => c.markers.flatMap((m) => m.kind === "version" ? [m.url] : [])));
   for (const url2 of [...markerUrls].sort()) {
@@ -11053,7 +11060,10 @@ async function runAction(deps) {
       throw err;
     deps.warn(`seamkit: ${err.message}`);
     const url2 = rawInput(deps.env, "url");
-    await report(ctx, checkNameFor(deps.env), rawInput(deps.env, "token"), headSha(ctx, event, rawInput(deps.env, "sha")), errorReport(err.message, url2 === "" ? "the url input" : displayUrl(url2)), "error", EXIT_USAGE2, deps);
+    const given2 = headSha(ctx, event, rawInput(deps.env, "sha"));
+    const known = /^[0-9a-f]{4,64}$/i.test(given2) ? await knownCommit(ctx.workspace, given2) : void 0;
+    const sha2 = known !== void 0 && known.startsWith(given2.toLowerCase()) ? known : given2;
+    await report(ctx, checkNameFor(deps.env), rawInput(deps.env, "token"), sha2, errorReport(err.message, url2 === "" ? "the url input" : displayUrl(url2)), "error", EXIT_USAGE2, deps);
     return EXIT_USAGE2;
   }
   const cwd = ctx.workspace;

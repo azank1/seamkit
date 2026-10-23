@@ -105,8 +105,13 @@ export class GitRepo {
       const [named, kind] = (answers[2 * i] ?? '').split(' ');
       const [id, type] = (answers[2 * i + 1] ?? '').split(' ');
       // git prefers a ref named like the abbreviation, which is not the object asked for, and
-      // peels a tag to its commit, which is that commit only when tags are asked to be peeled.
-      const asks = named !== undefined && named.startsWith(a) && (kind === 'commit' || (kind === 'tag' && options.peelTags === true));
+      // peels a tag to its commit, which is that commit only when tags are asked to be peeled. An
+      // abbreviation that a blob or tree also matches is ambiguous on its own; asked as a commit,
+      // git settles it as resolve() does, and the answer still has to start with it.
+      const asks =
+        named !== undefined &&
+        ((named.startsWith(a) && (kind === 'commit' || (kind === 'tag' && options.peelTags === true))) ||
+          (kind === 'ambiguous' && id !== undefined && id.startsWith(a)));
       if (asks && type === 'commit' && id !== undefined && /^[0-9a-f]{40,64}$/.test(id)) found.set(a, id);
     });
     return abbrevs.map((a) => found.get(a));

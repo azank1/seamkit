@@ -431,6 +431,38 @@ describe('seamkit readback', () => {
     assert.deepEqual(parts.map(budget), parts.map((_: unknown, i: number) => demotedAt(i)), r.out.slice(0, 2000));
   }
 
+  it('keeps in --deployed scope a change seen live under a card marker the budget no longer reads', async () => {
+    const dir = join(root, `repo-${++counter}`);
+    await git(['init', '-q', '-b', 'main', dir], { cwd: root });
+    const commit = async (n: number, message: string): Promise<string> => {
+      await writeFile(join(dir, `f${n}.txt`), `${n}\n`);
+      await git(['add', `f${n}.txt`], { cwd: dir });
+      await git([...ID, 'commit', '-q', '-m', message], { cwd: dir });
+      return git(['rev-parse', 'HEAD'], { cwd: dir });
+    };
+    const card = (markers: string): string => `\n\n\`\`\`seamkit-card\ncard: 1\nintent: A change.\nlayers: [frontend]\ntargets: [web]\nmarkers:\n${markers}\n\`\`\``;
+    const base = await commit(0, 'Initial commit');
+    assert.equal((await cli(['state', 'init'], dir)).code, 0);
+    deploy(base, '');
+    assert.match((await cli(['readback', '--url', prod.url], dir)).err, /recorded as event/);
+    // The change is seen live by its marker while the version document cannot be read.
+    const seen = await commit(1, `change 1 (#1)${card('  - kind: bundle\n    text: "seen-marker"')}`);
+    deploy(seen, 'el.id = "seen-marker";');
+    prod.failWith('/version.json', 503);
+    assert.match((await cli(['readback', '--url', prod.url, '--pr', '1'], dir)).err, /recorded as event/);
+    // Five newer cards of twenty pages each use up the pages one run reads.
+    for (let n = 2; n <= 6; n++) {
+      await commit(n, `change ${n} (#${n})${card(Array.from({ length: 20 }, (_, k) => `  - kind: bundle\n    url: /p${n}-${k}\n    text: "m-${n}-${k}"`).join('\n'))}`);
+    }
+    // A rollback to the first build drops the change seen live, so it is judged and fails.
+    deploy(base, '');
+    const r = await cli(['readback', '--url', prod.url, '--deployed', base, '--last', '10', '--json'], dir);
+    assert.equal(r.code, 1, r.out.slice(0, 2000));
+    const pr1 = JSON.parse(r.out).verdicts.find((v: { subject: string }) => v.subject === 'pr#1');
+    assert.equal(pr1.outcome, 'fail', r.out.slice(0, 2000));
+    assert.ok(pr1.notExamined.some((g: { reason: string }) => /one run reads at most 100 version documents/.test(g.reason)), r.out.slice(0, 2000));
+  });
+
   it('counts the discovery paths of the --version-url\'s own origin, when the version document is on another host', async () => {
     const { dir, merges, direct } = await repo({ card: false });
     assert.equal((await cli(['state', 'init'], dir)).code, 0);
