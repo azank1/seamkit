@@ -195,9 +195,12 @@ describe('GitStateStore', () => {
     const url = `http://s3cr3t-user@127.0.0.1:${port}/o/r.git`;
     const header = ['-c', 'http.extraheader=X-Deploy-Token: s3cr3t-header'];
     const set = { GIT_CURL_VERBOSE: '1', GIT_TRACE_REDACT: '0', GIT_TRACE_REFS: '1', GIT_TRACE_CURL_NO_DATA: '1' };
-    const saved = Object.fromEntries(Object.keys(set).map((k) => [k, process.env[k]]));
+    const saved = Object.fromEntries([...Object.keys(set), 'GIT_CONFIG_GLOBAL'].map((k) => [k, process.env[k]]));
     try {
-      for (const env of [{}, set]) {
+      // trace2 can also be turned on in git config, for every git on a machine.
+      const traced = join(root, `trace2-${counter}`);
+      await writeFile(traced, '[trace2]\n\tnormalTarget = true\n\tperfTarget = 2\n\teventTarget = 1\n\tconfigParams = http.*\n\tenvVars = GIT_*\n');
+      for (const env of [{}, set, { GIT_CONFIG_GLOBAL: traced }]) {
         Object.assign(process.env, env);
         const r = await runGit([...header, 'ls-remote', url], { cwd });
         assert.notEqual(r.code, 0);
@@ -211,6 +214,28 @@ describe('GitStateStore', () => {
       }
       await new Promise((done) => server.close(done));
     }
+  });
+
+  it('keeps its own index and author whatever git variables the environment holds', async () => {
+    const cwd = await repo('env');
+    await writeFile(join(cwd, 'kept.txt'), 'kept\n');
+    await git(['add', 'kept.txt'], { cwd });
+    const staged = await git(['ls-files', '--stage'], { cwd });
+    const saved = { index: process.env['GIT_INDEX_FILE'], author: process.env['GIT_AUTHOR_NAME'] };
+    // A git hook runs with GIT_INDEX_FILE set to the repository's own index.
+    process.env['GIT_INDEX_FILE'] = join(cwd, '.git', 'index');
+    process.env['GIT_AUTHOR_NAME'] = 'someone else';
+    try {
+      const store = await GitStateStore.open(cwd);
+      await store.append(event(70));
+    } finally {
+      for (const [k, v] of [['GIT_INDEX_FILE', saved.index], ['GIT_AUTHOR_NAME', saved.author]] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+    assert.equal(await git(['ls-files', '--stage'], { cwd }), staged);
+    assert.equal(await git(['log', '-1', '--format=%an', STATE_REF], { cwd }), 'seamkit');
   });
 
   it('reports a missing remote instead of failing', async () => {

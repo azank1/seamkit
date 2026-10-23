@@ -8973,7 +8973,7 @@ function quietEnv(extra) {
     if (key.startsWith("GIT_TRACE") || key === "GIT_CURL_VERBOSE")
       delete env[key];
   }
-  return { ...env, GIT_TRACE_REDACT: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...extra };
+  return { ...env, GIT_TRACE2: "0", GIT_TRACE2_PERF: "0", GIT_TRACE2_EVENT: "0", GIT_TRACE_REDACT: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...extra };
 }
 var USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi;
 function runGit(args, opts) {
@@ -10211,7 +10211,7 @@ async function cmdCheck(args, flags, cwd, io) {
   const recorded = await recordRun(run2, at2, flags, cwd, io);
   print(run2.verdicts, outcome, io, flags.json === true, recorded ? { recorded } : {});
   if (!flags.json)
-    noteRecording(recorded, io);
+    noteRecording(recorded, flags, io);
   return exitCodeFor(outcome);
 }
 async function recordRun(run2, at2, flags, cwd, io) {
@@ -10232,9 +10232,9 @@ async function recordRun(run2, at2, flags, cwd, io) {
   const r = await store.append(event);
   return { id: r.id, path: r.path };
 }
-function noteRecording(recorded, io) {
+function noteRecording(recorded, flags, io) {
   io.err(recorded ? `recorded as event ${recorded.id.slice(0, 12)} on ${STATE_BRANCH}
-` : `not recorded (no ${STATE_BRANCH} branch; run "seamkit state init" or pass --record)
+` : flags["no-record"] ? "not recorded (--no-record)\n" : `not recorded (no ${STATE_BRANCH} branch; run "seamkit state init" or pass --record)
 `);
 }
 function jsonLine(value) {
@@ -10313,7 +10313,7 @@ async function cmdReadback(args, flags, cwd, io, audit) {
 To examine more:
 ${advice.map((a) => `  - ${a}`).join("\n")}
 `);
-  noteRecording(recorded, io);
+  noteRecording(recorded, flags, io);
   return exitCodeFor(outcome);
 }
 async function cmdStamp(args, flags, cwd, io) {
@@ -10912,10 +10912,12 @@ async function knownCommit(cwd, rev) {
 async function fullCommit(cwd, rev) {
   const known = await knownCommit(cwd, rev);
   if (known === void 0)
-    return { commit: rev, shadowed: false };
-  if (/^[0-9a-f]{4,64}$/i.test(rev) && !known.startsWith(rev.toLowerCase()))
-    return { commit: rev, shadowed: true };
-  return { commit: known, shadowed: false };
+    return { commit: rev };
+  const lower = rev.toLowerCase();
+  if (!/^[0-9a-f]{4,64}$/.test(lower) || known.startsWith(lower))
+    return { commit: known };
+  const r = await runGit(["rev-parse", "--verify", "--quiet", rev], { cwd });
+  return { commit: rev, not: r.code === 0 && r.stdout.toString("utf8").startsWith(lower) ? "tag" : "ref" };
 }
 function productionOf(result) {
   try {
@@ -11080,7 +11082,7 @@ async function runAction(deps) {
   let sha = headSha(ctx, event, inputs.sha);
   if (given !== void 0 && sha === given && deployed !== void 0)
     sha = deployed;
-  const problem = unready ?? (expanded?.shadowed === true ? `the deployed commit ${given} is also the name of a tag or branch that points at another commit; give the full commit id` : void 0);
+  const problem = unready ?? (expanded?.not === "ref" ? `the deployed commit ${given} is also the name of a tag or branch that points at another commit; give the full commit id` : expanded?.not === "tag" ? `the deployed commit ${given} is an annotated tag, not a commit; give the commit it points at` : void 0);
   if (problem !== void 0) {
     deps.warn(`seamkit: ${problem}`);
     await report(ctx, inputs.checkName, inputs.token, sha, errorReport(problem, where), "error", EXIT_USAGE2, deps);

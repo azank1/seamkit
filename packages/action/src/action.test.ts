@@ -544,6 +544,13 @@ describe('the seamkit action', () => {
     await git(['tag', shadow.toUpperCase(), commits[1] as string], { cwd: ci });
     assert.equal((await act(ci, { sha: shadow.toUpperCase(), wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' })).code, 2);
     // The full id is the commit itself, whatever a ref is named.
+    // An annotated tag's own id, full or abbreviated, names the tag, not a commit.
+    await git(['-c', 'user.name=dev', '-c', 'user.email=dev@example.invalid', 'tag', '-a', '-m', 'release', 'v1', commits[2] as string], { cwd: ci });
+    const tag = await git(['rev-parse', 'v1'], { cwd: ci });
+    for (const given of [tag, tag.slice(0, 9)]) {
+      assert.equal((await act(ci, { sha: given, wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' })).code, 2);
+      assert.match((lastPost()['output'] as { title: string }).title, /^No verdict: the deployed commit [0-9a-f]+ is an annotated tag, not a commit/);
+    }
     const full = await act(ci, { sha: commits[2] as string, wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' });
     assert.equal(full.code, 0, full.logs.join('\n'));
     assert.equal(lastPost()['head_sha'], commits[2]);
@@ -616,6 +623,13 @@ describe('the seamkit action', () => {
     const out = lastPost()['output'] as { title: string; summary: string };
     assert.equal(out.title, 'FAIL: production runs 0123456789ab, which this repository does not have');
     assert.match(out.summary, /a commit this repository does not have as the branch was fetched for this job/);
+    // Recording does not fetch a branch either when there is none to fetch.
+    const recorded = await act(ci, { sha: commits[2] as string, wait: '0', pr: '2', ledger: 'true' }, {}, {}, { eventName: 'workflow_dispatch' });
+    assert.equal(recorded.code, 1, recorded.logs.join('\n'));
+    assert.ok(recorded.logs.some((l) => /recorded as event/.test(l)), recorded.logs.join('\n'));
+    const summary = (lastPost()['output'] as { summary: string }).summary;
+    assert.match(summary, /a commit this repository does not have as the branch was fetched for this job/);
+    assert.doesNotMatch(summary, /even after fetching/);
   });
 
   it('says the branch was fetched again when the fetch after the wait succeeded, though the one during it failed', async () => {

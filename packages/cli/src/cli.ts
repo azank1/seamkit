@@ -230,7 +230,7 @@ async function cmdCheck(args: string[], flags: Flags, cwd: string, io: Io): Prom
   const outcome = combine(run.verdicts.map((v) => v.outcome));
   const recorded = await recordRun(run, at, flags, cwd, io);
   print(run.verdicts, outcome, io, flags.json === true, recorded ? { recorded } : {});
-  if (!flags.json) noteRecording(recorded, io);
+  if (!flags.json) noteRecording(recorded, flags, io);
   return exitCodeFor(outcome);
 }
 
@@ -250,8 +250,14 @@ async function recordRun(run: CheckRun, at: string, flags: Flags, cwd: string, i
   return { id: r.id, path: r.path };
 }
 
-function noteRecording(recorded: { id: string } | undefined, io: Io): void {
-  io.err(recorded ? `recorded as event ${recorded.id.slice(0, 12)} on ${STATE_BRANCH}\n` : `not recorded (no ${STATE_BRANCH} branch; run "seamkit state init" or pass --record)\n`);
+function noteRecording(recorded: { id: string } | undefined, flags: Flags, io: Io): void {
+  io.err(
+    recorded
+      ? `recorded as event ${recorded.id.slice(0, 12)} on ${STATE_BRANCH}\n`
+      : flags['no-record']
+        ? 'not recorded (--no-record)\n'
+        : `not recorded (no ${STATE_BRANCH} branch; run "seamkit state init" or pass --record)\n`,
+  );
 }
 
 /**
@@ -332,7 +338,7 @@ async function cmdReadback(args: string[], flags: Flags, cwd: string, io: Io, au
   }
   io.out(`${renderReadback(run.verdicts)}\n`);
   if (advice.length > 0) io.out(`\nTo examine more:\n${advice.map((a) => `  - ${a}`).join('\n')}\n`);
-  noteRecording(recorded, io);
+  noteRecording(recorded, flags, io);
   return exitCodeFor(outcome);
 }
 

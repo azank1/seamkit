@@ -123,6 +123,9 @@ describe('seamkit cli', () => {
     assert.equal((await cli(['state', 'init'], { cwd: dir })).code, 0);
     const recorded = await cli(['check', 'invariant'], { cwd: dir, stdin: HELD, env: { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'sess-1' } });
     assert.match(recorded.err, /recorded as event [0-9a-f]{12} on seamkit\/state/);
+    // Keeping a run out of a ledger that exists says so, not that the ledger is missing.
+    const kept = await cli(['check', 'invariant', '--no-record'], { cwd: dir, stdin: HELD });
+    assert.equal(kept.err, 'not recorded (--no-record)\n');
     const listed = JSON.parse((await cli(['state', 'list', '--json'], { cwd: dir })).out);
     assert.equal(listed.length, 1);
     assert.deepEqual(listed[0].outcomes, ['pass']);

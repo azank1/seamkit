@@ -160,15 +160,17 @@ async function knownCommit(cwd: string, rev: string): Promise<string | undefined
 
 /**
  * The full id of a commit given perhaps abbreviated, or the text unchanged when git does not know
- * it. git looks a name up as a ref before as an abbreviation, so when text that looks like an
- * abbreviated commit gives a commit that does not start with it, a tag or branch is named like it:
- * the text is kept, and `shadowed` says so.
+ * it. When text that looks like an abbreviated commit gives a commit that does not start with it,
+ * the text is kept and `not` says what it names instead: an annotated tag, named by its own id, or
+ * a tag or branch named like it, since git looks a name up as a ref before as an abbreviation.
  */
-async function fullCommit(cwd: string, rev: string): Promise<{ commit: string; shadowed: boolean }> {
+async function fullCommit(cwd: string, rev: string): Promise<{ commit: string; not?: 'tag' | 'ref' }> {
   const known = await knownCommit(cwd, rev);
-  if (known === undefined) return { commit: rev, shadowed: false };
-  if (/^[0-9a-f]{4,64}$/i.test(rev) && !known.startsWith(rev.toLowerCase())) return { commit: rev, shadowed: true };
-  return { commit: known, shadowed: false };
+  if (known === undefined) return { commit: rev };
+  const lower = rev.toLowerCase();
+  if (!/^[0-9a-f]{4,64}$/.test(lower) || known.startsWith(lower)) return { commit: known };
+  const r = await runGit(['rev-parse', '--verify', '--quiet', rev], { cwd });
+  return { commit: rev, not: r.code === 0 && r.stdout.toString('utf8').startsWith(lower) ? 'tag' : 'ref' };
 }
 
 /** Production's own version document, the one for the url input, as readback --json reports it. */
@@ -410,10 +412,15 @@ export async function runAction(deps: ActionDeps): Promise<number> {
   const deployed = expanded?.commit;
   let sha = headSha(ctx, event, inputs.sha);
   if (given !== undefined && sha === given && deployed !== undefined) sha = deployed;
-  // A deployed commit that a tag or branch shadows cannot be told apart from it, and readback
-  // would read the ref, so the run ends with no verdict rather than judge another commit.
+  // A deployed commit that names a tag, or that a tag or branch shadows, would be read as the
+  // tag's commit, so the run ends with no verdict rather than judge another commit.
   const problem =
-    unready ?? (expanded?.shadowed === true ? `the deployed commit ${given} is also the name of a tag or branch that points at another commit; give the full commit id` : undefined);
+    unready ??
+    (expanded?.not === 'ref'
+      ? `the deployed commit ${given} is also the name of a tag or branch that points at another commit; give the full commit id`
+      : expanded?.not === 'tag'
+        ? `the deployed commit ${given} is an annotated tag, not a commit; give the commit it points at`
+        : undefined);
   if (problem !== undefined) {
     deps.warn(`seamkit: ${problem}`);
     await report(ctx, inputs.checkName, inputs.token, sha, errorReport(problem, where), 'error', EXIT_USAGE, deps);

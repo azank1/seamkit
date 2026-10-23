@@ -26,14 +26,15 @@ export interface GitOptions {
  * The environment git runs with, its tracing off: trace lines would mix with the errors seamkit
  * reports, and they show a remote's URL and request headers as sent, credentials included. git
  * traces curl whenever GIT_CURL_VERBOSE is set, whatever its value, so the variables are removed
- * rather than set to 0.
+ * rather than set to 0. trace2 also takes its targets from git config, where the environment wins,
+ * so its three are set to 0, which it reads as off.
  */
 function quietEnv(extra: Record<string, string> | undefined): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(env)) {
     if (key.startsWith('GIT_TRACE') || key === 'GIT_CURL_VERBOSE') delete env[key];
   }
-  return { ...env, GIT_TRACE_REDACT: '1', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C', ...extra };
+  return { ...env, GIT_TRACE2: '0', GIT_TRACE2_PERF: '0', GIT_TRACE2_EVENT: '0', GIT_TRACE_REDACT: '1', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C', ...extra };
 }
 
 /** A URL's user name and password, removed from text git wrote. */
