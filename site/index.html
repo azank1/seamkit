@@ -995,7 +995,7 @@ fi</pre></div>
     updated: '2026-10-22',
     version: '0.2.0',
     npm: '0.1.0',   // the version npm serves; the release commit bumps it
-    tests: '235',
+    tests: '236',
     dogfood: '20 of 20',
     milestones: [
       { m: 'M1', title: 'Verdict core and ledger', state: 'done', when: '2026-10-15',
@@ -1060,6 +1060,7 @@ fi</pre></div>
       ['2026-10-23', 'Eleventh review round (21 agents, 7 findings, 6 confirmed by both skeptics and 1 split, none high): a fetch for a new commit that fails once is tried again on the next poll, and the note says what happened; the check gets only the sightings it looks up, so a ledger with many addresses cannot overflow it; a run of backticks cannot push a report past GitHub\'s limit; a build seen running a tag counts as the commit the tag points at, so one such read no longer turns scoping off for good; the budget is pinned at its exact boundary. 227 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
       ['2026-10-23', 'Twelfth review round (15 agents, 4 findings, 3 confirmed by both skeptics and 1 split, none high): git runs with its tracing off and never reports a URL\'s credentials, which a check run would publish; the reading a verdict falls back to is resolved again once the fetch after the wait brings its commit in; two more of the note\'s three wordings are pinned; a test that hangs now fails after two minutes, and CI jobs after twenty. 230 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
       ['2026-10-23', 'Thirteenth review round (23 agents, 9 findings, 8 confirmed by both skeptics and 1 from the critic, 2 high): the last round\'s fix for git\'s tracing set GIT_CURL_VERBOSE to 0, which git reads as on, so the trace variables are now removed from git\'s environment and an HTTP test pins it; a commit prefix that a blob shares resolves as a commit when scoping; a misconfigured step\'s check run goes on the full commit; a card the run has no room for keeps its sightings in --deployed scope, so a rollback across it fails; the third note wording is pinned; the test time limit fits how Node 20 and 22 apply it. 235 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
+      ['2026-10-23', 'Fourteenth review round (15 agents, 4 findings, 3 confirmed by both skeptics and 1 refuted, none high; the critic checked that ledgers written by 0.1.0 and 0.2.0 read and replay both ways): an abbreviated sha input that a tag or branch is also named after gives no verdict instead of judging the ref\'s commit, by the same rule on every path, and an input in capitals is expanded too. 236 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
     ],
     decisions: [
       ['Program readback adapter (requested by an internal project)', 'Accept with changes, scheduled after M4. Notes in the knowledge base.', 'azank', 'wait'],

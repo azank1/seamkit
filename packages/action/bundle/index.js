@@ -10910,7 +10910,12 @@ async function knownCommit(cwd, rev) {
   return r.code === 0 ? r.stdout.toString("utf8").trim() : void 0;
 }
 async function fullCommit(cwd, rev) {
-  return await knownCommit(cwd, rev) ?? rev;
+  const known = await knownCommit(cwd, rev);
+  if (known === void 0)
+    return { commit: rev, shadowed: false };
+  if (/^[0-9a-f]{4,64}$/i.test(rev) && !known.startsWith(rev.toLowerCase()))
+    return { commit: rev, shadowed: true };
+  return { commit: known, shadowed: false };
 }
 function productionOf(result) {
   try {
@@ -11060,9 +11065,7 @@ async function runAction(deps) {
       throw err;
     deps.warn(`seamkit: ${err.message}`);
     const url2 = rawInput(deps.env, "url");
-    const given2 = headSha(ctx, event, rawInput(deps.env, "sha"));
-    const known = /^[0-9a-f]{4,64}$/i.test(given2) ? await knownCommit(ctx.workspace, given2) : void 0;
-    const sha2 = known !== void 0 && known.startsWith(given2.toLowerCase()) ? known : given2;
+    const sha2 = (await fullCommit(ctx.workspace, headSha(ctx, event, rawInput(deps.env, "sha")))).commit;
     await report(ctx, checkNameFor(deps.env), rawInput(deps.env, "token"), sha2, errorReport(err.message, url2 === "" ? "the url input" : displayUrl(url2)), "error", EXIT_USAGE2, deps);
     return EXIT_USAGE2;
   }
@@ -11072,13 +11075,15 @@ async function runAction(deps) {
   const where = displayUrl(inputs.url);
   const defaultBranch = defaultBranchOf(ctx, event);
   const unready = await prepareCheckout(cwd, defaultBranch, inputs.branch, deps);
-  const deployed = given === void 0 ? void 0 : await fullCommit(cwd, given);
+  const expanded = given === void 0 ? void 0 : await fullCommit(cwd, given);
+  const deployed = expanded?.commit;
   let sha = headSha(ctx, event, inputs.sha);
   if (given !== void 0 && sha === given && deployed !== void 0)
     sha = deployed;
-  if (unready !== void 0) {
-    deps.warn(`seamkit: ${unready}`);
-    await report(ctx, inputs.checkName, inputs.token, sha, errorReport(unready, where), "error", EXIT_USAGE2, deps);
+  const problem = unready ?? (expanded?.shadowed === true ? `the deployed commit ${given} is also the name of a tag or branch that points at another commit; give the full commit id` : void 0);
+  if (problem !== void 0) {
+    deps.warn(`seamkit: ${problem}`);
+    await report(ctx, inputs.checkName, inputs.token, sha, errorReport(problem, where), "error", EXIT_USAGE2, deps);
     return EXIT_USAGE2;
   }
   const read = inputs.branch !== "" ? inputs.branch : defaultBranch;

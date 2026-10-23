@@ -158,9 +158,17 @@ async function knownCommit(cwd: string, rev: string): Promise<string | undefined
   return r.code === 0 ? r.stdout.toString('utf8').trim() : undefined;
 }
 
-/** The full id of a commit given perhaps abbreviated, or the text unchanged when git does not know it. */
-async function fullCommit(cwd: string, rev: string): Promise<string> {
-  return (await knownCommit(cwd, rev)) ?? rev;
+/**
+ * The full id of a commit given perhaps abbreviated, or the text unchanged when git does not know
+ * it. git looks a name up as a ref before as an abbreviation, so when text that looks like an
+ * abbreviated commit gives a commit that does not start with it, a tag or branch is named like it:
+ * the text is kept, and `shadowed` says so.
+ */
+async function fullCommit(cwd: string, rev: string): Promise<{ commit: string; shadowed: boolean }> {
+  const known = await knownCommit(cwd, rev);
+  if (known === undefined) return { commit: rev, shadowed: false };
+  if (/^[0-9a-f]{4,64}$/i.test(rev) && !known.startsWith(rev.toLowerCase())) return { commit: rev, shadowed: true };
+  return { commit: known, shadowed: false };
 }
 
 /** Production's own version document, the one for the url input, as readback --json reports it. */
@@ -387,9 +395,7 @@ export async function runAction(deps: ActionDeps): Promise<number> {
     const url = rawInput(deps.env, 'url');
     // An abbreviated sha input is expanded as the normal path expands it, since a check run needs
     // the full commit; one git does not know, or knows as something else, is used as given.
-    const given = headSha(ctx, event, rawInput(deps.env, 'sha'));
-    const known = /^[0-9a-f]{4,64}$/i.test(given) ? await knownCommit(ctx.workspace, given) : undefined;
-    const sha = known !== undefined && known.startsWith(given.toLowerCase()) ? known : given;
+    const sha = (await fullCommit(ctx.workspace, headSha(ctx, event, rawInput(deps.env, 'sha')))).commit;
     await report(ctx, checkNameFor(deps.env), rawInput(deps.env, 'token'), sha, errorReport(err.message, url === '' ? 'the url input' : displayUrl(url)), 'error', EXIT_USAGE, deps);
     return EXIT_USAGE;
   }
@@ -400,12 +406,17 @@ export async function runAction(deps: ActionDeps): Promise<number> {
 
   const defaultBranch = defaultBranchOf(ctx, event);
   const unready = await prepareCheckout(cwd, defaultBranch, inputs.branch, deps);
-  const deployed = given === undefined ? undefined : await fullCommit(cwd, given);
+  const expanded = given === undefined ? undefined : await fullCommit(cwd, given);
+  const deployed = expanded?.commit;
   let sha = headSha(ctx, event, inputs.sha);
   if (given !== undefined && sha === given && deployed !== undefined) sha = deployed;
-  if (unready !== undefined) {
-    deps.warn(`seamkit: ${unready}`);
-    await report(ctx, inputs.checkName, inputs.token, sha, errorReport(unready, where), 'error', EXIT_USAGE, deps);
+  // A deployed commit that a tag or branch shadows cannot be told apart from it, and readback
+  // would read the ref, so the run ends with no verdict rather than judge another commit.
+  const problem =
+    unready ?? (expanded?.shadowed === true ? `the deployed commit ${given} is also the name of a tag or branch that points at another commit; give the full commit id` : undefined);
+  if (problem !== undefined) {
+    deps.warn(`seamkit: ${problem}`);
+    await report(ctx, inputs.checkName, inputs.token, sha, errorReport(problem, where), 'error', EXIT_USAGE, deps);
     return EXIT_USAGE;
   }
   const read = inputs.branch !== '' ? inputs.branch : defaultBranch;

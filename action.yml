@@ -51,7 +51,8 @@ inputs:
     default: ''
   sha:
     description: >-
-      The deployed commit, full or abbreviated. The check run goes on it, and once the ledger holds a run at this
+      The deployed commit, full or abbreviated (an abbreviation that a tag or branch is also named after gives no
+      verdict; give the full id). The check run goes on it, and once the ledger holds a run at this
       address, a change merged after it is left to the next deploy unless it was seen live there or in a build
       production was seen running there, and nothing is left once production there was seen running a commit this
       repository does not have. Defaults to the deployed commit for

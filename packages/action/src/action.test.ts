@@ -525,6 +525,28 @@ describe('the seamkit action', () => {
     await git(['branch', shadow, commits[0] as string], { cwd: ci });
     await act(ci, { sha: shadow, wait: 'abc' }, {}, {}, { eventName: 'workflow_dispatch' });
     assert.equal(lastPost()['head_sha'], shadow);
+    // git reads hex in either case; the full commit is posted for both.
+    await act(ci, { sha: (commits[2] as string).slice(0, 7).toUpperCase(), wait: 'abc' }, {}, {}, { eventName: 'workflow_dispatch' });
+    assert.equal(lastPost()['head_sha'], commits[2]);
+  });
+
+  it('gives no verdict when a tag is named like the abbreviated sha input, rather than judge the tag\'s commit', async () => {
+    const { ci, commits } = await project();
+    deploy(commits[2]);
+    const shadow = (commits[2] as string).slice(0, 7);
+    await git(['tag', shadow, commits[1] as string], { cwd: ci });
+    const ran = await act(ci, { sha: shadow, wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' });
+    assert.equal(ran.code, 2, ran.logs.join('\n'));
+    assert.notEqual(lastPost()['head_sha'], commits[1]);
+    assert.equal(lastPost()['conclusion'], 'failure');
+    assert.match((lastPost()['output'] as { title: string }).title, /^No verdict: the deployed commit [0-9a-f]{7} is also the name of a tag or branch/);
+    // Hex in capitals is the same abbreviation, and a ref of that name shadows it too.
+    await git(['tag', shadow.toUpperCase(), commits[1] as string], { cwd: ci });
+    assert.equal((await act(ci, { sha: shadow.toUpperCase(), wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' })).code, 2);
+    // The full id is the commit itself, whatever a ref is named.
+    const full = await act(ci, { sha: commits[2] as string, wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' });
+    assert.equal(full.code, 0, full.logs.join('\n'));
+    assert.equal(lastPost()['head_sha'], commits[2]);
   });
 
   it('does not let a failed read of the version document end the wait or undo what it saw', async () => {

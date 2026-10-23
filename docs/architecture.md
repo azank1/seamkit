@@ -612,6 +612,8 @@ repository can read. Tracing is turned off by removing every `GIT_TRACE*` variab
 environment, not by setting them to 0: git traces curl whenever `GIT_CURL_VERBOSE` is set, whatever its value, and
 `GIT_TRACE_REDACT` is kept on. A commit abbreviation that a blob or tree also matches still resolves to the commit when
 scoping, as it does everywhere else. A misconfigured step's check run goes on the full commit when the sha input is
-abbreviated. A change whose card the run cannot read for lack of room, or cannot check, is still kept in `--deployed`
+abbreviated. Both paths expand an abbreviated deployed commit by one rule: git looks a name up as a ref first, so text
+that looks like an abbreviation and gives a commit that does not start with it is a tag or branch named like it, and a
+run given such a deployed commit ends with no verdict rather than judge the ref's commit; the full id always works. A change whose card the run cannot read for lack of room, or cannot check, is still kept in `--deployed`
 scope by a sighting under one of its card's markers. The test runner's time limit is per test from Node 24 and per file
 before it, so it is set well above the slowest file there.
