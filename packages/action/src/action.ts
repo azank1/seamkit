@@ -169,8 +169,9 @@ async function fullCommit(cwd: string, rev: string): Promise<{ commit: string; n
   if (known === undefined) return { commit: rev };
   const lower = rev.toLowerCase();
   if (!/^[0-9a-f]{4,64}$/.test(lower) || known.startsWith(lower)) return { commit: known };
-  const r = await runGit(['rev-parse', '--verify', '--quiet', rev], { cwd });
-  return { commit: rev, not: r.code === 0 && r.stdout.toString('utf8').startsWith(lower) ? 'tag' : 'ref' };
+  // A ref has a full name; text that names no ref and still peels to another commit names a tag.
+  const r = await runGit(['rev-parse', '--verify', '--quiet', '--symbolic-full-name', rev], { cwd });
+  return { commit: rev, not: r.code === 0 && r.stdout.toString('utf8').startsWith('refs/') ? 'ref' : 'tag' };
 }
 
 /** Production's own version document, the one for the url input, as readback --json reports it. */

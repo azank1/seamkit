@@ -10916,8 +10916,8 @@ async function fullCommit(cwd, rev) {
   const lower = rev.toLowerCase();
   if (!/^[0-9a-f]{4,64}$/.test(lower) || known.startsWith(lower))
     return { commit: known };
-  const r = await runGit(["rev-parse", "--verify", "--quiet", rev], { cwd });
-  return { commit: rev, not: r.code === 0 && r.stdout.toString("utf8").startsWith(lower) ? "tag" : "ref" };
+  const r = await runGit(["rev-parse", "--verify", "--quiet", "--symbolic-full-name", rev], { cwd });
+  return { commit: rev, not: r.code === 0 && r.stdout.toString("utf8").startsWith("refs/") ? "ref" : "tag" };
 }
 function productionOf(result) {
   try {

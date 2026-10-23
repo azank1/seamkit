@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -193,6 +194,11 @@ const lastPost = (): Record<string, unknown> => {
   assert.equal(posted.length, 1, `the run posted ${posted.length} check runs, not 1`);
   return posted[0] as Record<string, unknown>;
 };
+
+/** The shortest abbreviation of a commit, of at least 7 characters, that holds a letter, so it differs in capitals. */
+function lettered(commit: string): string {
+  return commit.slice(0, Math.max(7, commit.search(/[a-f]/) + 1));
+}
 
 describe('the seamkit action', () => {
   it('passes when production runs the deployed commit, and posts a successful check run on it', async () => {
@@ -526,14 +532,14 @@ describe('the seamkit action', () => {
     await act(ci, { sha: shadow, wait: 'abc' }, {}, {}, { eventName: 'workflow_dispatch' });
     assert.equal(lastPost()['head_sha'], shadow);
     // git reads hex in either case; the full commit is posted for both.
-    await act(ci, { sha: (commits[2] as string).slice(0, 7).toUpperCase(), wait: 'abc' }, {}, {}, { eventName: 'workflow_dispatch' });
+    await act(ci, { sha: lettered(commits[2] as string).toUpperCase(), wait: 'abc' }, {}, {}, { eventName: 'workflow_dispatch' });
     assert.equal(lastPost()['head_sha'], commits[2]);
   });
 
   it('gives no verdict when a tag is named like the abbreviated sha input, rather than judge the tag\'s commit', async () => {
     const { ci, commits } = await project();
     deploy(commits[2]);
-    const shadow = (commits[2] as string).slice(0, 7);
+    const shadow = lettered(commits[2] as string);
     await git(['tag', shadow, commits[1] as string], { cwd: ci });
     const ran = await act(ci, { sha: shadow, wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' });
     assert.equal(ran.code, 2, ran.logs.join('\n'));
@@ -541,6 +547,7 @@ describe('the seamkit action', () => {
     assert.equal(lastPost()['conclusion'], 'failure');
     assert.match((lastPost()['output'] as { title: string }).title, /^No verdict: the deployed commit [0-9a-f]{7} is also the name of a tag or branch/);
     // Hex in capitals is the same abbreviation, and a ref of that name shadows it too.
+    await git(['tag', '-d', shadow], { cwd: ci });
     await git(['tag', shadow.toUpperCase(), commits[1] as string], { cwd: ci });
     assert.equal((await act(ci, { sha: shadow.toUpperCase(), wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' })).code, 2);
     // The full id is the commit itself, whatever a ref is named.
@@ -551,6 +558,16 @@ describe('the seamkit action', () => {
       assert.equal((await act(ci, { sha: given, wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' })).code, 2);
       assert.match((lastPost()['output'] as { title: string }).title, /^No verdict: the deployed commit [0-9a-f]+ is an annotated tag, not a commit/);
     }
+    // So does its abbreviation when a blob shares it, though git then finds no single object for it.
+    const prefix = tag.slice(0, 5);
+    let content = '';
+    for (let i = 0; ; i++) {
+      content = `blob ${i}\n`;
+      if (createHash('sha1').update(`blob ${Buffer.byteLength(content)}\0${content}`).digest('hex').startsWith(prefix)) break;
+    }
+    await git(['hash-object', '-w', '--stdin'], { cwd: ci, input: content });
+    assert.equal((await act(ci, { sha: prefix, wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' })).code, 2);
+    assert.match((lastPost()['output'] as { title: string }).title, /is an annotated tag, not a commit/);
     const full = await act(ci, { sha: commits[2] as string, wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' });
     assert.equal(full.code, 0, full.logs.join('\n'));
     assert.equal(lastPost()['head_sha'], commits[2]);

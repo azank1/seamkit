@@ -34,10 +34,10 @@ after(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-async function cli(args: string[], cwd: string, env: Record<string, string> = {}): Promise<{ code: number; out: string; err: string }> {
+async function cli(args: string[], cwd: string, env: Record<string, string> = {}, at = AT): Promise<{ code: number; out: string; err: string }> {
   let out = '';
   let err = '';
-  const io: Io = { out: (t) => void (out += t), err: (t) => void (err += t), readStdin: async () => '', stdinIsTTY: true, env, cwd, now: () => AT };
+  const io: Io = { out: (t) => void (out += t), err: (t) => void (err += t), readStdin: async () => '', stdinIsTTY: true, env, cwd, now: () => at };
   return { code: await run(args, io), out, err };
 }
 
@@ -126,6 +126,36 @@ describe('seamkit readback', () => {
     const r = await cli(['readback', '--url', prod.url], dir);
     assert.match(r.err, /recorded as event [0-9a-f]{12} on seamkit\/state/);
     assert.equal((await cli(['replay'], dir)).code, 0);
+    // A run kept out of the ledger says so, not that there is no ledger.
+    assert.equal((await cli(['readback', '--url', prod.url, '--no-record'], dir)).err, 'not recorded (--no-record)\n');
+  });
+
+  it('cites the latest run that saw a change live, also when that run read the version document at another path', async () => {
+    for (const later of ['version.json', 'api/version']) {
+      const { dir, merges, direct } = await repo({ card: false });
+      assert.equal((await cli(['state', 'init'], dir)).code, 0);
+      const build = (commit: string, path: string): void =>
+        prod.deploy({ 'index.html': '<!doctype html>', [path]: JSON.stringify({ schema: 'seamkit.version/1', commit, dirty: false, source: 'git' }) });
+      const event = (err: string): string => /recorded as event ([0-9a-f]{12})/.exec(err)?.[1] ?? assert.fail(err);
+      build(direct, 'version.json');
+      event((await cli(['readback', '--url', prod.url], dir, {}, '2026-10-14T09:00:00.000Z')).err);
+      build(direct, later);
+      const second = event((await cli(['readback', '--url', prod.url], dir, {}, '2026-10-14T09:00:02.000Z')).err);
+      build(merges[0] as string, 'version.json');
+      const r = await cli(['readback', '--url', prod.url, '--json'], dir, {}, '2026-10-14T09:00:04.000Z');
+      const pr2 = JSON.parse(r.out).verdicts.find((v: { subject: string }) => v.subject === 'pr#2');
+      assert.equal(pr2.state, 'not_live', r.out);
+      assert.ok(pr2.reasons.some((x: string) => x.includes(`it was seen live at 2026-10-14T09:00:02.000Z (event ${second})`)), `${later}: ${JSON.stringify(pr2.reasons)}`);
+    }
+    // Two runs at the same time are told apart by event id, so every reader cites the same one.
+    const { dir, merges, direct } = await repo({ card: false });
+    assert.equal((await cli(['state', 'init'], dir)).code, 0);
+    deploy(direct, '');
+    const ids: string[] = [];
+    for (let i = 0; i < 2; i++) ids.push(/recorded as event ([0-9a-f]{12})/.exec((await cli(['readback', '--url', prod.url, '--last', String(2 + i)], dir)).err)?.[1] ?? '');
+    deploy(merges[0] as string, '');
+    const pr2 = JSON.parse((await cli(['readback', '--url', prod.url, '--json'], dir)).out).verdicts.find((v: { subject: string }) => v.subject === 'pr#2');
+    assert.ok(pr2.reasons.some((x: string) => x.includes(`(event ${[...ids].sort()[1]})`)), `${ids.join(' ')}: ${JSON.stringify(pr2.reasons)}`);
   });
 
   it('refuses URLs that would put secrets in the ledger, and needs a URL', async () => {
