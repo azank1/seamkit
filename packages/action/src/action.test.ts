@@ -13,7 +13,7 @@ import { FakeProduction } from '@seamkit/adapters';
 import { git } from '@seamkit/state';
 import { run as seamkitRun } from 'seamkit';
 import { pushAdvice, runAction, type ActionDeps } from './action.js';
-import { CONCLUSIONS, clip, errorReport, readbackReport } from './report.js';
+import { CONCLUSIONS, clip, errorReport, jobSummary, readbackReport } from './report.js';
 import { defaultBranchOf, deployedCommit, displayUrl, headSha, plainText, readInputs, scrub, skipReason, type GitHubContext } from './github.js';
 
 const AT = '2026-10-21T09:00:00.000Z';
@@ -327,6 +327,9 @@ describe('the seamkit action', () => {
     assert.match(pushAdvice('seamkit: git push origin refs/heads/seamkit/state exited 1: ! [rejected] (fetch first)') ?? '', /concurrency group/);
     assert.match(pushAdvice('seamkit: could not synchronise seamkit/state with origin after 12 attempts') ?? '', /concurrency group/);
     assert.equal(pushAdvice('seamkit: state branches disagree about "events/x.json"; one copy has been altered, run seamkit state verify'), undefined);
+    // Other git failures during the sync are not a lost race, so they get no advice about one.
+    assert.equal(pushAdvice("seamkit: git ls-remote origin refs/heads/seamkit/state exited 128: fatal: unable to access 'https://github.example/o/r/': Could not resolve host: github.example"), undefined);
+    assert.equal(pushAdvice('seamkit: git fetch --quiet --no-tags origin +refs/heads/seamkit/state:refs/remotes/origin/seamkit/state exited 128: fatal: the remote end hung up unexpectedly'), undefined);
   });
 
   it('records nothing when there is no ledger and ledger is auto', async () => {
@@ -568,6 +571,21 @@ describe('the seamkit action', () => {
     assert.match((post['output'] as { summary: string }).summary, /a commit this repository does not have/);
   });
 
+  it('reads a version document naming a tag as one naming a commit this repository does not have, as the CLI does', async () => {
+    const { ci, commits } = await project({ card: true });
+    await git([...ID, 'tag', '-a', '-m', 'release', 'v1', commits[2] as string], { cwd: ci });
+    const tag = await git(['rev-parse', 'v1'], { cwd: ci });
+    servePage(tag);
+    // Every read after the fetch fails, so the run is judged by the read that named the tag.
+    const ran = await act(ci, { wait: '10', pr: '2' }, success(commits[2] as string), {
+      log: (line) => {
+        if (/which this checkout did not have/.test(line)) prod.failWith('/version.json', 503);
+      },
+    });
+    assert.equal(ran.code, 1, ran.logs.join('\n'));
+    assert.equal((lastPost()['output'] as { title: string }).title, `FAIL: production runs ${tag.slice(0, 12)}, which this repository does not have`);
+  });
+
   it('keeps a read that named a commit this repository lacks, though every read after the fetch fails', async () => {
     const { ci, commits } = await project({ card: true });
     // A rollback to #1 while production still runs #2, whose card's marker the page serves.
@@ -666,17 +684,18 @@ describe('the seamkit action', () => {
   });
 
   it('reads a deploy branch that is not the default one as the remote has it, whatever its name', async () => {
-    for (const name of ['release', 'release+1']) {
+    // A branch may even be named refs/<x>: it is still the remote's branch that is read.
+    for (const [name, input] of [['release', 'release'], ['release+1', 'release+1'], ['refs/rel', 'refs/heads/refs/rel']] as const) {
       const { ci, commits } = await project();
       await git(['push', '-q', 'origin', `${commits[2] as string}:refs/heads/${name}`], { cwd: ci });
       deploy(commits[2]);
-      assert.equal((await act(ci, { ledger: 'true', branch: name }, success(commits[2] as string))).code, 0);
+      assert.equal((await act(ci, { ledger: 'true', branch: input }, success(commits[2] as string))).code, 0);
       const late = join(root, `ci-late-${++counter}`);
       await git(['clone', '-q', `file://${await git(['remote', 'get-url', 'origin'], { cwd: ci })}`, late], { cwd: root });
       await git(['update-ref', `refs/remotes/origin/${name}`, commits[1] as string], { cwd: late });
       await git(['checkout', '-q', '-B', name, commits[1] as string], { cwd: late });
       deploy(commits[1]);
-      const ran = await act(late, { branch: name }, success(commits[1] as string));
+      const ran = await act(late, { branch: input }, success(commits[1] as string));
       assert.equal(ran.code, 1, `${name}: ${ran.logs.join('\n')}`);
       assert.match((lastPost()['output'] as { title: string }).title, /1 not live/);
       assert.deepEqual(ran.warnings, []);
@@ -948,6 +967,21 @@ describe('action inputs and reports', () => {
     assert.ok(r.summary.length <= 65535);
     assert.ok(r.title.length <= 1000);
     assert.match(r.summary, /cut to fit/);
+    assert.match(r.summary, /cut to fit; the full report is in the job log\n```$/);
+  });
+
+  it('keeps the closing fence of a report cut to fit, so the job summary closes its details', () => {
+    const verdicts: Verdict[] = [readbackSummary, ...Array.from({ length: 700 }, (_, i): Verdict => ({ ...readbackSummary, subject: `pr#${i}`, state: 'not_live', reasons: [`reason ${i} `.repeat(12)] }))];
+    const r = readbackReport('fail', verdicts, 'https://a.example');
+    assert.ok(r.text.length <= 65535, String(r.text.length));
+    assert.match(r.text, /cut to fit; the full report is in the job log\n```$/);
+    assert.match(jobSummary('seamkit readback', r), /\n```\n\n<\/details>\n$/);
+  });
+
+  it('writes the job summary heading as text, whatever the check name or a no-verdict message holds', () => {
+    const r = errorReport('seamkit: the branch input [Approve](https://evil.example/a) <b>x</b> `y` is not a branch name', 'https://a.example');
+    const heading = jobSummary('check *one*', r).split('\n')[0] as string;
+    assert.equal(heading, '### check \\*one\\*: No verdict: the branch input \\[Approve\\](https://evil.example/a) &lt;b&gt;x&lt;/b&gt; \\`y\\` is not a branch name');
   });
 
   it('declares in action.yml exactly the inputs and outputs the code uses, as YAML GitHub can load', () => {

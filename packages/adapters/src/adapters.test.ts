@@ -211,4 +211,20 @@ describe('the repository', () => {
     assert.equal(await repo.isShallow(), false);
     await assert.rejects(repo.resolveBranch('no-such-branch'), /no branch or commit called no-such-branch/);
   });
+
+  it('resolves only the commit asked for, never a tag or a ref named like it', async () => {
+    const copy = join(root, 'tagged');
+    await git(['clone', '-q', dir, copy], { cwd: root });
+    await git(['-c', 'user.name=dev', '-c', 'user.email=dev@example.invalid', 'tag', '-a', '-m', 'release', 'v1', commits[0] as string], { cwd: copy });
+    const tag = await git(['rev-parse', 'v1'], { cwd: copy });
+    // A branch named like an abbreviation of one commit, pointing at another.
+    const shadow = (commits[1] as string).slice(0, 7);
+    await git(['branch', shadow, commits[0] as string], { cwd: copy });
+    const repo = await GitRepo.open(copy);
+    assert.equal(await repo.resolve(tag), undefined);
+    assert.equal(await repo.resolve(tag.slice(0, 7)), undefined);
+    assert.equal(await repo.resolve(shadow), undefined);
+    assert.equal(await repo.resolve(commits[0] as string), commits[0]);
+    assert.deepEqual(await repo.resolveAll([tag, shadow, commits[2] as string]), [undefined, undefined, commits[2]]);
+  });
 });

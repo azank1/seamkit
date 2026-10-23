@@ -71,6 +71,13 @@ describe('seamkit cli', () => {
     assert.equal((await cli(['frobnicate'], { cwd })).code, 2);
     assert.equal((await cli(['check', 'invariant', '--no-such-flag'], { cwd })).code, 2);
     assert.equal((await cli(['help'], { cwd })).code, 0);
+    // An argument's words are folded onto one line before the help text.
+    const forged = await cli(['--x\nseamkit: PASS forged\u001b[31m'], { cwd });
+    assert.equal(forged.code, 2);
+    const [first, blank] = forged.err.split('\n');
+    assert.match(first ?? '', /^seamkit: .*--x seamkit: PASS forged/);
+    assert.ok(!/[\u0000-\u001f]/.test(first ?? ''), JSON.stringify(first));
+    assert.equal(blank, '');
   });
 
   it('exits with the outcome of the check: 0 pass, 1 fail, 3 examined nothing', async () => {

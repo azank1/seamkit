@@ -1,6 +1,8 @@
 import {
   markerKey,
   parseEventFile,
+  parseReadbackChange,
+  READBACK_LIMITS,
   readbackCheck,
   readbackSightings,
   type AncestryFact,
@@ -53,23 +55,61 @@ function subjectOf(c: GitCommit, pr: number | undefined): string {
 }
 
 /**
+ * What one run's input may still hold: core's limits on version documents, pages and texts per
+ * page, spent by the newest changes first.
+ */
+interface Budget {
+  versions: Set<string>;
+  texts: Map<string, Set<string>>;
+}
+
+function newBudget(primary: VersionObservation): Budget {
+  return { versions: new Set([primary.url]), texts: new Map() };
+}
+
+/** Spends the budget on `markers` and returns true, or spends nothing and returns false when they do not fit. */
+function spend(budget: Budget, markers: readonly Marker[]): boolean {
+  const versions = new Set(budget.versions);
+  const texts = new Map([...budget.texts].map(([url, set]) => [url, new Set(set)]));
+  for (const m of markers) {
+    if (m.kind === 'version') versions.add(m.url);
+    if (m.kind === 'bundle') texts.set(m.url, (texts.get(m.url) ?? new Set()).add(m.text));
+  }
+  const fits =
+    versions.size <= READBACK_LIMITS.versions && texts.size <= READBACK_LIMITS.bundles && [...texts.values()].every((set) => set.size <= READBACK_LIMITS.searched);
+  if (fits) Object.assign(budget, { versions, texts });
+  return fits;
+}
+
+/**
  * Turns a commit into a change, with its card's markers or, failing that, the implicit version
  * marker. `defaulted` collects the changes whose version marker is production's own document
- * because nothing named another.
+ * because nothing named another. A card the check would refuse, or one whose markers no longer
+ * fit in this run's input, is treated as a broken card, so that one card can never leave a whole
+ * window without a verdict.
  */
-function toChange(c: GitCommit, pageUrl: string, primary: VersionObservation, subjects: Set<string>, defaulted: Set<string>): ReadbackChange & { cardFound: boolean } {
+function toChange(
+  c: GitCommit,
+  pageUrl: string,
+  primary: VersionObservation,
+  subjects: Set<string>,
+  defaulted: Set<string>,
+  budget: Budget,
+): ReadbackChange & { cardFound: boolean } {
   const message = parseChangeMessage(c.message, c.parents.length);
   // The same pull request number can appear twice (a revert, say); later ones fall back to the commit.
   let subject = subjectOf(c, message.pr);
   if (subjects.has(subject)) subject = `commit:${short(c.commit)}`;
   subjects.add(subject);
-  const implicit: Marker[] = [{ kind: 'version', url: primary.url }];
   const card = readCard(c.message);
-  if (!card.found || !card.ok || card.card.markers.some((m) => m.kind === 'version' && m.url === undefined)) defaulted.add(c.commit);
-  if (!card.found) return { subject, commit: c.commit, title: message.title, markerSource: 'implicit', markers: implicit, cardFound: false };
-  if (!card.ok) {
-    return { subject, commit: c.commit, title: message.title, markerSource: 'implicit', markers: implicit, cardProblems: card.problems.slice(0, 20), cardFound: true };
-  }
+  const implicit = (problems?: string[]): ReadbackChange & { cardFound: boolean } => {
+    defaulted.add(c.commit);
+    const change = { subject, commit: c.commit, title: message.title, markerSource: 'implicit' as const, markers: [{ kind: 'version' as const, url: primary.url }] };
+    return problems === undefined ? { ...change, cardFound: false } : { ...change, cardProblems: problems.slice(0, 20), cardFound: true };
+  };
+  if (!card.found) return implicit();
+  if (!card.ok) return implicit(card.problems);
+  if (card.card.markers.some((m) => m.kind === 'version' && m.url === undefined)) defaulted.add(c.commit);
   const at = (u: string | undefined, fallback: string): string => (u === undefined ? fallback : new URL(u, pageUrl).href);
   const markers: Marker[] = card.card.markers.map((m) => {
     switch (m.kind) {
@@ -83,7 +123,18 @@ function toChange(c: GitCommit, pageUrl: string, primary: VersionObservation, su
   });
   // A card may list the same marker twice once defaults are filled in; keep the first.
   const unique = markers.filter((m, i) => markers.findIndex((o) => JSON.stringify(o) === JSON.stringify(m)) === i);
-  return { subject, commit: c.commit, title: message.title, markerSource: 'card', markers: unique, cardFound: true };
+  const change: ReadbackChange = { subject, commit: c.commit, title: message.title, markerSource: 'card', markers: unique };
+  try {
+    parseReadbackChange(change);
+  } catch (err) {
+    return implicit([`the card cannot be checked: ${(err as Error).message}`]);
+  }
+  if (!spend(budget, unique)) {
+    return implicit([
+      `one run reads at most ${READBACK_LIMITS.versions} version documents, ${READBACK_LIMITS.bundles} pages and ${READBACK_LIMITS.searched} marker texts on a page, and newer changes in the window use them up, so this change is proven by version alone`,
+    ]);
+  }
+  return { ...change, cardFound: true };
 }
 
 /** What the ledger holds for readback. */
@@ -236,7 +287,8 @@ export async function gatherReadback(
       : await discoverVersion(origin, now(), resolve, http);
   const subjects = new Set<string>();
   const defaulted = new Set<string>();
-  let drafts = commits.map((c) => toChange(c, req.url, primary, subjects, defaulted));
+  const budget = newBudget(primary);
+  let drafts = commits.map((c) => toChange(c, req.url, primary, subjects, defaulted, budget));
   // Production's own document may be read at any usual path of its origin, as a build can move it,
   // whether discovered or named at one of them; a document named elsewhere counts only itself.
   const usual = VERSION_PATHS.map((p) => new URL(p, new URL(primary.url).origin).href);
@@ -363,7 +415,9 @@ export function auditAdvice(context: ReadbackContext): string[] {
       `Production does not say which version it runs (${v.reason ?? 'unreadable'}). Serve a version document: run "seamkit stamp --out <your public directory>/version.json" before the build, or answer /api/version with {"commit": "<full commit id>"}.`,
     );
   } else if (v.commit === undefined) {
-    out.push(`Production reports ${v.reported ?? '?'}, which this clone does not have. Run git fetch; if it is still missing, the build was made from a commit that was never pushed.`);
+    out.push(
+      `Production reports ${v.reported ?? '?'}, which this clone does not have as a commit. Run git fetch; if it is still missing, the build was made from a commit that was never pushed, or its version document names a tag rather than the commit.`,
+    );
   } else if (v.dirty === true) {
     out.push(`Production's build of ${short(v.commit)} was made with uncommitted changes, so its version proves nothing. Deploy from a clean commit.`);
   }

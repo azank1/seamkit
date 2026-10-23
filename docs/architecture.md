@@ -175,7 +175,8 @@ risk: ship_alone
 
 The parser is strict. It reads YAML 1.2 with the core schema, refuses aliases and custom tags, and rejects unknown
 fields. It reports every problem in one pass, each naming the field and the fix, so that an agent can repair the card
-with one edit. A description holds at most one card, and a card larger than 16 KiB is refused.
+with one edit. A description holds at most one card, a card larger than 16 KiB is refused, and a card lists at most 20
+markers, as many as readback judges for one change.
 
 Readback finds cards in the history rather than through GitHub's API, so a card counts once its merge commit carries it.
 GitHub's first line for a merged pull request is either "Merge pull request #N from branch", with the title on the third
@@ -591,4 +592,12 @@ runs at this address. Serving its document at another path keeps the two apart. 
 while no other writer pushes ends with its own error, and the Action's advice names the change to make for a refusal,
 a missing permission or a lost race. The Action rewrites only absolute URLs, and values that could carry a credential,
 in the errors it reports, so a path such as `/version.json` in advice stays as written. Every CLI error prints on one
-line, and `seamkit state list` shows a well-formed event that has no time as `(no time)`.
+line, and `seamkit state list` shows a well-formed event that has no time as `(no time)`. A card that the check would
+refuse is treated as a broken card, so it is proven by version alone and never leaves its window without a verdict, and
+one run reads at most 100 version documents, 100 pages and 1000 marker texts on a page: the newest changes spend that
+first, and an older card whose markers do not fit is proven by version alone, which its gap says. A branch whose name
+starts with `refs/` is read as the remote has it, as any other branch name is, while a full ref such as
+`refs/heads/<name>` that the remote has no branch for means what git says. A commit a version document names is
+resolved only to a commit whose id starts with it, so a tag, which git would peel to its commit, or a ref named like the
+abbreviation reads as a commit the clone does not have. The Action's job summary writes its heading as text, and a
+report cut to fit is cut inside its code block, which still closes.

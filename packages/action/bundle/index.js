@@ -8358,8 +8358,8 @@ function parseBundle(raw, path) {
     complete: boolean(o["complete"], `${path}.complete`),
     files: count(o["files"], `${path}.files`),
     bytes: count(o["bytes"], `${path}.bytes`),
-    searched: array(o["searched"], `${path}.searched`, string, 1e3),
-    found: array(o["found"], `${path}.found`, string, 1e3)
+    searched: array(o["searched"], `${path}.searched`, string, READBACK_LIMITS.searched),
+    found: array(o["found"], `${path}.found`, string, READBACK_LIMITS.searched)
   };
   if (o["digest"] !== void 0)
     obs.digest = digestHex(o["digest"], `${path}.digest`);
@@ -8401,14 +8401,18 @@ function parseGap(raw, path) {
   const o = object(raw, path, ["item", "reason"]);
   return { item: string(o["item"], `${path}.item`), reason: string(o["reason"], `${path}.reason`) };
 }
+function parseReadbackChange(raw) {
+  return parseChange(raw, "change");
+}
+var READBACK_LIMITS = { versions: 100, bundles: 100, searched: 1e3 };
 function parseReadbackInput(raw) {
   const o = object(raw, "input", ["subject", "changes", "versions", "ancestry", "bundles", "history", "notExamined"]);
   const input2 = {
     subject: string(o["subject"], "subject"),
     changes: array(o["changes"], "changes", parseChange, 1e3),
-    versions: array(o["versions"], "versions", parseVersion, 100),
+    versions: array(o["versions"], "versions", parseVersion, READBACK_LIMITS.versions),
     ancestry: array(o["ancestry"], "ancestry", parseAncestry, 1e5),
-    bundles: array(o["bundles"], "bundles", parseBundle, 100),
+    bundles: array(o["bundles"], "bundles", parseBundle, READBACK_LIMITS.bundles),
     history: o["history"] === null ? null : array(o["history"], "history", parseSighting, 1e5)
   };
   if (o["notExamined"] !== void 0)
@@ -9253,7 +9257,7 @@ var GitRepo = class _GitRepo {
     if (name !== void 0) {
       if (name.startsWith("-"))
         throw new Error(`there is no branch or commit called ${name}`);
-      const remote = !name.startsWith("refs/") && await isBranchName(this.cwd, name) ? await this.rev(`refs/remotes/origin/${name}`) : void 0;
+      const remote = await isBranchName(this.cwd, name) ? await this.rev(`refs/remotes/origin/${name}`) : void 0;
       if (remote !== void 0)
         return { name, head: remote };
       const head2 = await this.rev(name);
@@ -9311,14 +9315,20 @@ var GitRepo = class _GitRepo {
     const found = /* @__PURE__ */ new Map();
     asked.forEach((a, i) => {
       const [id, type] = (answers[i] ?? "").split(" ");
-      if (type === "commit" && id !== void 0 && /^[0-9a-f]{40,64}$/.test(id))
+      if (type === "commit" && id !== void 0 && /^[0-9a-f]{40,64}$/.test(id) && id.startsWith(a.toLowerCase()))
         found.set(a, id);
     });
     return abbrevs.map((a) => found.get(a));
   }
-  /** The full id of an abbreviated commit, or undefined when it is missing or ambiguous. */
+  /**
+   * The full id of an abbreviated commit, or undefined when it is missing, ambiguous, or names
+   * something else: a tag, which git would peel to its commit, or a ref named like the abbreviation.
+   */
   async resolve(abbrev) {
-    return HEX.test(abbrev) ? this.rev(abbrev) : void 0;
+    if (!HEX.test(abbrev))
+      return void 0;
+    const full = await this.rev(abbrev);
+    return full !== void 0 && full.startsWith(abbrev) ? full : void 0;
   }
   /** Whether `running` contains `change`; null, with git's reason, when git cannot tell. */
   async contains(running, change) {
@@ -9386,6 +9396,7 @@ var MARKER_KINDS = ["bundle", "version", "db_object", "none"];
 var FIELDS = ["card", "intent", "layers", "targets", "markers", "releaseNote", "risk"];
 var MAX_CARD_BYTES = 16 * 1024;
 var MIN_MARKER_TEXT2 = 4;
+var MAX_MARKERS = 20;
 function extractCardBlocks(text) {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
   const blocks = [];
@@ -9565,6 +9576,9 @@ function checkCard(raw, problems) {
   if (rawMarkers !== void 0 && rawMarkers.length === 0) {
     problems.push("markers must list at least one marker; use - kind: none with a reason when there is nothing to prove");
   }
+  if (rawMarkers !== void 0 && rawMarkers.length > MAX_MARKERS) {
+    problems.push(`markers lists ${rawMarkers.length} markers; a card holds at most ${MAX_MARKERS}, so keep the few that prove the change`);
+  }
   rawMarkers?.forEach((m, i) => {
     const marker = checkMarker(m, `markers[${i}]`, problems);
     if (marker !== void 0)
@@ -9622,21 +9636,41 @@ var COMMIT_ID = /^[0-9a-f]{4,64}$/;
 function subjectOf(c, pr) {
   return pr === void 0 ? `commit:${short2(c.commit)}` : `pr#${pr}`;
 }
-function toChange(c, pageUrl, primary, subjects, defaulted) {
+function newBudget(primary) {
+  return { versions: /* @__PURE__ */ new Set([primary.url]), texts: /* @__PURE__ */ new Map() };
+}
+function spend(budget, markers) {
+  const versions = new Set(budget.versions);
+  const texts = new Map([...budget.texts].map(([url2, set]) => [url2, new Set(set)]));
+  for (const m of markers) {
+    if (m.kind === "version")
+      versions.add(m.url);
+    if (m.kind === "bundle")
+      texts.set(m.url, (texts.get(m.url) ?? /* @__PURE__ */ new Set()).add(m.text));
+  }
+  const fits = versions.size <= READBACK_LIMITS.versions && texts.size <= READBACK_LIMITS.bundles && [...texts.values()].every((set) => set.size <= READBACK_LIMITS.searched);
+  if (fits)
+    Object.assign(budget, { versions, texts });
+  return fits;
+}
+function toChange(c, pageUrl, primary, subjects, defaulted, budget) {
   const message = parseChangeMessage(c.message, c.parents.length);
   let subject = subjectOf(c, message.pr);
   if (subjects.has(subject))
     subject = `commit:${short2(c.commit)}`;
   subjects.add(subject);
-  const implicit = [{ kind: "version", url: primary.url }];
   const card = readCard(c.message);
-  if (!card.found || !card.ok || card.card.markers.some((m) => m.kind === "version" && m.url === void 0))
+  const implicit = (problems) => {
     defaulted.add(c.commit);
+    const change2 = { subject, commit: c.commit, title: message.title, markerSource: "implicit", markers: [{ kind: "version", url: primary.url }] };
+    return problems === void 0 ? { ...change2, cardFound: false } : { ...change2, cardProblems: problems.slice(0, 20), cardFound: true };
+  };
   if (!card.found)
-    return { subject, commit: c.commit, title: message.title, markerSource: "implicit", markers: implicit, cardFound: false };
-  if (!card.ok) {
-    return { subject, commit: c.commit, title: message.title, markerSource: "implicit", markers: implicit, cardProblems: card.problems.slice(0, 20), cardFound: true };
-  }
+    return implicit();
+  if (!card.ok)
+    return implicit(card.problems);
+  if (card.card.markers.some((m) => m.kind === "version" && m.url === void 0))
+    defaulted.add(c.commit);
   const at2 = (u, fallback) => u === void 0 ? fallback : new URL(u, pageUrl).href;
   const markers = card.card.markers.map((m) => {
     switch (m.kind) {
@@ -9649,7 +9683,18 @@ function toChange(c, pageUrl, primary, subjects, defaulted) {
     }
   });
   const unique2 = markers.filter((m, i) => markers.findIndex((o) => JSON.stringify(o) === JSON.stringify(m)) === i);
-  return { subject, commit: c.commit, title: message.title, markerSource: "card", markers: unique2, cardFound: true };
+  const change = { subject, commit: c.commit, title: message.title, markerSource: "card", markers: unique2 };
+  try {
+    parseReadbackChange(change);
+  } catch (err) {
+    return implicit([`the card cannot be checked: ${err.message}`]);
+  }
+  if (!spend(budget, unique2)) {
+    return implicit([
+      `one run reads at most ${READBACK_LIMITS.versions} version documents, ${READBACK_LIMITS.bundles} pages and ${READBACK_LIMITS.searched} marker texts on a page, and newer changes in the window use them up, so this change is proven by version alone`
+    ]);
+  }
+  return { ...change, cardFound: true };
 }
 async function readLedger(cwd, commits) {
   let store;
@@ -9761,7 +9806,8 @@ async function gatherReadback(cwd, req, now, http) {
   const primary = req.versionUrl !== void 0 ? await observeVersion(req.versionUrl, now(), resolve3, http) : await discoverVersion(origin, now(), resolve3, http);
   const subjects = /* @__PURE__ */ new Set();
   const defaulted = /* @__PURE__ */ new Set();
-  let drafts = commits.map((c) => toChange(c, req.url, primary, subjects, defaulted));
+  const budget = newBudget(primary);
+  let drafts = commits.map((c) => toChange(c, req.url, primary, subjects, defaulted, budget));
   const usual = VERSION_PATHS.map((p) => new URL(p, new URL(primary.url).origin).href);
   const addresses = new Set(req.versionUrl === void 0 || usual.includes(primary.url) ? usual : [primary.url]);
   const own = new Map(drafts.map((d) => [d.commit, new Set(d.markers.map(markerKey))]));
@@ -9870,7 +9916,7 @@ function auditAdvice(context) {
   if (v.status === "unreadable") {
     out.push(`Production does not say which version it runs (${v.reason ?? "unreadable"}). Serve a version document: run "seamkit stamp --out <your public directory>/version.json" before the build, or answer /api/version with {"commit": "<full commit id>"}.`);
   } else if (v.commit === void 0) {
-    out.push(`Production reports ${v.reported ?? "?"}, which this clone does not have. Run git fetch; if it is still missing, the build was made from a commit that was never pushed.`);
+    out.push(`Production reports ${v.reported ?? "?"}, which this clone does not have as a commit. Run git fetch; if it is still missing, the build was made from a commit that was never pushed, or its version document names a tag rather than the commit.`);
   } else if (v.dirty === true) {
     out.push(`Production's build of ${short2(v.commit)} was made with uncommitted changes, so its version proves nothing. Deploy from a clean commit.`);
   }
@@ -10035,7 +10081,7 @@ async function run(argv, io) {
       }
     }));
   } catch (err) {
-    io.err(`seamkit: ${err.message}
+    io.err(`seamkit: ${oneLine(err.message)}
 
 ${HELP}`);
     return EXIT_USAGE;
@@ -10261,7 +10307,7 @@ async function cmdStamp(args, flags, cwd, io) {
     throw new UsageError(`unexpected argument: ${args[0]}`);
   const req = { requireClean: flags["require-clean"] === true, ...flags.out ? { out: flags.out } : {}, ...flags.commit ? { commit: flags.commit } : {} };
   const { doc, uncommitted: uncommitted2 } = await makeStamp(cwd, req, io.env, io.now());
-  const changes = `${uncommitted2.length} uncommitted change${uncommitted2.length === 1 ? "" : "s"} (such as ${uncommitted2[0] ?? ""})`;
+  const changes = `${uncommitted2.length} uncommitted change${uncommitted2.length === 1 ? "" : "s"} (such as ${oneLine(uncommitted2[0] ?? "")})`;
   if (doc.dirty === true && req.requireClean) {
     io.err(`seamkit: refusing to stamp a build with ${changes}
 `);
@@ -10270,7 +10316,7 @@ async function cmdStamp(args, flags, cwd, io) {
   const state = doc.dirty === true ? "with uncommitted changes" : doc.dirty === false ? "clean" : "cleanliness unknown";
   if (flags.out) {
     const path = await writeStamp(cwd, flags.out, doc);
-    io.err(`stamped ${path}: ${doc.commit.slice(0, 12)} from ${doc.source}, ${state}
+    io.err(`stamped ${oneLine(path)}: ${doc.commit.slice(0, 12)} from ${doc.source}, ${state}
 `);
   } else {
     io.out(versionDocText(doc));
@@ -10672,7 +10718,7 @@ function clip(text, limit) {
   if (text.length <= limit)
     return text;
   const note = "\n\u2026 cut to fit; the full report is in the job log";
-  let end = limit - note.length;
+  let end = Math.max(0, limit - note.length);
   if (/[\uD800-\uDBFF]/.test(text[end - 1] ?? ""))
     end--;
   return text.slice(0, end) + note;
@@ -10682,14 +10728,16 @@ function stateCounts(parts) {
   return order.map((state) => ({ state, count: parts.filter((p) => p.state === state).length })).filter((c) => c.count > 0);
 }
 var cell = (s) => s.replace(/\s*[\r\n]\s*/g, " ").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/[\\`*_[\]!~|]/g, "\\$&");
-function fenced(text) {
+function fenced(text, limit = Infinity) {
   let longest = 0;
   for (const m of text.matchAll(/`+/g))
     longest = Math.max(longest, m[0].length);
   const fence = "`".repeat(Math.max(3, longest + 1));
-  return `${fence}text
-${text}
+  const open = `${fence}text
+`;
+  const close = `
 ${fence}`;
+  return `${open}${clip(text, limit - open.length - close.length)}${close}`;
 }
 function readbackReport(outcome, verdicts, url2, notes = []) {
   const [summary, ...parts] = verdicts;
@@ -10723,22 +10771,26 @@ function readbackReport(outcome, verdicts, url2, notes = []) {
     conclusion: CONCLUSIONS[outcome],
     title: clip(title, 1e3),
     summary: clip(lines.join("\n"), OUTPUT_LIMIT),
-    text: clip(fenced(renderReadback(verdicts)), OUTPUT_LIMIT)
+    text: fenced(renderReadback(verdicts), OUTPUT_LIMIT)
   };
+}
+function noVerdictSummary(message, url2) {
+  const lead = `**No verdict** for ${url2}: seamkit could not run, so nothing was proven.
+
+`;
+  return clip(`${lead}${fenced(message.trim(), OUTPUT_LIMIT - lead.length)}`, OUTPUT_LIMIT);
 }
 function errorReport(message, url2) {
   const first = message.trim().split("\n")[0] ?? "seamkit could not run";
   return {
     conclusion: "failure",
     title: clip(`No verdict: ${first.replace(/^seamkit: /, "")}`, 1e3),
-    summary: clip(`**No verdict** for ${url2}: seamkit could not run, so nothing was proven.
-
-${fenced(message.trim())}`, OUTPUT_LIMIT),
+    summary: noVerdictSummary(message, url2),
     text: ""
   };
 }
 function jobSummary(name, report2) {
-  return [`### ${name}: ${report2.title}`, "", report2.summary, "", report2.text ? `<details><summary>Full report</summary>
+  return [`### ${cell(name)}: ${cell(report2.title)}`, "", report2.summary, "", report2.text ? `<details><summary>Full report</summary>
 
 ${report2.text}
 
@@ -10882,7 +10934,7 @@ async function waitForLive(args, deployed, read, inputs, cli, cwd, deps) {
       const failed = await fetchBranch(cwd, read);
       if (failed === void 0) {
         const commit2 = await knownCommit(cwd, prod.reported);
-        if (commit2 !== void 0)
+        if (commit2 !== void 0 && commit2.startsWith(prod.reported))
           lastKnown = { ...prod, commit: commit2 };
         deps.log(`seamkit: production reports ${prod.reported.slice(0, 12)}, which this checkout did not have; fetched ${read} again`);
         reread = true;

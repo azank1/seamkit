@@ -54,6 +54,8 @@ export type CardLookup = ({ found: true } & CardParse) | { found: false };
 const FIELDS = ['card', 'intent', 'layers', 'targets', 'markers', 'releaseNote', 'risk'];
 const MAX_CARD_BYTES = 16 * 1024;
 const MIN_MARKER_TEXT = 4;
+/** As many markers as readback judges for one change. */
+const MAX_MARKERS = 20;
 
 /** The contents of every `seamkit-card` fenced block, following CommonMark fence rules. */
 export function extractCardBlocks(text: string): { blocks: string[]; unclosed: boolean } {
@@ -241,6 +243,9 @@ function checkCard(raw: unknown, problems: string[]): Card | undefined {
   const rawMarkers = list(c['markers'], 'markers', problems, 'how readback proves the change live; use - kind: none with a reason when there is nothing to prove');
   if (rawMarkers !== undefined && rawMarkers.length === 0) {
     problems.push('markers must list at least one marker; use - kind: none with a reason when there is nothing to prove');
+  }
+  if (rawMarkers !== undefined && rawMarkers.length > MAX_MARKERS) {
+    problems.push(`markers lists ${rawMarkers.length} markers; a card holds at most ${MAX_MARKERS}, so keep the few that prove the change`);
   }
   rawMarkers?.forEach((m, i) => {
     const marker = checkMarker(m, `markers[${i}]`, problems);

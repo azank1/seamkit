@@ -44,8 +44,10 @@ export class GitRepo {
       if (name.startsWith('-')) throw new Error(`there is no branch or commit called ${name}`);
       // A branch name means the remote's branch: a CI checkout often has it only as
       // origin/<name>, and its local branch of that name sits at the commit the job was given.
-      // HEAD, a commit or any other revision means what git says it means.
-      const remote = !name.startsWith('refs/') && (await isBranchName(this.cwd, name)) ? await this.rev(`refs/remotes/origin/${name}`) : undefined;
+      // That holds for a branch whose name starts with refs/ too. HEAD, a commit or any other
+      // revision, such as refs/heads/<name> when the remote has no branch of that name, means
+      // what git says it means.
+      const remote = (await isBranchName(this.cwd, name)) ? await this.rev(`refs/remotes/origin/${name}`) : undefined;
       if (remote !== undefined) return { name, head: remote };
       const head = await this.rev(name);
       if (head === undefined) throw new Error(`there is no branch or commit called ${name}`);
@@ -99,14 +101,21 @@ export class GitRepo {
     const found = new Map<string, string>();
     asked.forEach((a, i) => {
       const [id, type] = (answers[i] ?? '').split(' ');
-      if (type === 'commit' && id !== undefined && /^[0-9a-f]{40,64}$/.test(id)) found.set(a, id);
+      // git peels a tag to its commit and prefers a ref named like the abbreviation; neither is
+      // the commit asked for.
+      if (type === 'commit' && id !== undefined && /^[0-9a-f]{40,64}$/.test(id) && id.startsWith(a.toLowerCase())) found.set(a, id);
     });
     return abbrevs.map((a) => found.get(a));
   }
 
-  /** The full id of an abbreviated commit, or undefined when it is missing or ambiguous. */
+  /**
+   * The full id of an abbreviated commit, or undefined when it is missing, ambiguous, or names
+   * something else: a tag, which git would peel to its commit, or a ref named like the abbreviation.
+   */
   async resolve(abbrev: string): Promise<string | undefined> {
-    return HEX.test(abbrev) ? this.rev(abbrev) : undefined;
+    if (!HEX.test(abbrev)) return undefined;
+    const full = await this.rev(abbrev);
+    return full !== undefined && full.startsWith(abbrev) ? full : undefined;
   }
 
   /** Whether `running` contains `change`; null, with git's reason, when git cannot tell. */

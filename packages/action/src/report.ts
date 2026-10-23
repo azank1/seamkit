@@ -36,7 +36,7 @@ export const OUTPUT_LIMIT = 65535;
 export function clip(text: string, limit: number): string {
   if (text.length <= limit) return text;
   const note = '\n… cut to fit; the full report is in the job log';
-  let end = limit - note.length;
+  let end = Math.max(0, limit - note.length);
   // Never between the two halves of one character, which GitHub may refuse.
   if (/[\uD800-\uDBFF]/.test(text[end - 1] ?? '')) end--;
   return text.slice(0, end) + note;
@@ -62,12 +62,17 @@ export const cell = (s: string): string =>
     .replace(/>/g, '&gt;')
     .replace(/[\\`*_[\]!~|]/g, '\\$&');
 
-/** A fenced block that the text cannot close: its fence is longer than any run of backticks in it. */
-function fenced(text: string): string {
+/**
+ * A fenced block that the text cannot close: its fence is longer than any run of backticks in it.
+ * Text that would make the block longer than `limit` is cut inside it, so the block still closes.
+ */
+function fenced(text: string, limit = Infinity): string {
   let longest = 0;
   for (const m of text.matchAll(/`+/g)) longest = Math.max(longest, m[0].length);
   const fence = '`'.repeat(Math.max(3, longest + 1));
-  return `${fence}text\n${text}\n${fence}`;
+  const open = `${fence}text\n`;
+  const close = `\n${fence}`;
+  return `${open}${clip(text, limit - open.length - close.length)}${close}`;
 }
 
 /**
@@ -101,8 +106,13 @@ export function readbackReport(outcome: Outcome, verdicts: readonly Verdict[], u
     conclusion: CONCLUSIONS[outcome],
     title: clip(title, 1000),
     summary: clip(lines.join('\n'), OUTPUT_LIMIT),
-    text: clip(fenced(renderReadback(verdicts)), OUTPUT_LIMIT),
+    text: fenced(renderReadback(verdicts), OUTPUT_LIMIT),
   };
+}
+
+function noVerdictSummary(message: string, url: string): string {
+  const lead = `**No verdict** for ${url}: seamkit could not run, so nothing was proven.\n\n`;
+  return clip(`${lead}${fenced(message.trim(), OUTPUT_LIMIT - lead.length)}`, OUTPUT_LIMIT);
 }
 
 /** A run that produced no verdict, because seamkit could not run (exit 2). */
@@ -111,12 +121,12 @@ export function errorReport(message: string, url: string): Report {
   return {
     conclusion: 'failure',
     title: clip(`No verdict: ${first.replace(/^seamkit: /, '')}`, 1000),
-    summary: clip(`**No verdict** for ${url}: seamkit could not run, so nothing was proven.\n\n${fenced(message.trim())}`, OUTPUT_LIMIT),
+    summary: noVerdictSummary(message, url),
     text: '',
   };
 }
 
 /** The job summary: the same content as the check run, under one heading. */
 export function jobSummary(name: string, report: Report): string {
-  return [`### ${name}: ${report.title}`, '', report.summary, '', report.text ? `<details><summary>Full report</summary>\n\n${report.text}\n\n</details>` : '', ''].join('\n');
+  return [`### ${cell(name)}: ${cell(report.title)}`, '', report.summary, '', report.text ? `<details><summary>Full report</summary>\n\n${report.text}\n\n</details>` : '', ''].join('\n');
 }

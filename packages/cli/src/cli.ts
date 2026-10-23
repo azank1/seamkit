@@ -133,7 +133,7 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
       },
     }) as { values: Flags; positionals: string[] });
   } catch (err) {
-    io.err(`seamkit: ${(err as Error).message}\n\n${HELP}`);
+    io.err(`seamkit: ${oneLine((err as Error).message)}\n\n${HELP}`);
     return EXIT_USAGE;
   }
   const cwd = resolve(io.cwd, values.cwd ?? '.');
@@ -340,7 +340,7 @@ async function cmdStamp(args: string[], flags: Flags, cwd: string, io: Io): Prom
   if (args.length > 0) throw new UsageError(`unexpected argument: ${args[0]}`);
   const req = { requireClean: flags['require-clean'] === true, ...(flags.out ? { out: flags.out } : {}), ...(flags.commit ? { commit: flags.commit } : {}) };
   const { doc, uncommitted } = await makeStamp(cwd, req, io.env, io.now());
-  const changes = `${uncommitted.length} uncommitted change${uncommitted.length === 1 ? '' : 's'} (such as ${uncommitted[0] ?? ''})`;
+  const changes = `${uncommitted.length} uncommitted change${uncommitted.length === 1 ? '' : 's'} (such as ${oneLine(uncommitted[0] ?? '')})`;
   if (doc.dirty === true && req.requireClean) {
     io.err(`seamkit: refusing to stamp a build with ${changes}\n`);
     return 1;
@@ -348,7 +348,7 @@ async function cmdStamp(args: string[], flags: Flags, cwd: string, io: Io): Prom
   const state = doc.dirty === true ? 'with uncommitted changes' : doc.dirty === false ? 'clean' : 'cleanliness unknown';
   if (flags.out) {
     const path = await writeStamp(cwd, flags.out, doc);
-    io.err(`stamped ${path}: ${doc.commit.slice(0, 12)} from ${doc.source}, ${state}\n`);
+    io.err(`stamped ${oneLine(path)}: ${doc.commit.slice(0, 12)} from ${doc.source}, ${state}\n`);
   } else {
     io.out(versionDocText(doc));
   }

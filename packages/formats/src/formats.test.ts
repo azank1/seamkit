@@ -99,6 +99,9 @@ describe('scope card', () => {
     const path = parseCard(`${base}  - kind: version\n    url: /api/notes-sync/version.json`);
     assert.ok(path.ok && path.card.markers[0]?.kind === 'version' && path.card.markers[0].url === '/api/notes-sync/version.json');
     assert.match(problemsOf(`${base}  - kind: version\n    text: oops`).join('\n'), /unknown field\(s\) for kind version: text/);
+    const bundles = (n: number): string => base + Array.from({ length: n }, (_, i) => `  - kind: bundle\n    text: "marker-${i}"\n`).join('');
+    assert.ok(parseCard(bundles(20)).ok);
+    assert.match(problemsOf(bundles(21)).join('\n'), /markers lists 21 markers; a card holds at most 20/);
     // A key that is not a plain name is quoted, so it cannot start a line of the report.
     const forged = problemsOf(`"\\n::error::forged": 1\n${base}  - kind: version\n    "##[x\\n::warning::y": 2`).join('\n');
     assert.ok(forged.includes('card has unknown field(s): "\\n::error::forged";'), forged);

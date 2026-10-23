@@ -242,8 +242,9 @@ async function waitForLive(
       refetched.add(prod.reported);
       const failed = await fetchBranch(cwd, read);
       if (failed === undefined) {
+        // As the CLI resolves it: a tag or a ref named like the abbreviation is not that commit.
         const commit = await knownCommit(cwd, prod.reported);
-        if (commit !== undefined) lastKnown = { ...prod, commit };
+        if (commit !== undefined && commit.startsWith(prod.reported)) lastKnown = { ...prod, commit };
         deps.log(`seamkit: production reports ${prod.reported.slice(0, 12)}, which this checkout did not have; fetched ${read} again`);
         reread = true;
         continue;

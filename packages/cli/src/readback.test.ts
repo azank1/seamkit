@@ -318,6 +318,101 @@ describe('seamkit readback', () => {
     assert.equal(JSON.parse(remote.out).verdicts.length, 4);
   });
 
+  it('reads a remote branch named refs/<x> as the remote has it, not a local branch of that name', async () => {
+    const { dir, direct } = await repo();
+    await git(['branch', 'refs/rel', 'HEAD~1'], { cwd: dir });
+    const clone = join(root, `clone-${++counter}`);
+    await git(['clone', '-q', dir, clone], { cwd: root });
+    await git(['branch', 'refs/rel', 'origin/refs/rel~1'], { cwd: clone });
+    deploy(direct);
+    const r = await cli(['readback', '--url', prod.url, '--branch', 'refs/rel', '--json'], clone);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(JSON.parse(r.out).verdicts.length, 4, r.out);
+    // A full ref the remote has no branch for still means what git says.
+    assert.equal(JSON.parse((await cli(['readback', '--url', prod.url, '--branch', 'refs/heads/refs/rel', '--json'], clone)).out).verdicts.length, 3);
+  });
+
+  it('reads a version document naming a tag as one naming a commit this clone does not have', async () => {
+    const { dir, merges } = await repo();
+    await git([...ID, 'tag', '-a', '-m', 'release', 'v1', merges[1] as string], { cwd: dir });
+    const tag = await git(['rev-parse', 'v1'], { cwd: dir });
+    for (const reported of [tag, tag.slice(0, 7)]) {
+      prod.deploy({ 'index.html': '<!doctype html>', 'version.json': JSON.stringify({ sha: reported }) });
+      const r = await cli(['audit', '--url', prod.url, '--json'], dir);
+      assert.notEqual(r.code, 2, r.err);
+      const out = JSON.parse(r.out);
+      assert.deepEqual(out.production, { url: `${prod.url}version.json`, status: 'ok', reported });
+      assert.ok(out.advice.some((a: string) => a.includes('names a tag rather than the commit')), r.out);
+    }
+  });
+
+  it('gives a verdict when a card lists more markers than the check takes, and a rollback across it fails', async () => {
+    const markers = Array.from({ length: 21 }, (_, i) => `  - kind: bundle\n    text: "marker-${i}-x"`).join('\n');
+    const { dir, merges, direct } = await repo({ card: `card: 1\nintent: Add the badge.\nlayers: [frontend]\ntargets: [web]\nmarkers:\n${markers}` });
+    assert.equal((await cli(['state', 'init'], dir)).code, 0);
+    deploy(merges[0] as string);
+    assert.match((await cli(['readback', '--url', prod.url], dir)).err, /recorded as event/);
+    deploy(direct);
+    const live = await cli(['readback', '--url', prod.url, '--json'], dir);
+    assert.equal(live.code, 0, live.out);
+    const pr2 = JSON.parse(live.out).verdicts.find((v: { subject: string }) => v.subject === 'pr#2');
+    // Whichever check refuses it, the card's or the check's own, the change is proven by version.
+    assert.ok(pr2.notExamined.some((g: { reason: string }) => /at most 20/.test(g.reason)), live.out);
+    deploy(merges[0] as string);
+    const rollback = await cli(['readback', '--url', prod.url, '--deployed', merges[0] as string, '--json'], dir);
+    assert.equal(rollback.code, 1, rollback.out);
+    assert.equal(JSON.parse(rollback.out).verdicts.find((v: { subject: string }) => v.subject === 'pr#2').state, 'not_live', rollback.out);
+  });
+
+  it('proves by version alone the older changes whose card markers no longer fit in one run', async () => {
+    // Six cards of twenty pages, six of twenty version documents beside production's own, and
+    // fifty-one of twenty texts on one page: the oldest cards that do not fit are proven by version.
+    const cases = [
+      { cards: 6, demoted: 1, marker: (n: number, k: number) => `  - kind: bundle\n    url: /p${n}-${k}\n    text: "marker-${n}-${k}"` },
+      { cards: 6, demoted: 2, marker: (n: number, k: number) => `  - kind: version\n    url: /v${n}-${k}` },
+      { cards: 51, demoted: 1, marker: (n: number, k: number) => `  - kind: bundle\n    text: "marker-${n}-${k}"` },
+    ];
+    for (const { cards, demoted, marker } of cases) {
+      const dir = join(root, `repo-${++counter}`);
+      await git(['init', '-q', '-b', 'main', dir], { cwd: root });
+      for (let n = 1; n <= cards; n++) {
+        const markers = Array.from({ length: 20 }, (_, k) => marker(n, k)).join('\n');
+        await writeFile(join(dir, `f${n}.txt`), `${n}\n`);
+        await git(['add', `f${n}.txt`], { cwd: dir });
+        await git([...ID, 'commit', '-q', '-m', `change ${n}\n\n\`\`\`seamkit-card\ncard: 1\nintent: Change ${n}.\nlayers: [frontend]\ntargets: [web]\nmarkers:\n${markers}\n\`\`\``], { cwd: dir });
+      }
+      deploy(await git(['rev-parse', 'HEAD'], { cwd: dir }));
+      const r = await cli(['readback', '--url', prod.url, '--last', String(cards), '--json'], dir);
+      assert.notEqual(r.code, 2, r.err);
+      const budget = (v: { notExamined: { reason: string }[] }): boolean => v.notExamined.some((g) => /one run reads at most 100 version documents, 100 pages/.test(g.reason));
+      const parts = JSON.parse(r.out).verdicts.slice(1);
+      assert.deepEqual(parts.map(budget), parts.map((_: unknown, i: number) => i >= cards - demoted), r.out.slice(0, 2000));
+      assert.equal(parts[cards - 1].state, 'live');
+    }
+  });
+
+  it('counts the discovery paths of the --version-url\'s own origin, when the version document is on another host', async () => {
+    const { dir, merges, direct } = await repo({ card: false });
+    assert.equal((await cli(['state', 'init'], dir)).code, 0);
+    const api = await FakeProduction.start({ spaFallback: true });
+    try {
+      prod.deploy({ 'index.html': '<!doctype html>' });
+      const doc = (commit: string): string => JSON.stringify({ schema: 'seamkit.version/1', commit, dirty: false, source: 'git' });
+      api.deploy({ 'api/version': doc(direct) });
+      assert.match((await cli(['readback', '--url', prod.url, '--version-url', `${api.url}api/version`], dir)).err, /recorded as event/);
+      api.deploy({ 'version.json': doc(merges[0] as string) });
+      const r = await cli(['readback', '--url', prod.url, '--version-url', `${api.url}version.json`, '--deployed', merges[0] as string, '--json'], dir);
+      assert.equal(r.code, 1, r.out);
+      const out = JSON.parse(r.out);
+      const states = Object.fromEntries(out.verdicts.slice(1).map((v: { subject: string; state: string }) => [v.subject, v.state]));
+      assert.equal(states[`commit:${direct.slice(0, 12)}`], 'not_live', r.out);
+      assert.equal(states['pr#2'], 'not_live', r.out);
+      assert.ok(!out.verdicts[0].notExamined.some((g: { reason: string }) => /holds no earlier run/.test(g.reason)), r.out);
+    } finally {
+      await api.close();
+    }
+  });
+
   it('keeps in scope a change production was seen running, whatever the recorded run judged', async () => {
     const dirty = (commit: string): void => prod.deploy({ 'version.json': JSON.stringify({ schema: 'seamkit.version/1', commit, dirty: true, source: 'git' }) });
     for (const [label, record] of [
@@ -678,6 +773,15 @@ describe('seamkit stamp', () => {
     const refused = await cli(['stamp', '--require-clean', '--out', 'v.json'], dir);
     assert.equal(refused.code, 1);
     await assert.rejects(readFile(join(dir, 'v.json')));
+    // A file name is anyone's who can add one, so it cannot start a line of its own.
+    const other = (await repo()).dir;
+    await writeFile(join(other, 'a\nseamkit: PASS forged\u001b[31m'), 'x\n');
+    for (const [args, lines] of [[['stamp', '--require-clean'], 1], [['stamp', '--out', 'public/v\nseamkit: PASS forged.json'], 2]] as const) {
+      const named = await cli([...args], other);
+      assert.equal(named.err.split('\n').length, lines + 1, JSON.stringify(named.err));
+      assert.ok(named.err.split('\n').every((line) => !line.startsWith('seamkit: PASS')), named.err);
+      assert.ok(!/[\u0000-\u0009\u000b-\u001f]/.test(named.err), JSON.stringify(named.err));
+    }
   });
 
   it('falls back to the CI variable outside a repository, and refuses to guess', async () => {

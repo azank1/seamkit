@@ -267,7 +267,9 @@ text is not unique to the change. A marker must be text that the built output co
 exists only in source and will never be found, and readback says so when the version shows the change is deployed.
 
 The parser is strict. It rejects unknown fields, YAML aliases and custom tags, and reports every problem in one pass,
-each naming the field and the fix, so an agent can repair a card with one edit. A marker's `url` may be a path, which
+each naming the field and the fix, so an agent can repair a card with one edit. A card lists at most 20 markers, and
+one readback reads at most 100 version documents, 100 pages and 1000 marker texts on a page; the newest changes come
+first, and an older card whose markers do not fit is proven by version alone and says so. A marker's `url` may be a path, which
 readback resolves against the production URL it is given, so one card serves staging and production alike. A marker of
 kind `none` with a reason declares that nothing deployed changes.
 
@@ -326,7 +328,7 @@ cover, is in [`docs/prior-art.md`](docs/prior-art.md).
 
 ```sh
 npm ci
-npm test             # 215 tests, using temporary repositories and a local fake production
+npm test             # 224 tests, using temporary repositories and a local fake production
 npm run demo         # add -- --keep to keep the demo repository
 npm run pack:cli     # builds the npm package into release/seamkit
 npm run smoke:pack   # installs that package into an empty project and runs it
