@@ -9135,7 +9135,7 @@ var GitStateStore = class _GitStateStore {
         toPush = merged;
         status = "merged";
       }
-      const pushed = await runGit(["push", "--quiet", remote, `${toPush}:${STATE_REF}`], { cwd: this.cwd });
+      const pushed = await runGit(["push", "--quiet", "--no-verify", remote, `${toPush}:${STATE_REF}`], { cwd: this.cwd });
       if (pushed.code === 0)
         return { status, remote, local: toPush, attempts: attempt };
       if (await this.remoteHead(remote) === remoteHead)
@@ -11130,7 +11130,8 @@ async function runAction(deps) {
         reading = { ...reading, commit: commit2 };
     }
     const during = reading?.reported === void 0 ? void 0 : waited.fetched.get(reading.reported);
-    const refetch = fetchedAfter === true || during === true ? "fetched" : fetchedAfter === false || during === false ? "failed" : void 0;
+    const fetchedOnce = [...waited.fetched.values()].some((ok) => ok);
+    const refetch = fetchedAfter === true || fetchedOnce ? "fetched" : fetchedAfter === false || during === false ? "failed" : void 0;
     const deploy = deployed === void 0 || result.code === 4 ? { notLive: false } : await deployNote(reading, deployed, waited.seconds, refetch, cwd);
     const overruled = deploy.notLive && outcome === "pass";
     if (overruled) {

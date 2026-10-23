@@ -995,7 +995,7 @@ fi</pre></div>
     updated: '2026-10-22',
     version: '0.2.0',
     npm: '0.1.0',   // the version npm serves; the release commit bumps it
-    tests: '238',
+    tests: '240',
     dogfood: '20 of 20',
     milestones: [
       { m: 'M1', title: 'Verdict core and ledger', state: 'done', when: '2026-10-15',
@@ -1064,6 +1064,7 @@ fi</pre></div>
       ['2026-10-23', 'Fifteenth review round (17 agents, 5 findings, all confirmed by both skeptics and all low; nothing from the critic): trace2 turned on in git config is turned off too, so a header secret cannot reach a check run; an annotated tag\'s own id as the sha input says it names a tag; --no-record no longer says the ledger is missing, which the agent hook showed on every failed deploy; tests pin that seamkit\'s own git variables win over the environment\'s and the third note wording on a recording run. 237 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
       ['2026-10-23', 'Sixteenth review round (17 agents, 5 findings, all confirmed by both skeptics, none high; nothing from the critic): an annotated tag\'s abbreviation that a blob shares is named as a tag, by asking git whether the text is a ref; the shadowed-sha test no longer fails when a commit\'s first seven characters are all digits, about one run in 27; tests pin that the latest run to see a change live is the one cited, after a move of the version document and between runs at the same time, and the --no-record note on readback. 238 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
       ['2026-10-23', 'Seventeenth review round (15 agents, 4 findings, all confirmed by both skeptics, two distinct, none high; nothing from the critic): a sha input that a branch and a tag are both named after is reported as a ref, by looking the names up directly, since git then calls the name ambiguous and gives none; the shadowed-sha test matches the abbreviation it used, so it no longer fails when that is longer than seven characters. 238 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
+      ['2026-10-24', 'Eighteenth review round (11 agents, 2 findings, both confirmed by both skeptics and low, and 1 from the critic, medium): the ledger push skips the project\'s pre-push hook, which could refuse it, run the project\'s tests on every push, and send the next deploy\'s scoping off; the unknown-commit note counts a fetch made for another commit just before; the message for a sha in capitals that a ref shadows is pinned. 240 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
     ],
     decisions: [
       ['Program readback adapter (requested by an internal project)', 'Accept with changes, scheduled after M4. Notes in the knowledge base.', 'azank', 'wait'],

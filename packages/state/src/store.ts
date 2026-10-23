@@ -173,7 +173,9 @@ export class GitStateStore {
         toPush = merged;
         status = 'merged';
       }
-      const pushed = await runGit(['push', '--quiet', remote, `${toPush}:${STATE_REF}`], { cwd: this.cwd });
+      // The ledger is seamkit's own data, not the project's code, so the project's pre-push hook,
+      // which may refuse branch names or run its tests, does not run for it.
+      const pushed = await runGit(['push', '--quiet', '--no-verify', remote, `${toPush}:${STATE_REF}`], { cwd: this.cwd });
       if (pushed.code === 0) return { status, remote, local: toPush, attempts: attempt };
       if ((await this.remoteHead(remote)) === remoteHead) stalled++;
       if (stalled === MAX_STALLED_PUSHES) {

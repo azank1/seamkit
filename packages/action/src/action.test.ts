@@ -558,6 +558,7 @@ describe('the seamkit action', () => {
     // Hex in capitals is the same abbreviation, and a ref of that name shadows it too.
     await git(['tag', shadow.toUpperCase(), commits[1] as string], { cwd: ci });
     assert.equal((await act(ci, { sha: shadow.toUpperCase(), wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' })).code, 2);
+    assert.equal((lastPost()['output'] as { title: string }).title.split(';')[0], `No verdict: the deployed commit ${shadow.toUpperCase()} is also the name of a tag or branch that points at another commit`);
     // The full id is the commit itself, whatever a ref is named.
     // An annotated tag's own id, full or abbreviated, names the tag, not a commit.
     await git(['-c', 'user.name=dev', '-c', 'user.email=dev@example.invalid', 'tag', '-a', '-m', 'release', 'v1', commits[2] as string], { cwd: ci });
@@ -637,6 +638,20 @@ describe('the seamkit action', () => {
     assert.equal(post['conclusion'], 'failure');
     assert.equal((post['output'] as { title: string }).title, 'FAIL: production runs 0123456789ab, which this repository does not have');
     assert.match((post['output'] as { summary: string }).summary, /a commit this repository does not have even after fetching the branch again/);
+  });
+
+  it('says the branch was fetched again when the read after a fetch names another commit this repository does not have', async () => {
+    const { ci, commits } = await project({ card: true });
+    servePage('0123456789abcdef0123456789abcdef01234567');
+    const ran = await act(ci, { wait: '0', pr: '2', ledger: 'false' }, success(commits[2] as string), {
+      log: (line) => {
+        if (/fetched main again/.test(line)) servePage('89abcdef0123456789abcdef0123456789abcdef');
+      },
+    });
+    assert.equal(ran.code, 1, ran.logs.join('\n'));
+    const out = lastPost()['output'] as { title: string; summary: string };
+    assert.equal(out.title, 'FAIL: production runs 89abcdef0123, which this repository does not have');
+    assert.match(out.summary, /a commit this repository does not have even after fetching the branch again/);
   });
 
   it('does not claim the branch was fetched again when there was no branch to fetch', async () => {

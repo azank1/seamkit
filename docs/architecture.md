@@ -617,7 +617,9 @@ abbreviated. Both paths expand an abbreviated deployed commit by one rule: git l
 that looks like an abbreviation and gives a commit that does not start with it is a tag or branch named like it, and a
 run given such a deployed commit ends with no verdict rather than judge the ref's commit; the full id always works.
 An annotated tag's own id gives no verdict too, saying it names a tag; text is taken as a ref when any ref has one of the
-names git tries for it, even when several do and git calls the name ambiguous. `--no-record` notes that it kept the run out of
+names git tries for it, even when several do and git calls the name ambiguous. The ledger is pushed with `--no-verify`: it is seamkit's
+own data, so a project's pre-push hook, which may refuse branch names or run its tests, does not run for it. The
+unknown-commit note counts any fetch of the branch that succeeded during the job, whichever commit it was made for. `--no-record` notes that it kept the run out of
 the ledger, not that the ledger is missing. A change whose card the run cannot read for lack of room, or cannot check, is still kept in `--deployed`
 scope by a sighting under one of its card's markers. The test runner's time limit is per test from Node 24 and per file
 before it, so it is set well above the slowest file there.

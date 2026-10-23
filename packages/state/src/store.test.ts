@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -105,6 +106,22 @@ describe('GitStateStore', () => {
     assert.equal(b.commit, a.commit);
     assert.equal(await store.list().then((f) => f.length), 0);
     assert.equal(await git(['ls-tree', '--name-only', STATE_REF], { cwd: store.cwd }), 'README.md');
+  });
+
+  it('pushes the ledger without running the project\'s pre-push hook', async () => {
+    const remote = join(root, `remote-${++counter}.git`);
+    await git(['init', '-q', '--bare', remote], { cwd: root });
+    const store = await GitStateStore.open(await repo('hooked'));
+    await git(['remote', 'add', 'origin', remote], { cwd: store.cwd });
+    const hooks = join(root, `hooks-${counter}`);
+    const ran = join(root, `hook-ran-${counter}`);
+    await mkdir(hooks);
+    await writeFile(join(hooks, 'pre-push'), `#!/bin/sh\necho ran > '${ran}'\necho 'branch names must start with feature/' >&2\nexit 1\n`, { mode: 0o755 });
+    await git(['config', 'core.hooksPath', hooks], { cwd: store.cwd });
+    await store.append(event(80));
+    assert.equal((await store.sync()).status, 'pushed');
+    assert.equal(await git(['rev-parse', STATE_REF], { cwd: remote }), await git(['rev-parse', STATE_REF], { cwd: store.cwd }));
+    assert.equal(existsSync(ran), false);
   });
 
   it('merges diverged writers through a shared remote without losing or forcing anything', async () => {
