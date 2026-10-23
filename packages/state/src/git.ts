@@ -37,8 +37,11 @@ function quietEnv(extra: Record<string, string> | undefined): NodeJS.ProcessEnv 
   return { ...env, GIT_TRACE2: '0', GIT_TRACE2_PERF: '0', GIT_TRACE2_EVENT: '0', GIT_TRACE_REDACT: '1', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C', ...extra };
 }
 
-/** A URL's user name and password, removed from text git wrote. */
-const USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi;
+/**
+ * A URL's user name and password, removed from text git wrote: everything up to the last @ before
+ * the path, since a password can hold an @ that is not encoded.
+ */
+const USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^\s/'"]*@/gi;
 
 /**
  * Runs git without a shell. Never prompts: a missing credential fails instead of hanging. Its

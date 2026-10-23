@@ -162,7 +162,7 @@ again.
 | `last` | `20` | how many of the latest changes to examine |
 | `pr` | | read back one merged pull request instead |
 | `wait` | `60` | after a deploy, seconds (up to 1800) to keep reading until production reports the deployed commit; nothing is recorded meanwhile |
-| `ledger` | `auto` | `auto` records when a `seamkit/state` branch exists, `true` starts one, `false` never records |
+| `ledger` | `auto` | `auto` records when a `seamkit/state` branch exists, `true` starts one, `false` neither reads nor records it, so a rollback reads not proven and changes merged during the build are judged |
 | `check-name` | `seamkit readback (<host>)` | one check per production address |
 | `sha` | the deployed commit | where the check goes, and what counts as deployed |
 | `branch`, `version-url`, `token` | | for unusual layouts; `branch` names the remote's branch, and one that is not a branch gives no verdict |
@@ -328,7 +328,7 @@ cover, is in [`docs/prior-art.md`](docs/prior-art.md).
 
 ```sh
 npm ci
-npm test             # 244 tests, using temporary repositories and a local fake production
+npm test             # 245 tests, using temporary repositories and a local fake production
 npm run demo         # add -- --keep to keep the demo repository
 npm run pack:cli     # builds the npm package into release/seamkit
 npm run smoke:pack   # installs that package into an empty project and runs it

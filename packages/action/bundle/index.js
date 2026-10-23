@@ -8975,7 +8975,7 @@ function quietEnv(extra) {
   }
   return { ...env, GIT_TRACE2: "0", GIT_TRACE2_PERF: "0", GIT_TRACE2_EVENT: "0", GIT_TRACE_REDACT: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...extra };
 }
-var USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi;
+var USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^\s/'"]*@/gi;
 function runGit(args, opts) {
   return new Promise((resolve3, reject) => {
     const child = spawn("git", args, {
@@ -11042,7 +11042,7 @@ function pushAdvice(err) {
   if (PERMISSION.test(err))
     return 'give the job "permissions: contents: write"';
   if (/refused the push to seamkit\/state while no other writer was pushing/.test(err)) {
-    return "allow this workflow to push the seamkit/state branch, which a ruleset or branch protection may block, or set ledger: false";
+    return "allow this workflow to push the seamkit/state branch, which a ruleset or branch protection may block, or set ledger: false, which also stops this workflow reading the ledger";
   }
   if (/\bgit push \S+ refs\/heads\/seamkit\/state exited|could not synchronise/.test(err)) {
     return "other runs kept pushing while this one retried; when many readbacks record at once, give them one concurrency group so they take turns";
@@ -11137,7 +11137,7 @@ async function runAction(deps) {
     const fetches = fetchedAfter === void 0 ? waited.fetches : [...waited.fetches, fetchedAfter];
     const seen = reading?.reported === void 0 ? void 0 : waited.seenAt.get(reading.reported);
     const since = fetches.slice(seen ?? fetches.length);
-    const told = since.length > 0 ? since : fetches;
+    const told = since.length > 0 ? since : fetches.slice(-1);
     const refetch = told.includes(true) ? "fetched" : told.includes(false) ? "failed" : void 0;
     const deploy = deployed === void 0 || result.code === 4 ? { notLive: false } : await deployNote(reading, deployed, waited.seconds, refetch, cwd);
     const overruled = deploy.notLive && outcome === "pass";

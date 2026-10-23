@@ -43,7 +43,8 @@ inputs:
   ledger:
     description: >-
       auto records the verdict when a seamkit/state branch exists here or on the remote; true creates one when there
-      is none; false never records. Recording pushes with the checkout's credentials, so it needs contents write and
+      is none; false neither reads nor records it, so a rollback reads not proven rather than not live and changes merged
+      during the build are judged. Recording pushes with the checkout's credentials, so it needs contents write and
       actions/checkout's default persist-credentials.
     default: auto
   check-name:

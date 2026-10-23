@@ -372,7 +372,7 @@ const PERMISSION = /\b403\b|denied|permission|not allowed|authentication/i;
 export function pushAdvice(err: string): string | undefined {
   if (PERMISSION.test(err)) return 'give the job "permissions: contents: write"';
   if (/refused the push to seamkit\/state while no other writer was pushing/.test(err)) {
-    return 'allow this workflow to push the seamkit/state branch, which a ruleset or branch protection may block, or set ledger: false';
+    return 'allow this workflow to push the seamkit/state branch, which a ruleset or branch protection may block, or set ledger: false, which also stops this workflow reading the ledger';
   }
   if (/\bgit push \S+ refs\/heads\/seamkit\/state exited|could not synchronise/.test(err)) {
     return 'other runs kept pushing while this one retried; when many readbacks record at once, give them one concurrency group so they take turns';
@@ -483,11 +483,11 @@ export async function runAction(deps: ActionDeps): Promise<number> {
     // The note says why this repository lacks the commit production reports, from the fetches of
     // the branch made since production first reported it: one that succeeded would have brought it
     // in from the branch, so it is on none; if every one failed, that is why. With none made since,
-    // the fetches made before it was reported say what this repository holds.
+    // the last fetch made says what this repository holds.
     const fetches = fetchedAfter === undefined ? waited.fetches : [...waited.fetches, fetchedAfter];
     const seen = reading?.reported === undefined ? undefined : waited.seenAt.get(reading.reported);
     const since = fetches.slice(seen ?? fetches.length);
-    const told = since.length > 0 ? since : fetches;
+    const told = since.length > 0 ? since : fetches.slice(-1);
     const refetch = told.includes(true) ? 'fetched' : told.includes(false) ? 'failed' : undefined;
     const deploy = deployed === undefined || result.code === 4 ? { notLive: false } : await deployNote(reading, deployed, waited.seconds, refetch, cwd);
     const overruled = deploy.notLive && outcome === 'pass';

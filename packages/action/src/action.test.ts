@@ -314,7 +314,7 @@ describe('the seamkit action', () => {
 
   it('says what to change when the remote refuses the ledger push, by why it refused', async () => {
     for (const [refusal, advice] of [
-      ['refused by policy', /the verdict was recorded here but not pushed, so it is lost with this runner; allow this workflow to push the seamkit\/state branch, which a ruleset or branch protection may block, or set ledger: false: .*refused by policy/],
+      ['refused by policy', /the verdict was recorded here but not pushed, so it is lost with this runner; allow this workflow to push the seamkit\/state branch, which a ruleset or branch protection may block, or set ledger: false, which also stops this workflow reading the ledger: .*refused by policy/],
       ['Permission to o/r denied', /not pushed, so it is lost with this runner; give the job "permissions: contents: write": /],
     ] as const) {
       const { remote, ci, commits } = await project();
@@ -329,7 +329,7 @@ describe('the seamkit action', () => {
 
   it('advises on a failed ledger push by what the error says, and only then', () => {
     assert.match(pushAdvice('seamkit: git ls-remote origin refs/heads/seamkit/state exited 128: remote: Permission to o/r denied; fatal: ... 403') ?? '', /contents: write/);
-    assert.match(pushAdvice('seamkit: origin refused the push to seamkit/state while no other writer was pushing: hook declined') ?? '', /ledger: false$/);
+    assert.match(pushAdvice('seamkit: origin refused the push to seamkit/state while no other writer was pushing: hook declined') ?? '', /ledger: false, which also stops this workflow reading the ledger$/);
     assert.match(pushAdvice('seamkit: git push origin refs/heads/seamkit/state exited 1: ! [rejected] (fetch first)') ?? '', /concurrency group/);
     assert.match(pushAdvice('seamkit: could not synchronise seamkit/state with origin after 12 attempts') ?? '', /concurrency group/);
     assert.equal(pushAdvice('seamkit: state branches disagree about "events/x.json"; one copy has been altered, run seamkit state verify'), undefined);
@@ -550,11 +550,17 @@ describe('the seamkit action', () => {
     await git(['branch', shadow, commits[1] as string], { cwd: ci });
     assert.equal((await act(ci, { sha: shadow, wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' })).code, 2);
     assert.match((lastPost()['output'] as { title: string }).title, /is also the name of a tag or branch/);
-    // A branch alone is a ref too.
+    // A branch alone is a ref too, and so is every other name git tries for the text.
     await git(['tag', '-d', shadow], { cwd: ci });
     assert.equal((await act(ci, { sha: shadow, wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' })).code, 2);
     assert.match((lastPost()['output'] as { title: string }).title, /is also the name of a tag or branch/);
     await git(['branch', '-D', shadow], { cwd: ci });
+    for (const name of [`refs/${shadow}`, `refs/remotes/${shadow}`, `refs/remotes/${shadow}/HEAD`]) {
+      await git(['update-ref', name, commits[1] as string], { cwd: ci });
+      assert.equal((await act(ci, { sha: shadow, wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' })).code, 2, name);
+      assert.match((lastPost()['output'] as { title: string }).title, /is also the name of a tag or branch/, name);
+      await git(['update-ref', '-d', name], { cwd: ci });
+    }
     // Hex in capitals is the same abbreviation, and a ref of that name shadows it too.
     await git(['tag', shadow.toUpperCase(), commits[1] as string], { cwd: ci });
     assert.equal((await act(ci, { sha: shadow.toUpperCase(), wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' })).code, 2);
@@ -699,6 +705,33 @@ describe('the seamkit action', () => {
     assert.equal(ran.code, 1, ran.logs.join('\n'));
     assert.ok(ran.warnings.some((w) => /could not fetch main from origin again/.test(w)), ran.warnings.join('\n'));
     assert.match((lastPost()['output'] as { summary: string }).summary, /a commit this repository does not have even after fetching the branch again/);
+  });
+
+  it('says fetching failed for a commit first seen after the last fetch, which failed, though an earlier one succeeded', async () => {
+    const { remote, ci, commits } = await project({ card: true });
+    const dev = join(root, `dev-later-${++counter}`);
+    await git(['clone', '-q', `file://${remote}`, dev], { cwd: root });
+    await git([...ID, 'commit', '-q', '--allow-empty', '-m', 'Add the chart (#3)'], { cwd: dev });
+    const later = await git(['rev-parse', 'HEAD'], { cwd: dev });
+    // A hand deploy, fetched for in vain; then the deployed commit, which ends the wait.
+    servePage('0123456789abcdef0123456789abcdef01234567');
+    let landed = false;
+    const ran = await act(ci, { ledger: 'true', wait: '10', pr: '2' }, success(commits[2] as string), {
+      log: (line) => {
+        if (/fetched main again/.test(line)) servePage(commits[2] as string);
+        if (landed || !/production runs the deployed commit/.test(line)) return;
+        // A merge is deployed after the wait, and origin cannot be reached for the fetch after it.
+        landed = true;
+        execFileSync('git', ['push', '-q', 'origin', 'main'], { cwd: dev });
+        servePage(later);
+        renameSync(remote, `${remote}.away`);
+      },
+    });
+    renameSync(`${remote}.away`, remote);
+    assert.equal(ran.code, 1, ran.logs.join('\n'));
+    const output = lastPost()['output'] as { title: string; summary: string };
+    assert.equal(output.title, `FAIL: production runs ${later.slice(0, 12)}, which this repository does not have`);
+    assert.match(output.summary, /a commit this repository does not have because fetching the branch again failed/);
   });
 
   it('says fetching failed when the only fetch, the one after the wait, failed', async () => {

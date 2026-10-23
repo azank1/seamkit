@@ -199,6 +199,10 @@ describe('GitStateStore', () => {
     assert.match(traced.stderr, /trace:/);
     assert.match(traced.stderr, /http:\/\/127\.0\.0\.1:9\/o\/r\.git/);
     assert.ok(!traced.stderr.includes('s3cr3t-token'), traced.stderr);
+    // A password can hold an @ that is not encoded; none of it is left.
+    const at = await runGit(['ls-remote', 'http://vault1@pass2@word3@127.0.0.1:9/o/r.git'], { cwd, env: { GIT_TRACE: '1' } });
+    assert.match(at.stderr, /http:\/\/127\.0\.0\.1:9\/o\/r\.git/);
+    for (const part of ['vault1', 'pass2', 'word3']) assert.ok(!at.stderr.includes(part), at.stderr);
   });
 
   it('keeps curl tracing and request headers out of the errors an http remote gives', async () => {
