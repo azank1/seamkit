@@ -8975,7 +8975,7 @@ function quietEnv(extra) {
   }
   return { ...env, GIT_TRACE2: "0", GIT_TRACE2_PERF: "0", GIT_TRACE2_EVENT: "0", GIT_TRACE_REDACT: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...extra };
 }
-var USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^\r\n/]*@/gi;
+var USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^\r\n]*@/gi;
 function runGit(args, opts) {
   return new Promise((resolve3, reject) => {
     const child = spawn("git", args, {
@@ -10204,6 +10204,8 @@ async function cmdCheck(args, flags, cwd, io) {
     throw new UsageError(`unexpected argument: ${extra[0]}`);
   if (flags.record && flags["no-record"])
     throw new UsageError("--record and --no-record cannot be combined");
+  if (flags["no-ledger"])
+    throw new UsageError("--no-ledger is for readback; use --no-record to keep a check out of the ledger");
   const def = defaultRegistry().get(name);
   if (def === void 0)
     throw new UsageError(`unknown check: ${name}; see "seamkit checks"`);

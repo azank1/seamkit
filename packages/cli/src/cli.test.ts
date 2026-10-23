@@ -126,6 +126,12 @@ describe('seamkit cli', () => {
     // Keeping a run out of a ledger that exists says so, not that the ledger is missing.
     const kept = await cli(['check', 'invariant', '--no-record'], { cwd: dir, stdin: HELD });
     assert.equal(kept.err, 'not recorded (--no-record)\n');
+    // --no-ledger is readback's: check refuses it rather than drop a --record or skip the ledger.
+    for (const flags of [['--no-ledger'], ['--record', '--no-ledger']]) {
+      const refused = await cli(['check', 'invariant', ...flags], { cwd: dir, stdin: HELD });
+      assert.equal(refused.code, 2, flags.join(' '));
+      assert.match(refused.err, /--no-ledger is for readback/);
+    }
     const listed = JSON.parse((await cli(['state', 'list', '--json'], { cwd: dir })).out);
     assert.equal(listed.length, 1);
     assert.deepEqual(listed[0].outcomes, ['pass']);
