@@ -370,8 +370,14 @@ async function written(deps: ActionDeps, write: () => Promise<void>): Promise<vo
 
 const PERMISSION = /\b403\b|denied|permission|not allowed|authentication/i;
 
+/** What git says when the push needs a credential and the checkout kept none: seamkit's git never prompts. */
+const NO_CREDENTIAL = /could not read (?:Username|Password) for /i;
+
 /** What to change when the ledger could not be pushed, or undefined when the error does not say. */
 export function pushAdvice(err: string): string | undefined {
+  if (NO_CREDENTIAL.test(err)) {
+    return "keep actions/checkout's default persist-credentials, since recording pushes with the checkout's credentials, or set ledger: false, which also stops this workflow reading the ledger";
+  }
   if (PERMISSION.test(err)) return 'give the job "permissions: contents: write"';
   if (/refused the push to seamkit\/state while no other writer was pushing/.test(err)) {
     return 'allow this workflow to push the seamkit/state branch, which a ruleset or branch protection may block, or set ledger: false, which also stops this workflow reading the ledger';

@@ -210,6 +210,15 @@ describe('GitStateStore', () => {
       assert.match(quoted.stderr, /trace:/);
       for (const part of ['vault1', 'pass2', 'tok3', 'word4']) assert.ok(!quoted.stderr.includes(part), quoted.stderr);
     }
+    // git and curl end the authority at its first / ? or #, so the host curl names can be a piece of
+    // the password, or with a port the user name; neither is left, traced or not.
+    for (const odd of ['vault1:pass2@tok3/word4', 'vault1:pass2@tok3?word4', 'vault1:pass2@tok3#word4', 'vault1:pass2@tok3:80/word4', 'tok3/word4', 'vault1:1234/word4', 'vault1:pass2@127.0.0.2:9/word4']) {
+      for (const env of [{ GIT_TRACE: '1' }, {}]) {
+        const named = await runGit(['ls-remote', `http://${odd}@127.0.0.1:9/o/r.git`], { cwd, env });
+        assert.match(named.stderr, /http:\/\/127\.0\.0\.1:9\/o\/r\.git/);
+        for (const part of odd.split(/[:@/?#]+/).filter((p) => !/^\d*$/.test(p))) assert.ok(!named.stderr.includes(part), `${odd} left ${part}: ${named.stderr}`);
+      }
+    }
     // git refuses a URL holding a line break and prints it whole, traced or not, wherever the break and
     // any @ fall; its words are replaced by the reason.
     const split = ['vault1:pass2tok3\n', 'vault1\n:pass2tok3', 'vault1:pass2tok3\r\n', 'me@corp.example:pass2tok3\n', 'vault1\n:pa@tok3', 'vault1:pa@tok3\n', 'me@corp.example\n:tok3', 'vault1:pa@ss2\ntok3\nword4', 'va@ult1\nx:pass2'];
@@ -224,16 +233,76 @@ describe('GitStateStore', () => {
 
   it('removes a URL credential split over lines, however its @ and line breaks fall', () => {
     // Text in which a URL runs over lines but git did not refuse it, such as a trace of the command.
-    const shapes = ['mex4@corp9.example:pass2tok3\n', 'vault1\n:pak7@tok3', 'vault1:pak7@tok3\n', 'mex4@corp9.example\n:tok3', 'vault1:pak7@ss29\ntok3\nword4', 'usr9:pak7@ss29\r\ntok3\r\n', 'vak7@ult1\nxq79:pass2', 'vault1:pass2tok3\n'];
+    const shapes = ['mex4@corp9.example:pass2tok3\n', 'vault1\n:pak7@tok3', 'vault1:pak7@tok3\n', 'mex4@corp9.example\n:tok3', 'vault1:pak7@ss29\ntok3\nword4', 'usr9:pak7@ss29\r\ntok3\r\n', 'vak7@ult1\nxq79:pass2', 'vault1:pass2tok3\n', 'mex4@corp9.example\n:pak7@tok3'];
+    // Each line break with an @ on both sides costs one more pass, so no fixed number of passes will do.
+    for (let k = 1; k <= 8; k++) shapes.push(Array.from({ length: k }, (_, i) => `uq${i}x@vq${i}y`).join('\n'));
     for (const odd of shapes) {
-      const text = `trace: built-in: git ls-remote 'http://${odd}@127.0.0.1:9/o/r.git'\nfatal: unable to access 'http://127.0.0.1:9/o/r.git/': Failed to connect\n`;
-      const scrubbed = scrubGitText(text);
-      for (const part of odd.split(/[\r\n:@]+/).filter((p) => p !== '')) assert.ok(!scrubbed.includes(part), `${JSON.stringify(odd)} left ${JSON.stringify(part)}: ${scrubbed}`);
-      assert.match(scrubbed, /127\.0\.0\.1:9\/o\/r\.git'\n/);
+      // Quoted, as git prints a command, and bare, as a remote helper's arguments are traced.
+      const lines: [string, RegExp][] = [
+        [`trace: built-in: git ls-remote 'http://${odd}@127.0.0.1:9/o/r.git'`, /'http:\/\/127\.0\.0\.1:9\/o\/r\.git'\n/],
+        [`trace: run_command: git remote-http origin http://${odd}@127.0.0.1:9/o/r.git`, /origin http:\/\/127\.0\.0\.1:9\/o\/r\.git\n/],
+      ];
+      for (const [line, kept] of lines) {
+        const scrubbed = scrubGitText(`${line}\nfatal: unable to access 'http://127.0.0.1:9/o/r.git/': Failed to connect\n`);
+        for (const part of odd.split(/[\r\n:@]+/).filter((p) => p !== '')) assert.ok(!scrubbed.includes(part), `${JSON.stringify(odd)} left ${JSON.stringify(part)}: ${scrubbed}`);
+        assert.match(scrubbed, kept);
+      }
     }
     // Text with no credential is left as git wrote it.
     const plain = "fatal: unable to access 'https://github.example/o/r/': The requested URL returned error: 403\n";
     assert.equal(scrubGitText(plain), plain);
+  });
+
+  it('keeps the credentials in a remote that git reads as a local path out of its errors', async () => {
+    const cwd = await repo('localpath');
+    // A mistyped scheme, or none, makes git read the remote as a path, which its errors quote whole.
+    const paths: [string, string[]][] = [
+      ['https//vault1:tok3@127.0.0.1:9/o/r.git', ['vault1', 'tok3']],
+      ['//vault1:tok3@127.0.0.1:9/o/r.git', ['vault1', 'tok3']],
+      ['tok3@127.0.0.1/o/r.git', ['tok3']],
+      ['tok3\n@127.0.0.1/o/r.git', ['tok3']],
+      ['vault1@pa@tok3\nword4@127.0.0.1/o/r.git', ['vault1', 'tok3', 'word4']],
+    ];
+    for (const [path, parts] of paths) {
+      const r = await runGit(['ls-remote', path], { cwd });
+      assert.match(r.stderr, /does not appear to be a git repository/);
+      for (const part of parts) assert.ok(!r.stderr.includes(part), `${JSON.stringify(path)} left ${part}: ${r.stderr}`);
+    }
+    // With a colon and no scheme, git reads host:path and hands ssh the user name or token as the host.
+    for (const path of ['vault1:tok3@127.0.0.1/o/r.git', 'ghs_tok3:x-oauth-basic@127.0.0.1/o/r.git']) {
+      const r = await runGit(['ls-remote', path], { cwd });
+      assert.notEqual(r.code, 0);
+      for (const part of ['vault1', 'tok3']) assert.ok(!r.stderr.toLowerCase().includes(part), `${JSON.stringify(path)} left ${part}: ${r.stderr}`);
+    }
+    // A trace prints a path with a // unquoted, and it loses its credentials there too.
+    for (const path of ['https//vault1:tok3@127.0.0.1:9/o/r.git', '//vault1:tok3@127.0.0.1:9/o/r.git']) {
+      const traced = await runGit(['ls-remote', path], { cwd, env: { GIT_TRACE: '1' } });
+      assert.match(traced.stderr, /trace:/);
+      for (const part of ['vault1', 'tok3']) assert.ok(!traced.stderr.includes(part), traced.stderr);
+    }
+    // The usual way a job adds a token, with the same typo in its base.
+    const rewritten = await runGit(['-c', 'url.https//x-access-token:tok3@127.0.0.1:9/.insteadOf=http://127.0.0.1:9/', 'ls-remote', 'http://127.0.0.1:9/o/r.git'], { cwd });
+    assert.match(rewritten.stderr, /does not appear to be a git repository/);
+    assert.ok(!rewritten.stderr.includes('tok3'), rewritten.stderr);
+  });
+
+  it('hides the hosts curl names, which can be part of a password, and keeps the URL beside them', () => {
+    const text = [
+      "fatal: unable to access 'http://127.0.0.1:9/o/r.git/': Could not resolve host: tok3",
+      "fatal: unable to access 'https://127.0.0.1:9/o/r.git/': Could not resolve proxy: tok3",
+      "fatal: unable to access 'http://127.0.0.1:9/o/r.git/': Failed to connect to 127.0.0.2 port 9 after 0 ms: Couldn't connect to server",
+      "fatal: unable to access 'http://127.0.0.1:9/o/r.git/': Failed to connect to proxy tok3 port 8080",
+      "fatal: unable to access 'https://127.0.0.1:9/o/r.git/': SSL: no alternative certificate subject name matches target host name 'tok3'",
+      "fatal: unable to access 'https://127.0.0.1:9/o/r.git/': OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to tok3:443",
+    ].join('\n');
+    const scrubbed = scrubGitText(text);
+    assert.ok(!scrubbed.includes('tok3') && !scrubbed.includes('127.0.0.2'), scrubbed);
+    assert.equal(scrubbed.match(/\(host not shown\)/g)?.length, 6, scrubbed);
+    assert.equal(scrubbed.match(/'https?:\/\/127\.0\.0\.1:9\/o\/r\.git\/'/g)?.length, 6, scrubbed);
+    assert.match(scrubbed, /in connection to \(host not shown\):443$/);
+    // ssh names its host the same ways, keeping the words around it.
+    const ssh = 'ssh: Could not resolve hostname tok3: Name or service not known\r\nssh: connect to host tok3 port 22: Connection refused\r\n';
+    assert.equal(scrubGitText(ssh), 'ssh: Could not resolve hostname (host not shown): Name or service not known\r\nssh: connect to host (host not shown) port 22: Connection refused\r\n');
   });
 
   it('keeps curl tracing and request headers out of the errors an http remote gives', async () => {
@@ -246,7 +315,9 @@ describe('GitStateStore', () => {
     const { port } = server.address() as AddressInfo;
     const url = `http://s3cr3t-user@127.0.0.1:${port}/o/r.git`;
     const header = ['-c', 'http.extraheader=X-Deploy-Token: s3cr3t-header'];
-    const set = { GIT_CURL_VERBOSE: '1', GIT_TRACE_CURL: '1', GIT_TRACE_PACKET: '1', GIT_TRACE_REDACT: '0', GIT_TRACE_REFS: '1', GIT_TRACE_CURL_NO_DATA: '1' };
+    // Passed to git, these would print this exchange's curl traffic, refs, timings and setup, unredacted. A 403
+    // ends it before any packet, so the next test covers the variables that print nothing here.
+    const set = { GIT_CURL_VERBOSE: '1', GIT_TRACE_CURL: '1', GIT_TRACE_REDACT: '0', GIT_TRACE_REFS: '1', GIT_TRACE_CURL_NO_DATA: '1', GIT_TRACE_PERFORMANCE: '1', GIT_TRACE_SETUP: '1' };
     const saved = Object.fromEntries([...Object.keys(set), 'GIT_CONFIG_GLOBAL'].map((k) => [k, process.env[k]]));
     try {
       // trace2 can also be turned on in git config, for every git on a machine.
@@ -265,6 +336,26 @@ describe('GitStateStore', () => {
         else process.env[k] = v;
       }
       await new Promise((done) => server.close(done));
+    }
+  });
+
+  it('turns off every git trace, a name git has not invented yet included', async () => {
+    const cwd = await repo('envdump');
+    const names = ['GIT_TRACE', 'GIT_TRACE_PACKET', 'GIT_TRACE_PERFORMANCE', 'GIT_TRACE_SETUP', 'GIT_TRACE_PACKFILE', 'GIT_TRACE_PACK_ACCESS', 'GIT_TRACE_SHALLOW', 'GIT_TRACE_FSMONITOR', 'GIT_TRACE_CURL', 'GIT_TRACE_CURL_NO_DATA', 'GIT_TRACE_REFS', 'GIT_TRACE_SEAMKIT_PROBE', 'GIT_CURL_VERBOSE'];
+    const saved = Object.fromEntries([...names, 'GIT_TRACE_REDACT'].map((k) => [k, process.env[k]]));
+    try {
+      for (const name of names) process.env[name] = '1';
+      process.env['GIT_TRACE_REDACT'] = '0';
+      // The environment git hands an alias is the one seamkit gave it.
+      const r = await runGit(['-c', 'alias.seamkit-env=!env', 'seamkit-env'], { cwd });
+      assert.equal(r.code, 0, r.stderr);
+      const left = r.stdout.toString('utf8').split('\n').filter((line) => /^GIT_(TRACE|CURL)/.test(line)).sort();
+      assert.deepEqual(left, ['GIT_TRACE2=0', 'GIT_TRACE2_EVENT=0', 'GIT_TRACE2_PERF=0', 'GIT_TRACE_REDACT=1']);
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
     }
   });
 

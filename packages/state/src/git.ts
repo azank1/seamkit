@@ -41,9 +41,25 @@ function quietEnv(extra: Record<string, string> | undefined): NodeJS.ProcessEnv 
  * A URL's user name and password, removed from text git wrote: everything up to the last @ on the
  * line, since a password can hold an @, a slash, a quote or a space that is not encoded. A newline
  * in either puts the @ on a later line, so with none on the URL's own line the match runs on to
- * the next @. Removing too much only hides text.
+ * the next @. A // with a mistyped scheme or none, which git reads as a local path, starts a match
+ * too. Removing too much only hides text.
  */
-const USERINFO = /([a-z][a-z0-9+.-]*:\/\/)(?:[^\r\n]*@|[^@]*@)/gi;
+const USERINFO = /((?:[a-z][a-z0-9+.-]*:?)?\/\/)(?:[^\r\n]*@|[^@]*@)/gi;
+
+/**
+ * git quotes a remote it reads as a local path whole, so quoted text loses everything up to its
+ * last @, line breaks included, as a path with no // at all, such as token@host/o/r, gives no
+ * other sign. A trace prints that path unquoted, but seamkit's own runs trace nothing.
+ */
+const QUOTED = /'[^']*@/g;
+
+/**
+ * git and curl split a URL's authority at its first @, ended by its first / ? or #, and seamkit
+ * removes everything up to the last @, so the host curl names can be part of a password. A URL
+ * missing its scheme reads as host:path, so the host ssh names can be its user name or token.
+ * Those names are hidden; for curl, the URL git prints beside them still shows the host meant.
+ */
+const NAMED_HOST = /(Could not resolve (?:host|proxy|hostname):? |Failed to connect to (?:proxy )?|connect to host |target host name '|in connection to )[^\s':]+/gi;
 
 /** What git says when a URL holds a line break. It refuses such a URL, and prints it whole. */
 const SPLIT_URL = /url contains a newline in its [a-z ]+ component/i;
@@ -51,7 +67,8 @@ const SPLIT_URL = /url contains a newline in its [a-z ]+ component/i;
 /**
  * Text git wrote, with no URL's credentials left in it. git refuses a URL holding a line break, so
  * its words about one are replaced by the reason. Elsewhere the removal repeats until no URL is
- * followed by an @, since a user name or password can hold both an @ and a line break.
+ * followed by an @, since a user name or password can hold both an @ and a line break. Quoted text
+ * then loses what is left up to its last @, which only takes text away, so no URL can match again.
  */
 export function scrubGitText(text: string): string {
   if (SPLIT_URL.test(text)) return "fatal: the remote's URL holds a line break, which git refuses (check the secret it is built from)\n";
@@ -61,7 +78,7 @@ export function scrubGitText(text: string): string {
     before = scrubbed;
     scrubbed = scrubbed.replace(USERINFO, '$1');
   } while (scrubbed !== before);
-  return scrubbed;
+  return scrubbed.replace(QUOTED, "'").replace(NAMED_HOST, '$1(host not shown)');
 }
 
 /**

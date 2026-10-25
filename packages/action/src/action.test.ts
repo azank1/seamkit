@@ -339,6 +339,10 @@ describe('the seamkit action', () => {
   it('advises on a failed ledger push by what the error says, and only then', () => {
     assert.match(pushAdvice('seamkit: git ls-remote origin refs/heads/seamkit/state exited 128: remote: Permission to o/r denied; fatal: ... 403') ?? '', /contents: write/);
     assert.match(pushAdvice('seamkit: origin refused the push to seamkit/state while no other writer was pushing: hook declined') ?? '', /ledger: false, which also stops this workflow reading the ledger$/);
+    // persist-credentials: false leaves a public repository readable and the push without a credential.
+    const anonymous = "seamkit: origin refused the push to seamkit/state while no other writer was pushing: fatal: could not read Username for 'https://github.com': terminal prompts disabled";
+    assert.match(pushAdvice(anonymous) ?? '', /^keep actions\/checkout's default persist-credentials/);
+    assert.doesNotMatch(pushAdvice(anonymous) ?? '', /ruleset/);
     assert.match(pushAdvice('seamkit: git push origin refs/heads/seamkit/state exited 1: ! [rejected] (fetch first)') ?? '', /concurrency group/);
     assert.match(pushAdvice('seamkit: could not synchronise seamkit/state with origin after 12 attempts') ?? '', /concurrency group/);
     assert.equal(pushAdvice('seamkit: state branches disagree about "events/x.json"; one copy has been altered, run seamkit state verify'), undefined);
@@ -1068,6 +1072,19 @@ describe('the seamkit action', () => {
     assert.equal(ran.code, 2, ran.logs.join('\n'));
     assert.equal(output(ran, 'outcome'), 'error');
     assert.match((lastPost()['output'] as { title: string }).title, /^No verdict: could not fetch main from origin, so changes merged since this job's commit cannot be examined/);
+  });
+
+  it('keeps the token out of every report when origin is a URL that git reads as a path', async () => {
+    const { ci, commits } = await project();
+    deploy(commits[1]);
+    // A step after the checkout adds a token and slips on the scheme, so git quotes the URL whole.
+    await git(['remote', 'set-url', 'origin', 'https//x-access-token:ghs_tok3s3cr3t@127.0.0.1:9/o/r.git'], { cwd: ci });
+    const ran = await act(ci, {}, success(commits[1] as string));
+    assert.equal(ran.code, 2, ran.logs.join('\n'));
+    const post = lastPost();
+    assert.match((post['output'] as { title: string }).title, /^No verdict: could not fetch main from origin/);
+    const reported = JSON.stringify([post, ran.summary, ran.outputs, ran.warnings, ran.logs]);
+    assert.ok(!reported.includes('tok3s3cr3t'), reported);
   });
 
   it('fetches the branch again when production reports a commit merged and deployed since the fetch', async () => {

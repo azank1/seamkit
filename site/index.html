@@ -957,6 +957,7 @@ fi</pre></div>
         <tr><td>Exit 2: URL refused</td><td>The URL carries a query string or credentials, and URLs are recorded.</td><td>Use a plain URL. Readback only needs public <code>GET</code>s.</td></tr>
         <tr><td>No verdict: "could not fetch &lt;branch&gt; from origin" or "is not a branch name"</td><td>The Action reads the branch as origin has it, because the checkout's copy stops at the job's commit and would hide a rollback.</td><td>Set <code>branch</code> to the branch changes merge into, such as <code>main</code>, and keep the checkout's credentials.</td></tr>
         <tr><td>An error annotation quoting a change's title</td><td>A problem matcher from an earlier step, such as <code>actions/setup-node</code>, read the readback's output.</td><td><code>echo "::remove-matcher owner=tsc::"</code> before readback, and the same for <code>eslint-stylish</code> and <code>eslint-compact</code>.</td></tr>
+        <tr><td>"the verdict was recorded here but not pushed"</td><td>The ledger push failed: the checkout kept no credentials (<code>persist-credentials: false</code>), the job lacks <code>contents: write</code>, a ruleset or branch protection blocks <code>seamkit/state</code>, or many readbacks pushed at once. The verdict stands; only its record is lost.</td><td>The warning names the change for the cause it found, and quotes git.</td></tr>
         <tr><td>"no ledger was read", or "the ledger was not read (--no-ledger)"</td><td>There is no ledger yet, or the Action runs with <code>ledger: false</code>, which does not read it. A change that left production then shows as not proven rather than not live.</td><td>Step 3: <code>seamkit state init</code>, or set <code>ledger</code> to <code>auto</code>.</td></tr>
       </tbody>
     </table>
@@ -1010,7 +1011,7 @@ fi</pre></div>
     updated: '2026-10-22',
     version: '0.2.0',
     npm: '0.1.0',   // the version npm serves; the release commit bumps it
-    tests: '246',
+    tests: '252',
     dogfood: '20 of 20',
     milestones: [
       { m: 'M1', title: 'Verdict core and ledger', state: 'done', when: '2026-10-15',
@@ -1025,6 +1026,7 @@ fi</pre></div>
       { m: 'M3', title: 'npm package and GitHub Action', state: 'active',
         scope: 'The seamkit npm package, and a GitHub Action that reads back after deploys and reports a check run.',
         doneWhen: 'npx seamkit audit works on a clean machine, and the Action posts a check run on a sample repository.',
+        result: 'Done-when met on 2026-10-26; the merge and the 0.2.0 release are next. In a clean container, npx seamkit audit examined nothing until the site served its commit, then passed, failed while a merged change waited for its deploy, and passed once it deployed. On a private sample on Vercel, the Action posted a pass for each live deploy, not live for a rollback, examined nothing for a 0.1.0 stamp, and a fail for a deploy the rollback kept off the address.',
         tasks: [
           ['ok', 'Bundled npm package with an install smoke test in CI (PR #4)'],
           ['ok', 'seamkit@0.1.0 published to npm, 2026-10-19, shasum e988fa0f'],
@@ -1087,6 +1089,8 @@ fi</pre></div>
       ['2026-10-24', 'Twenty-third review round (15 agents, 4 findings, 2 distinct, none high; nothing from the critic, which also ran the npm package through the whole lifecycle beside the workspace build and found them alike): a password holding an unencoded slash is removed whole from git\'s errors; check refuses --no-ledger, which belongs to readback, instead of dropping a --record. 245 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
       ['2026-10-24', 'Twenty-fourth review round (11 agents, 2 findings, both confirmed by both skeptics; nothing from the critic): a token ending in a line break, which git prints across two lines, is removed whole from git\'s errors; a ref named like the sha input that points at the deployed commit itself is tested to shadow nothing, and so is a branch named by the full id. 245 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
       ['2026-10-26', 'Twenty-fifth review round (25 agents, 9 findings, 8 confirmed by both skeptics and 1 split, 5 of them one gap, none high; nothing from the critic): a user name or password holding both an @ and a line break is removed whole from git\'s errors, since the removal now repeats, and git\'s refusal of a URL holding a line break is replaced by the reason; the default check name carries the url\'s path, so two productions on one host keep their own checks; the docs say where a watch that reads another branch posts its check, and that only a tag or branch pointing at another commit shadows a sha input; the curl-trace test sets GIT_TRACE_CURL. 246 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
+      ['2026-10-26', 'M3 on real infrastructure: a private sample site on Vercel, read back by the Action on GitHub-hosted runners. It passed the deploys that went live, failed a rollback as not live, and failed a deploy that GitHub listed as a successful Production deployment while the rollback kept the address on the old build. The work, with every recipe of this guide run against it, turned up ten things no fake production showed: six in seamkit and its recipes, all fixed (among them Vercel writing vercel.json into the checkout, which made every 0.1.0 stamp dirty, and a hook that passed every deploy on a machine without jq), and four in how Vercel behaves, now documented.'],
+      ['2026-10-26', 'Twenty-sixth review round (19 agents, 6 findings, all confirmed by both skeptics and all low, and 1 from the critic): the host that curl names in an error, or that ssh names for a URL missing its scheme, can be part of a password, so it is hidden; a remote that git reads as a local path, such as https//… or token@host/…, loses its credentials where git quotes it; the deploy readback and its watch share one check name, as the recipes have it; a ledger push without credentials is no longer blamed on a ruleset; SECURITY.md says what the Action touches; and the scrub and trace tests now tell the rules from a fixed number of passes or a list of names. 252 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
     ],
     decisions: [
       ['Program readback adapter (requested by an internal project)', 'Accept with changes, scheduled after M4. Notes in the knowledge base.', 'azank', 'wait'],

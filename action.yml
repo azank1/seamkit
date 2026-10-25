@@ -51,7 +51,9 @@ inputs:
   check-name:
     description: >-
       The check run's name. Defaults to "seamkit readback (<host><path>)" from the url input, so each production address
-      gets its own check; two jobs that read the same url need names of their own.
+      gets one check. The deploy readback and its watch of the default branch share it, and the later verdict on a
+      commit replaces the earlier one; a job that reads the same url for another branch, a pull request (pr) or
+      another version-url needs a name of its own.
     default: ''
   sha:
     description: >-

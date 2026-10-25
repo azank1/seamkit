@@ -533,7 +533,7 @@ usable by strangers ahead of the remaining checks: the npm package and the GitHu
 |---|---|---|---|
 | M1 | repository scaffold, `core` verdict algebra, event writer for the state branch, CLI skeleton with exit codes, replay | unit tests cover every outcome, including zero rows as `examined_nothing`, and a replay test reproduces every verdict | done, accepted |
 | M2 | `readback` with the version-endpoint and bundle-marker adapters, version ancestry, the fake production, `seamkit audit` with zero configuration, `seamkit stamp` | the demo history sorts into live, not proven, not live and nothing to prove, and the audit runs against commit.city | done, accepted |
-| M3 | the `seamkit` npm package; a GitHub Action that reads back after deploys and reports a check run | `npx seamkit audit` works on a clean machine, and the Action posts a check run on a sample repository | in progress, proposed |
+| M3 | the `seamkit` npm package; a GitHub Action that reads back after deploys and reports a check run | `npx seamkit audit` works on a clean machine, and the Action posts a check run on a sample repository | done-when met 2026-10-26 on a sample deployed to Vercel; the merge and the 0.2.0 release are pending |
 | M4 | MCP server with read-only tools mirroring the CLI, Claude Code plugin packaging | an MCP client runs an audit and receives the verdicts and the outcome | proposed |
 | M5 | `carry` and the split rule | given a production version behind main, carry lists the riding pull requests by title, and a hand deploy blocks | proposed |
 | M6 | `card` and `gate` with the GitHub adapter | `seamkit gate` lists each open pull request with its verdict and the exact missing items | proposed |
@@ -630,8 +630,11 @@ unknown-commit note goes by the fetches of the branch made since production firs
 commit each was made for: after one that succeeded the commit is on no branch fetched, and if every one failed, that
 is why. With none made since, the last fetch made says what this repository holds. A URL's user name and password are removed up to the last @ on the
 line, since a password can hold an unencoded @, slash, quote or space, and up to the next @ when a line break in
-them puts it on a later line; the removal repeats until no URL is followed by an @. git refuses a URL holding a line
-break and prints it whole, so its words about one are replaced by the reason. `ledger: false` neither reads nor
+them puts it on a later line; the removal repeats until no URL is followed by an @. A // with a mistyped scheme or
+none starts a URL too, and quoted text loses what is left up to its last @, because git reads such a remote as a local
+path and quotes it whole. git and curl end the authority at its first / ? or # and split it at its first @, so the
+host curl names in an error, or ssh names for a URL missing its scheme, can be part of a password, and is hidden.
+git refuses a URL holding a line break and prints it whole, so its words about one are replaced by the reason. `ledger: false` neither reads nor
 records the ledger, even one the checkout already holds: the Action passes `--no-ledger`, which judges as if there
 were no ledger and records nothing, and the docs and the push advice say what that costs. `--no-record` notes that it kept the run out of
 the ledger, not that the ledger is missing. A change whose card the run cannot read for lack of room, or cannot check, is still kept in `--deployed`

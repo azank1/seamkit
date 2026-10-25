@@ -8975,7 +8975,9 @@ function quietEnv(extra) {
   }
   return { ...env, GIT_TRACE2: "0", GIT_TRACE2_PERF: "0", GIT_TRACE2_EVENT: "0", GIT_TRACE_REDACT: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...extra };
 }
-var USERINFO = /([a-z][a-z0-9+.-]*:\/\/)(?:[^\r\n]*@|[^@]*@)/gi;
+var USERINFO = /((?:[a-z][a-z0-9+.-]*:?)?\/\/)(?:[^\r\n]*@|[^@]*@)/gi;
+var QUOTED = /'[^']*@/g;
+var NAMED_HOST = /(Could not resolve (?:host|proxy|hostname):? |Failed to connect to (?:proxy )?|connect to host |target host name '|in connection to )[^\s':]+/gi;
 var SPLIT_URL = /url contains a newline in its [a-z ]+ component/i;
 function scrubGitText(text) {
   if (SPLIT_URL.test(text))
@@ -8986,7 +8988,7 @@ function scrubGitText(text) {
     before = scrubbed;
     scrubbed = scrubbed.replace(USERINFO, "$1");
   } while (scrubbed !== before);
-  return scrubbed;
+  return scrubbed.replace(QUOTED, "'").replace(NAMED_HOST, "$1(host not shown)");
 }
 function runGit(args, opts) {
   return new Promise((resolve3, reject) => {
@@ -11091,7 +11093,11 @@ async function written(deps, write) {
   }
 }
 var PERMISSION = /\b403\b|denied|permission|not allowed|authentication/i;
+var NO_CREDENTIAL = /could not read (?:Username|Password) for /i;
 function pushAdvice(err) {
+  if (NO_CREDENTIAL.test(err)) {
+    return "keep actions/checkout's default persist-credentials, since recording pushes with the checkout's credentials, or set ledger: false, which also stops this workflow reading the ledger";
+  }
   if (PERMISSION.test(err))
     return 'give the job "permissions: contents: write"';
   if (/refused the push to seamkit\/state while no other writer was pushing/.test(err)) {
