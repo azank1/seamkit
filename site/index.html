@@ -789,7 +789,7 @@ done on any other exit code.</pre></div>
 }</pre></div>
     <div class="code"><div class="file"><span>scripts/after-deploy.sh</span></div><pre>#!/usr/bin/env bash
 <span class="c"># Runs after each shell command; acts only on deploys.</span>
-cmd=$(jq -r '.tool_input.command // ""')
+cmd=$(node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).tool_input?.command ?? ""')
 case "$cmd" in
   *"vercel deploy"*|*"npm run deploy"*) ;;
   *) exit 0 ;;
@@ -801,8 +801,9 @@ if ! out=$(./scripts/wait-live.sh https://your.app 300 2&gt;&amp;1); then
   exit 2   <span class="c"># stderr is shown to Claude</span>
 fi</pre></div>
   </div>
-  <p class="note">The hook uses <code>jq</code> to read the command Claude ran from the hook's JSON input. Match the
-    patterns to your own deploy commands. A packaged hook set for Claude Code, Cursor and Codex is on the roadmap.</p>
+  <p class="note">The hook reads the command Claude ran from the hook's JSON input with Node, which seamkit already
+    needs. A hook that depends on a tool the machine lacks reads an empty command, and every deploy then passes
+    unchecked. Match the patterns to your own deploy commands. A packaged hook set for Claude Code, Cursor and Codex is on the roadmap.</p>
 </section>
 
 <!-- ===================== STEP 7 ===================== -->
