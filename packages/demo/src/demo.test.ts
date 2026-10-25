@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Verdict } from '@seamkit/core';
-import { run } from 'seamkit';
+import { run } from '@seamkit/cli';
 import { runDemo, type DemoResult } from './demo.js';
 
 let root: string;

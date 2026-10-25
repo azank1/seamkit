@@ -1,7 +1,7 @@
 import { isBranchName } from '@seamkit/adapters';
 import { renderReadback, type Outcome, type Verdict } from '@seamkit/core';
 import { runGit } from '@seamkit/state';
-import { run, type Io } from 'seamkit';
+import { run, type Io } from '@seamkit/cli';
 import {
   ActionInputError,
   appendSummary,

@@ -12,7 +12,7 @@ import { parse as parseYaml } from 'yaml';
 import type { Verdict } from '@seamkit/core';
 import { FakeProduction } from '@seamkit/adapters';
 import { git } from '@seamkit/state';
-import { run as seamkitRun } from 'seamkit';
+import { run as seamkitRun } from '@seamkit/cli';
 import { pushAdvice, runAction, type ActionDeps } from './action.js';
 import { CONCLUSIONS, clip, errorReport, jobSummary, readbackReport } from './report.js';
 import { defaultBranchOf, deployedCommit, displayUrl, headSha, plainText, readInputs, scrub, skipReason, type GitHubContext } from './github.js';
