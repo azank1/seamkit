@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -893,6 +893,73 @@ describe('seamkit stamp', () => {
       assert.ok(named.err.split('\n').every((line) => !line.startsWith('seamkit: PASS')), named.err);
       assert.ok(!/[\u0000-\u0009\u000b-\u001f]/.test(named.err), JSON.stringify(named.err));
     }
+  });
+
+  it("leaves out the vercel.json Vercel's build writes, only when it holds the commit's settings", async () => {
+    const { dir, direct } = await repo();
+    const vercel = { VERCEL: '1', VERCEL_GIT_COMMIT_SHA: direct, VERCEL_GIT_COMMIT_REF: 'main' };
+    // With none committed, Vercel's build writes {} into the checkout before the build.
+    await writeFile(join(dir, 'vercel.json'), '{}');
+    const created = await cli(['stamp', '--out', 'public/version.json'], dir, vercel);
+    assert.equal(created.code, 0);
+    assert.equal(JSON.parse(await readFile(join(dir, 'public/version.json'), 'utf8')).dirty, false);
+    assert.match(created.err, /from git, clean\nnote: vercel\.json is not counted as uncommitted: Vercel's build writes it/);
+    await rm(join(dir, 'public'), { recursive: true });
+    // Anywhere but Vercel's build of this commit, the same file is a change like any other.
+    for (const env of [{}, { ...vercel, VERCEL: '' }, { ...vercel, VERCEL_GIT_COMMIT_SHA: 'd'.repeat(40) }]) {
+      const r = await cli(['stamp'], dir, env);
+      assert.equal(JSON.parse(r.out).dirty, true);
+      assert.match(r.err, /warning: 1 uncommitted change \(such as vercel\.json\)/);
+    }
+    // Settings that no commit holds are a change.
+    await writeFile(join(dir, 'vercel.json'), '{"cleanUrls":true}');
+    assert.equal(JSON.parse((await cli(['stamp'], dir, vercel)).out).dirty, true);
+    await writeFile(join(dir, 'vercel.json'), '{');
+    assert.equal(JSON.parse((await cli(['stamp'], dir, vercel)).out).dirty, true);
+
+    // A committed vercel.json reformatted, as Vercel's build writes it, is not a change; other settings are.
+    await writeFile(join(dir, 'vercel.json'), '{\n  "cleanUrls": true,\n  "headers": []\n}\n');
+    await writeFile(join(dir, 'settings.json'), '{\n  "a": 1\n}\n');
+    await git(['add', 'vercel.json', 'settings.json'], { cwd: dir });
+    await git([...ID, 'commit', '-q', '-m', 'add vercel.json'], { cwd: dir });
+    const head = await git(['rev-parse', 'HEAD'], { cwd: dir });
+    const built = { ...vercel, VERCEL_GIT_COMMIT_SHA: head.toUpperCase() };
+    await writeFile(join(dir, 'vercel.json'), '{"headers":[],"cleanUrls":true}');
+    const rewritten = await cli(['stamp'], dir, built);
+    assert.deepEqual(JSON.parse(rewritten.out), { schema: 'seamkit.version/1', commit: head, dirty: false, source: 'git', ref: 'main', builtAt: AT });
+    assert.match(rewritten.err, /^note: vercel\.json is not counted as uncommitted/);
+    assert.equal(JSON.parse((await cli(['stamp'], dir, {})).out).dirty, true);
+    // Only vercel.json: another file reformatted the same way is a change.
+    await writeFile(join(dir, 'settings.json'), '{"a":1}');
+    assert.match((await cli(['stamp'], dir, built)).err, /warning: 1 uncommitted change \(such as settings\.json\)/);
+    await git(['checkout', '-q', '--', 'settings.json'], { cwd: dir });
+    await writeFile(join(dir, 'vercel.json'), '{"headers":[],"cleanUrls":false}');
+    assert.equal(JSON.parse((await cli(['stamp'], dir, built)).out).dirty, true);
+    await writeFile(join(dir, 'vercel.json'), '{}');
+    assert.equal(JSON.parse((await cli(['stamp'], dir, built)).out).dirty, true);
+    // Beside another change, the build is dirty, and the other change is the one named.
+    await writeFile(join(dir, 'vercel.json'), '{"headers":[],"cleanUrls":true}');
+    await writeFile(join(dir, 'f1.txt'), 'edited\n');
+    const both = await cli(['stamp', '--require-clean'], dir, built);
+    assert.equal(both.code, 1);
+    assert.match(both.err, /refusing to stamp a build with 1 uncommitted change \(such as f1\.txt\)/);
+    // A vercel.json in another directory is held to the same rule.
+    await git(['checkout', '-q', '--', 'f1.txt', 'vercel.json'], { cwd: dir });
+    await mkdir(join(dir, 'web'), { recursive: true });
+    await writeFile(join(dir, 'web', 'vercel.json'), '{}');
+    assert.equal(JSON.parse((await cli(['stamp'], dir, built)).out).dirty, false);
+    await writeFile(join(dir, 'web', 'vercel.json'), '{"cleanUrls":true}');
+    assert.equal(JSON.parse((await cli(['stamp'], dir, built)).out).dirty, true);
+  });
+
+  it('names the branch Vercel built, not the branch of its checkout', async () => {
+    const { dir, direct } = await repo();
+    await git(['switch', '-q', '-c', 'master'], { cwd: dir });
+    const vercel = { VERCEL: '1', VERCEL_GIT_COMMIT_SHA: direct, VERCEL_GIT_COMMIT_REF: 'main' };
+    assert.equal(JSON.parse((await cli(['stamp'], dir, vercel)).out).ref, 'main');
+    assert.equal(JSON.parse((await cli(['stamp'], dir, { ...vercel, VERCEL_GIT_COMMIT_REF: ' ' })).out).ref, 'master');
+    assert.equal(JSON.parse((await cli(['stamp'], dir, { ...vercel, VERCEL_GIT_COMMIT_SHA: 'd'.repeat(40) })).out).ref, 'master');
+    assert.equal(JSON.parse((await cli(['stamp'], dir)).out).ref, 'master');
   });
 
   it('falls back to the CI variable outside a repository, and refuses to guess', async () => {

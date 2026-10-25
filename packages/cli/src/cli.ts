@@ -351,7 +351,7 @@ async function cmdReadback(args: string[], flags: Flags, cwd: string, io: Io, au
 async function cmdStamp(args: string[], flags: Flags, cwd: string, io: Io): Promise<number> {
   if (args.length > 0) throw new UsageError(`unexpected argument: ${args[0]}`);
   const req = { requireClean: flags['require-clean'] === true, ...(flags.out ? { out: flags.out } : {}), ...(flags.commit ? { commit: flags.commit } : {}) };
-  const { doc, uncommitted } = await makeStamp(cwd, req, io.env, io.now());
+  const { doc, uncommitted, hostWritten } = await makeStamp(cwd, req, io.env, io.now());
   const changes = `${uncommitted.length} uncommitted change${uncommitted.length === 1 ? '' : 's'} (such as ${oneLine(uncommitted[0] ?? '')})`;
   if (doc.dirty === true && req.requireClean) {
     io.err(`seamkit: refusing to stamp a build with ${changes}\n`);
@@ -363,6 +363,10 @@ async function cmdStamp(args: string[], flags: Flags, cwd: string, io: Io): Prom
     io.err(`stamped ${oneLine(path)}: ${doc.commit.slice(0, 12)} from ${doc.source}, ${state}\n`);
   } else {
     io.out(versionDocText(doc));
+  }
+  if (hostWritten.length > 0) {
+    const one = hostWritten.length === 1;
+    io.err(`note: ${hostWritten.map(oneLine).join(', ')} ${one ? 'is' : 'are'} not counted as uncommitted: Vercel's build writes ${one ? 'it' : 'them'} into the checkout, holding the settings ${doc.commit.slice(0, 12)} holds\n`);
   }
   if (doc.dirty === true) {
     io.err(`warning: ${changes}, so this build does not match ${doc.commit.slice(0, 12)}, and readback will not treat its version as proof\n`);

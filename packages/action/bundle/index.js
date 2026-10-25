@@ -9409,7 +9409,7 @@ ${a}^{commit}
 };
 
 // packages/cli/dist/cli.js
-import { readFile } from "node:fs/promises";
+import { readFile as readFile2 } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { resolve as resolve2 } from "node:path";
 import { parseArgs } from "node:util";
@@ -9961,7 +9961,7 @@ function auditAdvice(context) {
 }
 
 // packages/cli/dist/stamp.js
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 var STAMP_ENV_VARS = [
   "VERCEL_GIT_COMMIT_SHA",
@@ -9998,6 +9998,20 @@ async function uncommitted(top, outPath) {
   const own = outPath === void 0 ? void 0 : relative(top, outPath).split("\\").join("/");
   return paths.filter((p) => p !== own);
 }
+function onVercel(env, head) {
+  return env["VERCEL"] === "1" && env["VERCEL_GIT_COMMIT_SHA"]?.trim().toLowerCase() === head;
+}
+async function writtenByVercel(top, path) {
+  if (path.split("/").pop() !== "vercel.json")
+    return false;
+  try {
+    const written2 = canonicalJson(JSON.parse(await readFile(resolve(top, path), "utf8")));
+    const committed = await runGit(["cat-file", "blob", `HEAD:${path}`], { cwd: top });
+    return written2 === canonicalJson(committed.code === 0 ? JSON.parse(committed.stdout.toString("utf8")) : {});
+  } catch {
+    return false;
+  }
+}
 async function makeStamp(cwd, req, env, builtAt) {
   const outPath = req.out === void 0 ? void 0 : resolve(cwd, req.out);
   const top = await gitText(["rev-parse", "--show-toplevel"], cwd);
@@ -10011,23 +10025,31 @@ async function makeStamp(cwd, req, env, builtAt) {
       full = req.commit.toLowerCase();
     if (full === void 0)
       throw new StampError(`--commit ${req.commit} does not name a commit${top === void 0 ? "; outside a repository give the full commit id" : ""}`);
-    return { doc: { schema: VERSION_DOC_SCHEMA, commit: full, source: "argument", builtAt }, uncommitted: [] };
+    return { doc: { schema: VERSION_DOC_SCHEMA, commit: full, source: "argument", builtAt }, uncommitted: [], hostWritten: [] };
   }
   if (top !== void 0) {
     const head = await gitText(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], top);
     if (head !== void 0) {
-      const changed = await uncommitted(top, outPath);
+      const vercel = onVercel(env, head);
+      const changed = [];
+      const hostWritten = [];
+      for (const path of await uncommitted(top, outPath)) {
+        if (vercel && await writtenByVercel(top, path))
+          hostWritten.push(path);
+        else
+          changed.push(path);
+      }
       const doc = { schema: VERSION_DOC_SCHEMA, commit: head, dirty: changed.length > 0, source: "git", builtAt };
-      const ref = await gitText(["symbolic-ref", "--short", "-q", "HEAD"], top);
+      const ref = (vercel ? env["VERCEL_GIT_COMMIT_REF"]?.trim() : void 0) || await gitText(["symbolic-ref", "--short", "-q", "HEAD"], top);
       if (ref)
         doc.ref = ref;
-      return { doc, uncommitted: changed };
+      return { doc, uncommitted: changed, hostWritten };
     }
   }
   for (const name of STAMP_ENV_VARS) {
     const value = env[name]?.trim().toLowerCase();
     if (value !== void 0 && COMMIT_PATTERN.test(value)) {
-      return { doc: { schema: VERSION_DOC_SCHEMA, commit: value, source: `env:${name}`, builtAt }, uncommitted: [] };
+      return { doc: { schema: VERSION_DOC_SCHEMA, commit: value, source: `env:${name}`, builtAt }, uncommitted: [], hostWritten: [] };
     }
   }
   throw new StampError(`cannot tell which commit this build is from: run stamp inside the repository, pass --commit, or set one of ${STAMP_ENV_VARS.join(", ")}`);
@@ -10188,7 +10210,7 @@ async function readInput(flags, cwd, io) {
       throw new UsageError("give the input with --input <file>, or pipe it on stdin");
     text = await io.readStdin();
   } else {
-    text = await readFile(resolve2(cwd, flags.input), "utf8");
+    text = await readFile2(resolve2(cwd, flags.input), "utf8");
   }
   try {
     return JSON.parse(text);
@@ -10341,7 +10363,7 @@ async function cmdStamp(args, flags, cwd, io) {
   if (args.length > 0)
     throw new UsageError(`unexpected argument: ${args[0]}`);
   const req = { requireClean: flags["require-clean"] === true, ...flags.out ? { out: flags.out } : {}, ...flags.commit ? { commit: flags.commit } : {} };
-  const { doc, uncommitted: uncommitted2 } = await makeStamp(cwd, req, io.env, io.now());
+  const { doc, uncommitted: uncommitted2, hostWritten } = await makeStamp(cwd, req, io.env, io.now());
   const changes = `${uncommitted2.length} uncommitted change${uncommitted2.length === 1 ? "" : "s"} (such as ${oneLine(uncommitted2[0] ?? "")})`;
   if (doc.dirty === true && req.requireClean) {
     io.err(`seamkit: refusing to stamp a build with ${changes}
@@ -10355,6 +10377,11 @@ async function cmdStamp(args, flags, cwd, io) {
 `);
   } else {
     io.out(versionDocText(doc));
+  }
+  if (hostWritten.length > 0) {
+    const one = hostWritten.length === 1;
+    io.err(`note: ${hostWritten.map(oneLine).join(", ")} ${one ? "is" : "are"} not counted as uncommitted: Vercel's build writes ${one ? "it" : "them"} into the checkout, holding the settings ${doc.commit.slice(0, 12)} holds
+`);
   }
   if (doc.dirty === true) {
     io.err(`warning: ${changes}, so this build does not match ${doc.commit.slice(0, 12)}, and readback will not treat its version as proof
@@ -10536,7 +10563,7 @@ function integrityVerdict(exists, files2, at2) {
 }
 
 // packages/action/dist/github.js
-import { appendFile, readFile as readFile2 } from "node:fs/promises";
+import { appendFile, readFile as readFile3 } from "node:fs/promises";
 var ActionInputError = class extends Error {
   name = "ActionInputError";
 };
@@ -10613,7 +10640,7 @@ async function readEvent(path) {
   if (path === "")
     return {};
   try {
-    return JSON.parse(await readFile2(path, "utf8"));
+    return JSON.parse(await readFile3(path, "utf8"));
   } catch {
     return {};
   }
