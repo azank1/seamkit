@@ -163,6 +163,12 @@ change waits for its deploy. It needs no group, because a ledger push that meets
 again. On a schedule the check goes on the job's commit, the default branch's tip, so a watch that reads another branch
 with `branch` should have its own `check-name`.
 
+On Vercel, a rollback also keeps later deploys away from the address. Instant Rollback turns off the project's
+assignment of its production domains, so each later push still builds, and GitHub records it as a successful
+`Production` deployment, while the address goes on serving the rolled-back build. The readback after each of those
+deploys fails, saying that production runs the rolled-back commit, until a deployment is promoted, for example with
+`vercel promote <deployment URL>`. A promote sends no deployment event, so the watch is what reads it back.
+
 | Input | Default | |
 |---|---|---|
 | `url` | required | the production address |
@@ -293,6 +299,12 @@ production, as after a rollback, rather than merely that it is not proven. The b
 it never touches your working tree, index or HEAD. `seamkit state verify` checks every file against its name,
 `seamkit replay` recomputes every recorded verdict from its recorded observations and fails if any comes out
 differently, and `seamkit state sync` merges and pushes the branch without forcing.
+
+The ledger is a branch, so whatever builds every branch sees each push to it. The Action pushes with the job's token,
+which starts no workflows, but a push from your own machine starts every `on: push` workflow that does not leave the
+branch out with `branches-ignore: [seamkit/state]`. A host that builds every branch also sees each push: on Vercel,
+whose git integration does not build commits by an author outside the team, every ledger commit, written by `seamkit`,
+is blocked and shows on GitHub as a failed `Preview` deployment, with nothing built or served.
 
 seamkit records URLs, commit ids, marker texts and digests of what production served, never the content itself. A
 production URL with credentials or a query string is refused for that reason.

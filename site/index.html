@@ -737,18 +737,22 @@ releaseNote: Notes now show when they were last saved.
   <div class="step-head"><span class="step-n">5</span><h2>Your terminal: deploy, then wait for live</h2></div>
   <div class="where"><span class="tag built">works today</span><span class="tag">bash</span><span class="tag">make</span></div>
   <p>This script is the building block for every trigger below. It retries readback of the newest change on the default
-    branch until production shows it or the deadline passes, and keeps polling runs out of the ledger.</p>
+    branch until production shows it or the deadline passes, and keeps polling runs out of the ledger. It syncs the
+    ledger first, so a rollback that CI saw reads as not live here too, and shares the one run it records.</p>
   <div class="code"><div class="file"><span>scripts/wait-live.sh</span><button class="copy" type="button" id="cp-5a" data-copy-from="wait-live">Copy</button></div><pre id="wait-live">#!/usr/bin/env bash
 <span class="c"># Wait until production runs the newest change on the default branch.</span>
 <span class="c"># usage: scripts/wait-live.sh https://your.app [seconds]</span>
 url="$1"; deadline=$(( $(date +%s) + ${2:-300} ))
 git fetch --quiet origin
+npx seamkit state sync &gt;/dev/null   <span class="c"># the ledger as CI and others left it</span>
 while :; do
   npx seamkit readback --url "$url" --last 1 --no-record
   code=$?
   case $code in
-    0) npx seamkit readback --url "$url" --last 1 &gt;/dev/null; exit 0 ;;  <span class="c"># live: record it once</span>
-    2|4) exit $code ;;                                                <span class="c"># waiting will not help</span>
+    0) npx seamkit readback --url "$url" --last 1 &gt;/dev/null   <span class="c"># live: record it once,</span>
+       npx seamkit state sync &gt;/dev/null                       <span class="c"># and share it, never forced</span>
+       exit 0 ;;
+    2|4) exit $code ;;                                         <span class="c"># waiting will not help</span>
   esac
   [ "$(date +%s)" -ge "$deadline" ] &amp;&amp; exit $code
   sleep 15
@@ -757,10 +761,14 @@ done</pre></div>
 URL    ?= https://your.app
 
 ship:
+	@test -z "$$(git status --porcelain)" || { echo "make ship: commit first" &gt;&amp;2; exit 1; }
 	$(DEPLOY)
 	./scripts/wait-live.sh $(URL) 300</pre></div>
   <p class="muted">Now <code>make ship</code> fails unless production actually runs the change, and the failure prints
-    which change and why.</p>
+    which change and why. It refuses to start from uncommitted changes, because <code>vercel deploy</code> uploads the
+    working tree: that build names HEAD while it ships code no commit holds, and no readback can see the difference. Push
+    before a CLI deploy as well, since wait-live judges the newest change on the default branch, and the watch fails while
+    production runs a commit the remote lacks.</p>
 </section>
 
 <!-- ===================== STEP 6 ===================== -->
@@ -795,9 +803,9 @@ case "$cmd" in
   *) exit 0 ;;
 esac
 cd "$CLAUDE_PROJECT_DIR"
-if ! out=$(./scripts/wait-live.sh https://your.app 300 2&gt;&amp;1); then
+if ! ./scripts/wait-live.sh https://your.app 300 &gt;/dev/null 2&gt;&amp;1; then
   echo "seamkit: the deploy is not proven live." &gt;&amp;2
-  echo "$out" | tail -n 20 &gt;&amp;2
+  npx seamkit readback --url https://your.app --last 1 --no-record &gt;&amp;2   <span class="c"># the verdict, once</span>
   exit 2   <span class="c"># stderr is shown to Claude</span>
 fi</pre></div>
   </div>
@@ -942,6 +950,8 @@ fi</pre></div>
         <tr><td>"shallow clone"</td><td>CI checked out a single commit.</td><td><code>fetch-depth: 0</code>, or <code>git fetch --unshallow</code>.</td></tr>
         <tr><td>Version unreadable, dirty build</td><td>The build was stamped from uncommitted changes. On Vercel, a stamp before 0.2.0 counts the <code>vercel.json</code> that Vercel's build writes into the checkout.</td><td>Build from a clean tree; add <code>--require-clean</code>. On Vercel, stamp with 0.2.0 or later.</td></tr>
         <tr><td>No readback runs after a Vercel deploy</td><td>The Vercel project does not report deployments to GitHub: its <code>deployment_status</code> Events setting is off, as a new project's can be.</td><td>Turn it on in the project's Settings, Git. The commit's page on GitHub then lists the deployment.</td></tr>
+        <tr><td>A failed Preview deployment on every <code>seamkit/state</code> commit</td><td>Vercel builds every branch, and it blocks commits whose author is outside the team. Ledger commits are written by <code>seamkit</code>, so each one is blocked; nothing is built or served.</td><td>Nothing to fix. A workflow triggered <code>on: push</code> also sees ledger pushes made from your machine: give it <code>branches-ignore: [seamkit/state]</code>.</td></tr>
+        <tr><td>Every Vercel deploy since a rollback fails: "production runs" the rolled-back commit</td><td>Instant Rollback turns off the assignment of the project's production domains. Later pushes still build, and GitHub lists each as a successful Production deployment, while the address keeps serving the rolled-back build.</td><td>Promote the deployment you want, for example <code>vercel promote &lt;deployment URL&gt;</code>. A promote sends no deployment event, so run the watch by hand to read it back.</td></tr>
         <tr><td>Marker absent although the version contains the change</td><td>The marker text is in source but not in the built output.</td><td>Use text the bundle really ships, such as an attribute value or a user-facing string.</td></tr>
         <tr><td>"No change carries a seamkit-card"</td><td>The merge setting drops pull request descriptions.</td><td>Step 4: "Pull request title and description".</td></tr>
         <tr><td>Exit 2: URL refused</td><td>The URL carries a query string or credentials, and URLs are recorded.</td><td>Use a plain URL. Readback only needs public <code>GET</code>s.</td></tr>
@@ -1020,11 +1030,11 @@ fi</pre></div>
           ['ok', 'seamkit@0.1.0 published to npm, 2026-10-19, shasum e988fa0f'],
           ['ok', 'npx seamkit on a clean repository: version, stamp, audit exit 3; commit.city 20 of 20 from npm'],
           ['ok', 'Setup guide with diagrams (this page), served from GitHub Pages'],
-          ['todo', 'Test the guide recipes end to end on a sample repository: wait-live.sh, make ship, the Claude Code hook, both workflows'],
+          ['ok', 'Guide recipes run end to end on a sample repository: wait-live.sh, make ship by git push and by vercel deploy, the Claude Code hook, the Python tool and both workflows. Fixed on the way: the hook needed jq and let every deploy pass without it, make ship could deploy uncommitted changes, and wait-live kept what it recorded to itself'],
           ['ok', 'Action design: deployment_status and workflow_run, inputs (url, last, pr, wait, ledger), ledger pulled before and pushed after'],
           ['ok', 'packages/action and a root action.yml; the committed bundle is rebuilt and smoke-run in CI'],
           ['ok', 'Check run with the verdict summary (checks: write), one per production address; only a pass is a success. Tested against a stand-in GitHub API'],
-          ['todo', 'Sample repository: a deploy that is live, one rolled back, one unreadable; the Action reports each'],
+          ['ok', 'Sample repository on Vercel: a deploy that is live (pass), one rolled back (fail, not live), one unreadable (examined nothing, from a 0.1.0 stamp), and one the rollback kept off the address while GitHub listed it as a successful Production deployment (fail); the Action reported each as a check run'],
           ['todo', 'Release 0.2.0 with the Action; tag and marketplace listing at azank\'s go'],
         ],
         evidence: [['PR #4', 'https://github.com/azank1/seamkit/pull/4'], ['npm', 'https://www.npmjs.com/package/seamkit']] },
