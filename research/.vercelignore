@@ -1,0 +1,5 @@
+# Upload only the page, its stamp and its headers; never env files or links.
+/*
+!/index.html
+!/version.json
+!/vercel.json
