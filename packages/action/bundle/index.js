@@ -8975,7 +8975,7 @@ function quietEnv(extra) {
   }
   return { ...env, GIT_TRACE2: "0", GIT_TRACE2_PERF: "0", GIT_TRACE2_EVENT: "0", GIT_TRACE_REDACT: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...extra };
 }
-var USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^\r\n]*@/gi;
+var USERINFO = /([a-z][a-z0-9+.-]*:\/\/)(?:[^\r\n]*@|[^@]*@)/gi;
 function runGit(args, opts) {
   return new Promise((resolve3, reject) => {
     const child = spawn("git", args, {

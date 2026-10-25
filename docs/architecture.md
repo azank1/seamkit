@@ -622,7 +622,8 @@ own data, so a project's pre-push hook, which may refuse branch names or run its
 unknown-commit note goes by the fetches of the branch made since production first reported the commit, whichever
 commit each was made for: after one that succeeded the commit is on no branch fetched, and if every one failed, that
 is why. With none made since, the last fetch made says what this repository holds. A URL's user name and password are removed up to the last @ on the
-line, since a password can hold an unencoded @, slash, quote or space. `ledger: false` neither reads nor
+line, since a password can hold an unencoded @, slash, quote or space, and up to the next @ when a line break in
+them puts it on a later line. `ledger: false` neither reads nor
 records the ledger, even one the checkout already holds: the Action passes `--no-ledger`, which judges as if there
 were no ledger and records nothing, and the docs and the push advice say what that costs. `--no-record` notes that it kept the run out of
 the ledger, not that the ledger is missing. A change whose card the run cannot read for lack of room, or cannot check, is still kept in `--deployed`

@@ -203,8 +203,8 @@ describe('GitStateStore', () => {
     const at = await runGit(['ls-remote', 'http://vault1@pass2@word3@127.0.0.1:9/o/r.git'], { cwd, env: { GIT_TRACE: '1' } });
     assert.match(at.stderr, /http:\/\/127\.0\.0\.1:9\/o\/r\.git/);
     for (const part of ['vault1', 'pass2', 'word3']) assert.ok(!at.stderr.includes(part), at.stderr);
-    // Nor does a slash, a quote or a space in it end the user name and password early.
-    for (const odd of ['vault1:pass2/tok3@word4', "vault1:pass2'tok3@word4", 'vault1:pass2"tok3@word4', 'vault1:pass2 tok3@word4']) {
+    // Nor does a slash, a quote, a space or a line break in it end the user name and password early.
+    for (const odd of ['vault1:pass2/tok3@word4', "vault1:pass2'tok3@word4", 'vault1:pass2"tok3@word4', 'vault1:pass2 tok3@word4', 'vault1:pass2tok3\n', 'vault1\n:pass2tok3', 'vault1:pass2tok3\r\n']) {
       const quoted = await runGit(['ls-remote', `http://${odd}@127.0.0.1:9/o/r.git`], { cwd, env: { GIT_TRACE: '1' } });
       assert.match(quoted.stderr, /trace:/);
       for (const part of ['vault1', 'pass2', 'tok3', 'word4']) assert.ok(!quoted.stderr.includes(part), quoted.stderr);

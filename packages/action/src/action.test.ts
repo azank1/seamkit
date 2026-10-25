@@ -574,7 +574,20 @@ describe('the seamkit action', () => {
     await git(['tag', shadow.toUpperCase(), commits[1] as string], { cwd: ci });
     assert.equal((await act(ci, { sha: shadow.toUpperCase(), wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' })).code, 2);
     assert.equal((lastPost()['output'] as { title: string }).title.split(';')[0], `No verdict: the deployed commit ${shadow.toUpperCase()} is also the name of a tag or branch that points at another commit`);
+    // A ref named like the sha input that points at the deployed commit itself shadows nothing.
+    await git(['tag', shadow, commits[2] as string], { cwd: ci });
+    const same = await act(ci, { sha: shadow, wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' });
+    assert.equal(same.code, 0, same.logs.join('\n'));
+    assert.equal(lastPost()['head_sha'], commits[2]);
+    await git(['tag', '-d', shadow], { cwd: ci });
     // The full id is the commit itself, whatever a ref is named.
+    for (const target of [commits[2], commits[1]] as string[]) {
+      await git(['branch', commits[2] as string, target], { cwd: ci });
+      const whole = await act(ci, { sha: commits[2] as string, wait: '0' }, {}, {}, { eventName: 'workflow_dispatch' });
+      assert.equal(whole.code, 0, whole.logs.join('\n'));
+      assert.equal(lastPost()['head_sha'], commits[2]);
+      await git(['branch', '-D', commits[2] as string], { cwd: ci });
+    }
     // An annotated tag's own id, full or abbreviated, names the tag, not a commit.
     await git(['-c', 'user.name=dev', '-c', 'user.email=dev@example.invalid', 'tag', '-a', '-m', 'release', 'v1', commits[2] as string], { cwd: ci });
     const tag = await git(['rev-parse', 'v1'], { cwd: ci });

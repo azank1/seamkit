@@ -39,10 +39,11 @@ function quietEnv(extra: Record<string, string> | undefined): NodeJS.ProcessEnv 
 
 /**
  * A URL's user name and password, removed from text git wrote: everything up to the last @ on the
- * line, since a password can hold an @, a slash, a quote or a space that is not encoded. Removing
- * too much only hides text.
+ * line, since a password can hold an @, a slash, a quote or a space that is not encoded. A newline
+ * in either puts the @ on a later line, so with none on the URL's own line the match runs on to
+ * the next @. Removing too much only hides text.
  */
-const USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^\r\n]*@/gi;
+const USERINFO = /([a-z][a-z0-9+.-]*:\/\/)(?:[^\r\n]*@|[^@]*@)/gi;
 
 /**
  * Runs git without a shell. Never prompts: a missing credential fails instead of hanging. Its
