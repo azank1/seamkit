@@ -75,11 +75,17 @@ from uncommitted changes proves nothing about what it contains. Where the build 
 commit the CI system provides (`VERCEL_GIT_COMMIT_SHA`, `GITHUB_SHA`, `CF_PAGES_COMMIT_SHA`, `COMMIT_REF`,
 `RENDER_GIT_COMMIT`, `CI_COMMIT_SHA`, `BITBUCKET_COMMIT` or `SOURCE_VERSION`) and records which one it used.
 
+Vercel's build keeps the history and then writes `vercel.json` into the checkout: the committed settings on one line,
+or `{}` when none is committed. On Vercel's build of the commit, stamp does not count a `vercel.json` that holds exactly
+the committed settings, and it records the branch Vercel built from `VERCEL_GIT_COMMIT_REF`. A stamp before 0.2.0
+counts that file, so every Vercel build reads as having uncommitted changes and readback cannot prove it.
+
 ## Use it in CI
 
 The seamkit Action reads production back once a deploy succeeds and posts the verdict as a check run on the deployed
-commit. Hosts that report deployments to GitHub fire `deployment_status`; Vercel does, and names the production
-environment `Production`:
+commit. Hosts that report deployments to GitHub fire `deployment_status`. Vercel does while the project's
+`deployment_status` Events setting (Settings, Git) is on, and names the production environment `Production`. A new
+Vercel project can start with that setting off, and then no readback runs:
 
 ```yaml
 # .github/workflows/readback.yml

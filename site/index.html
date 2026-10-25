@@ -603,7 +603,9 @@ npx seamkit version   <span class="c"># 0.2.0</span></pre><button class="copy" t
 }</pre></div>
       <p class="muted" style="margin-top:10px;font-size:.9rem">Stamp prefers git. Where the build has no history, it uses
         the commit your CI or host provides (<code>VERCEL_GIT_COMMIT_SHA</code>, <code>GITHUB_SHA</code>,
-        <code>CF_PAGES_COMMIT_SHA</code>, <code>COMMIT_REF</code> and others) and records which one.</p>
+        <code>CF_PAGES_COMMIT_SHA</code>, <code>COMMIT_REF</code> and others) and records which one. Vercel's build
+        writes <code>vercel.json</code> into the checkout; stamp does not count it when it holds the committed
+        settings.</p>
     </div>
     <div>
       <div class="opt">Apps with a server route</div>
@@ -835,7 +837,8 @@ fi</pre></div>
   <div class="step-head"><span class="step-n">8</span><h2>CI: verify every production deploy, and watch for rollbacks</h2></div>
   <div class="where"><span class="tag built">seamkit Action · 0.2.0</span><span class="tag">GitHub Actions</span><span class="tag">check runs</span></div>
   <p>Two workflows cover CI. The first runs when your host reports a successful production deployment to GitHub, as
-    Vercel does for connected repositories, and posts the verdict as a check run on the deployed commit. The second runs
+    Vercel does for connected repositories while the project's <code>deployment_status</code> Events setting
+    (Settings, Git) is on, and posts the verdict as a check run on the deployed commit. The second runs
     on a schedule, so a rollback or a hand deploy is caught even when nobody deployed through CI. Both keep the ledger, so
     "not live" means the change really left production. The deploy job has a concurrency group per environment; the
     watch needs none, because a ledger push that meets another run's is merged and tried again. GitHub keeps at most one
@@ -936,7 +939,8 @@ fi</pre></div>
         <tr><td>Exit 3 for every change</td><td>Production serves no version document, or serves a web page in its place.</td><td>Step 2. Check with <code>curl</code> that the URL returns JSON with a full commit id.</td></tr>
         <tr><td>"which this repository does not have"</td><td>The local clone has not fetched the deployed commit, it was deployed from a branch that never merged, or the version document names a tag rather than the commit.</td><td><code>git fetch origin</code>. If it persists, check that the build stamps the commit (<code>seamkit stamp</code>), then look for a deploy made by hand.</td></tr>
         <tr><td>"shallow clone"</td><td>CI checked out a single commit.</td><td><code>fetch-depth: 0</code>, or <code>git fetch --unshallow</code>.</td></tr>
-        <tr><td>Version unreadable, dirty build</td><td>The build was stamped from uncommitted changes.</td><td>Build from a clean tree; add <code>--require-clean</code>.</td></tr>
+        <tr><td>Version unreadable, dirty build</td><td>The build was stamped from uncommitted changes. On Vercel, a stamp before 0.2.0 counts the <code>vercel.json</code> that Vercel's build writes into the checkout.</td><td>Build from a clean tree; add <code>--require-clean</code>. On Vercel, stamp with 0.2.0 or later.</td></tr>
+        <tr><td>No readback runs after a Vercel deploy</td><td>The Vercel project does not report deployments to GitHub: its <code>deployment_status</code> Events setting is off, as a new project's can be.</td><td>Turn it on in the project's Settings, Git. The commit's page on GitHub then lists the deployment.</td></tr>
         <tr><td>Marker absent although the version contains the change</td><td>The marker text is in source but not in the built output.</td><td>Use text the bundle really ships, such as an attribute value or a user-facing string.</td></tr>
         <tr><td>"No change carries a seamkit-card"</td><td>The merge setting drops pull request descriptions.</td><td>Step 4: "Pull request title and description".</td></tr>
         <tr><td>Exit 2: URL refused</td><td>The URL carries a query string or credentials, and URLs are recorded.</td><td>Use a plain URL. Readback only needs public <code>GET</code>s.</td></tr>

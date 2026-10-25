@@ -279,7 +279,13 @@ Problems are described without quoting the response.
 `seamkit stamp` writes the document at build time. It prefers git, which alone can tell a clean working tree from a
 dirty one, and leaves its own output file out of that check. Where the build has no history, it falls back to the
 commit that the CI system provides, such as `VERCEL_GIT_COMMIT_SHA` or `GITHUB_SHA`, records which variable it used,
-and leaves `dirty` out because it cannot know. `--require-clean` refuses to stamp a dirty tree.
+and leaves `dirty` out because it cannot know. `--require-clean` refuses to stamp a dirty tree. Vercel's build checks
+the commit out with its history and then writes `vercel.json` into the checkout, the committed settings on one line or
+`{}` when none is committed, so before 0.2.0 every Vercel build stamped as dirty and its version was never taken as
+proof. On Vercel's build of HEAD, where `VERCEL` is `1` and `VERCEL_GIT_COMMIT_SHA` names HEAD, a `vercel.json` whose
+JSON is exactly the committed settings, or `{}` when none is committed, is not counted, and stamp says so; any other
+content, any other file and any other build still count. Vercel's checkout is on a branch named `master` whatever
+branch it builds, so there the document's `ref` comes from `VERCEL_GIT_COMMIT_REF`.
 
 `seamkit audit --url <production>` is readback over the last 20 changes with no configuration. After the verdicts it
 gives advice for each gap it found, such as serving a version document, fetching an unknown commit, deepening a shallow
