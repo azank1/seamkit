@@ -8976,6 +8976,18 @@ function quietEnv(extra) {
   return { ...env, GIT_TRACE2: "0", GIT_TRACE2_PERF: "0", GIT_TRACE2_EVENT: "0", GIT_TRACE_REDACT: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...extra };
 }
 var USERINFO = /([a-z][a-z0-9+.-]*:\/\/)(?:[^\r\n]*@|[^@]*@)/gi;
+var SPLIT_URL = /url contains a newline in its [a-z ]+ component/i;
+function scrubGitText(text) {
+  if (SPLIT_URL.test(text))
+    return "fatal: the remote's URL holds a line break, which git refuses (check the secret it is built from)\n";
+  let scrubbed = text;
+  let before;
+  do {
+    before = scrubbed;
+    scrubbed = scrubbed.replace(USERINFO, "$1");
+  } while (scrubbed !== before);
+  return scrubbed;
+}
 function runGit(args, opts) {
   return new Promise((resolve3, reject) => {
     const child = spawn("git", args, {
@@ -8988,7 +9000,7 @@ function runGit(args, opts) {
     child.stdout.on("data", (b) => out.push(b));
     child.stderr.on("data", (b) => err.push(b));
     child.on("error", reject);
-    child.on("close", (code) => resolve3({ code: code ?? 1, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString("utf8").replace(USERINFO, "$1") }));
+    child.on("close", (code) => resolve3({ code: code ?? 1, stdout: Buffer.concat(out), stderr: scrubGitText(Buffer.concat(err).toString("utf8")) }));
     child.stdin.on("error", () => void 0);
     child.stdin.end(opts.input ?? "");
   });
@@ -10534,7 +10546,10 @@ function checkNameFor(env) {
   if (given !== "")
     return given;
   try {
-    return `seamkit readback (${new URL(input(env, "url")).host})`;
+    const url2 = new URL(input(env, "url"));
+    if (url2.protocol !== "http:" && url2.protocol !== "https:" || url2.host === "")
+      return "seamkit readback";
+    return `seamkit readback (${url2.host}${url2.pathname.replace(/\/+$/, "")})`;
   } catch {
     return "seamkit readback";
   }

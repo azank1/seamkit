@@ -45,6 +45,25 @@ function quietEnv(extra: Record<string, string> | undefined): NodeJS.ProcessEnv 
  */
 const USERINFO = /([a-z][a-z0-9+.-]*:\/\/)(?:[^\r\n]*@|[^@]*@)/gi;
 
+/** What git says when a URL holds a line break. It refuses such a URL, and prints it whole. */
+const SPLIT_URL = /url contains a newline in its [a-z ]+ component/i;
+
+/**
+ * Text git wrote, with no URL's credentials left in it. git refuses a URL holding a line break, so
+ * its words about one are replaced by the reason. Elsewhere the removal repeats until no URL is
+ * followed by an @, since a user name or password can hold both an @ and a line break.
+ */
+export function scrubGitText(text: string): string {
+  if (SPLIT_URL.test(text)) return "fatal: the remote's URL holds a line break, which git refuses (check the secret it is built from)\n";
+  let scrubbed = text;
+  let before: string;
+  do {
+    before = scrubbed;
+    scrubbed = scrubbed.replace(USERINFO, '$1');
+  } while (scrubbed !== before);
+  return scrubbed;
+}
+
 /**
  * Runs git without a shell. Never prompts: a missing credential fails instead of hanging. Its
  * error text never holds a URL's credentials, since it may reach a report anyone can read.
@@ -62,7 +81,7 @@ export function runGit(args: readonly string[], opts: GitOptions): Promise<GitRe
     child.stderr.on('data', (b: Buffer) => err.push(b));
     child.on('error', reject);
     child.on('close', (code) =>
-      resolve({ code: code ?? 1, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString('utf8').replace(USERINFO, '$1') }),
+      resolve({ code: code ?? 1, stdout: Buffer.concat(out), stderr: scrubGitText(Buffer.concat(err).toString('utf8')) }),
     );
     child.stdin.on('error', () => undefined);
     child.stdin.end(opts.input ?? '');

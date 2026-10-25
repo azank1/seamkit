@@ -154,7 +154,8 @@ To catch a rollback or a hand deploy that no workflow saw, add a watch: a workfl
 permissions and steps, triggered on a `schedule` such as hourly with `cron: '17 * * * *'`, with no `if` and no
 concurrency group. The watch reads the default branch with nothing counted as deployed, so it also fails while a merged
 change waits for its deploy. It needs no group, because a ledger push that meets another run's is merged and tried
-again.
+again. On a schedule the check goes on the job's commit, the default branch's tip, so a watch that reads another branch
+with `branch` should have its own `check-name`.
 
 | Input | Default | |
 |---|---|---|
@@ -163,7 +164,7 @@ again.
 | `pr` | | read back one merged pull request instead |
 | `wait` | `60` | after a deploy, seconds (up to 1800) to keep reading until production reports the deployed commit; nothing is recorded meanwhile |
 | `ledger` | `auto` | `auto` records when a `seamkit/state` branch exists, `true` starts one, `false` neither reads nor records it, so a rollback reads not proven and changes merged during the build are judged |
-| `check-name` | `seamkit readback (<host>)` | one check per production address |
+| `check-name` | `seamkit readback (<host><path>)` | one check per production address; two jobs that read the same `url` need names of their own |
 | `sha` | the deployed commit | where the check goes, and what counts as deployed |
 | `branch`, `version-url`, `token` | | for unusual layouts; `branch` names the remote's branch, and one that is not a branch gives no verdict |
 
@@ -328,7 +329,7 @@ cover, is in [`docs/prior-art.md`](docs/prior-art.md).
 
 ```sh
 npm ci
-npm test             # 245 tests, using temporary repositories and a local fake production
+npm test             # 246 tests, using temporary repositories and a local fake production
 npm run demo         # add -- --keep to keep the demo repository
 npm run pack:cli     # builds the npm package into release/seamkit
 npm run smoke:pack   # installs that package into an empty project and runs it

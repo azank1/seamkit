@@ -1284,7 +1284,15 @@ describe('action inputs and reports', () => {
     assert.throws(() => readInputs({ INPUT_URL: 'https://a.example', INPUT_WAIT: '-1' }), /wait must be a whole number/);
     assert.throws(() => readInputs({ INPUT_URL: 'https://a.example', INPUT_LEDGER: 'yes' }), /ledger must be auto, true or false/);
     const inputs = readInputs({ INPUT_URL: 'https://a.example/app', 'INPUT_VERSION-URL': 'https://a.example/v.json' });
-    assert.equal(inputs.checkName, 'seamkit readback (a.example)');
+    assert.equal(inputs.checkName, 'seamkit readback (a.example/app)');
+    // One check per production address: two on one host get two names, and a bare host keeps its own.
+    const name = (url: string): string => readInputs({ INPUT_URL: url }).checkName;
+    assert.equal(name('https://a.example'), 'seamkit readback (a.example)');
+    assert.equal(name('https://a.example/'), 'seamkit readback (a.example)');
+    assert.equal(name('https://a.example/eu/'), 'seamkit readback (a.example/eu)');
+    assert.equal(readInputs({ INPUT_URL: 'https://a.example/eu/', 'INPUT_CHECK-NAME': 'eu readback' }).checkName, 'eu readback');
+    // Text that is not an http address names nothing, since what parses as its path can be a credential.
+    assert.equal(name('deploy:s3cr3t@app.example'), 'seamkit readback');
     assert.equal(inputs.versionUrl, 'https://a.example/v.json');
     assert.equal(inputs.waitSeconds, 60);
   });

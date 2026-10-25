@@ -995,7 +995,7 @@ fi</pre></div>
     updated: '2026-10-22',
     version: '0.2.0',
     npm: '0.1.0',   // the version npm serves; the release commit bumps it
-    tests: '245',
+    tests: '246',
     dogfood: '20 of 20',
     milestones: [
       { m: 'M1', title: 'Verdict core and ledger', state: 'done', when: '2026-10-15',
@@ -1071,6 +1071,7 @@ fi</pre></div>
       ['2026-10-24', 'Twenty-second review round (15 agents, 7 findings, all confirmed by both skeptics and low; nothing from the critic): a password holding a quote or a space is removed whole from git\'s errors; ledger: false no longer reads a ledger the checkout already holds, through a new readback flag, --no-ledger; the troubleshooting table names that cause; ref names are tested as whole names, and the latest sighting is tested in every listing order. 245 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
       ['2026-10-24', 'Twenty-third review round (15 agents, 4 findings, 2 distinct, none high; nothing from the critic, which also ran the npm package through the whole lifecycle beside the workspace build and found them alike): a password holding an unencoded slash is removed whole from git\'s errors; check refuses --no-ledger, which belongs to readback, instead of dropping a --record. 245 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
       ['2026-10-24', 'Twenty-fourth review round (11 agents, 2 findings, both confirmed by both skeptics; nothing from the critic): a token ending in a line break, which git prints across two lines, is removed whole from git\'s errors; a ref named like the sha input that points at the deployed commit itself is tested to shadow nothing, and so is a branch named by the full id. 245 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
+      ['2026-10-26', 'Twenty-fifth review round (25 agents, 9 findings, 8 confirmed by both skeptics and 1 split, 5 of them one gap, none high; nothing from the critic): a user name or password holding both an @ and a line break is removed whole from git\'s errors, since the removal now repeats, and git\'s refusal of a URL holding a line break is replaced by the reason; the default check name carries the url\'s path, so two productions on one host keep their own checks; the docs say where a watch that reads another branch posts its check, and that only a tag or branch pointing at another commit shadows a sha input; the curl-trace test sets GIT_TRACE_CURL. 246 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
     ],
     decisions: [
       ['Program readback adapter (requested by an internal project)', 'Accept with changes, scheduled after M4. Notes in the knowledge base.', 'azank', 'wait'],

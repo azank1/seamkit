@@ -588,7 +588,8 @@ it redirects to; only production's operator can make it redirect. A `--version-u
 counts the others as discovery does, and a run that read any of them counts as a run at this address, so moving the
 document does not stop a change on its way from being left to the next deploy. A second production on the same origin
 whose version document is at one of those paths shares their history: its sightings count here, and its runs count as
-runs at this address. Serving its document at another path keeps the two apart. A ledger push that the remote refuses
+runs at this address. Serving its document at another path keeps the two apart, and the Action names each check after its url's host and
+path, so two productions on one host keep their own checks. A ledger push that the remote refuses
 while no other writer pushes ends with its own error, and the Action's advice names the change to make for a refusal,
 a missing permission or a lost race. The Action rewrites only absolute URLs, and values that could carry a credential,
 in the errors it reports, so a path such as `/version.json` in advice stays as written. Every CLI error prints on one
@@ -623,7 +624,8 @@ unknown-commit note goes by the fetches of the branch made since production firs
 commit each was made for: after one that succeeded the commit is on no branch fetched, and if every one failed, that
 is why. With none made since, the last fetch made says what this repository holds. A URL's user name and password are removed up to the last @ on the
 line, since a password can hold an unencoded @, slash, quote or space, and up to the next @ when a line break in
-them puts it on a later line. `ledger: false` neither reads nor
+them puts it on a later line; the removal repeats until no URL is followed by an @. git refuses a URL holding a line
+break and prints it whole, so its words about one are replaced by the reason. `ledger: false` neither reads nor
 records the ledger, even one the checkout already holds: the Action passes `--no-ledger`, which judges as if there
 were no ledger and records nothing, and the docs and the push advice say what that costs. `--no-record` notes that it kept the run out of
 the ledger, not that the ledger is missing. A change whose card the run cannot read for lack of room, or cannot check, is still kept in `--deployed`

@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { invariantCheck, parseEventFile, runCheck, type SeamEvent } from '@seamkit/core';
 import { git, GitStateStore, NotAGitRepository, runGit, STATE_REF } from './index.js';
+import { scrubGitText } from './git.js';
 
 let root: string;
 
@@ -203,12 +204,36 @@ describe('GitStateStore', () => {
     const at = await runGit(['ls-remote', 'http://vault1@pass2@word3@127.0.0.1:9/o/r.git'], { cwd, env: { GIT_TRACE: '1' } });
     assert.match(at.stderr, /http:\/\/127\.0\.0\.1:9\/o\/r\.git/);
     for (const part of ['vault1', 'pass2', 'word3']) assert.ok(!at.stderr.includes(part), at.stderr);
-    // Nor does a slash, a quote, a space or a line break in it end the user name and password early.
-    for (const odd of ['vault1:pass2/tok3@word4', "vault1:pass2'tok3@word4", 'vault1:pass2"tok3@word4', 'vault1:pass2 tok3@word4', 'vault1:pass2tok3\n', 'vault1\n:pass2tok3', 'vault1:pass2tok3\r\n']) {
+    // Nor does a slash, a quote or a space in it end the user name and password early.
+    for (const odd of ['vault1:pass2/tok3@word4', "vault1:pass2'tok3@word4", 'vault1:pass2"tok3@word4', 'vault1:pass2 tok3@word4']) {
       const quoted = await runGit(['ls-remote', `http://${odd}@127.0.0.1:9/o/r.git`], { cwd, env: { GIT_TRACE: '1' } });
       assert.match(quoted.stderr, /trace:/);
       for (const part of ['vault1', 'pass2', 'tok3', 'word4']) assert.ok(!quoted.stderr.includes(part), quoted.stderr);
     }
+    // git refuses a URL holding a line break and prints it whole, traced or not, wherever the break and
+    // any @ fall; its words are replaced by the reason.
+    const split = ['vault1:pass2tok3\n', 'vault1\n:pass2tok3', 'vault1:pass2tok3\r\n', 'me@corp.example:pass2tok3\n', 'vault1\n:pa@tok3', 'vault1:pa@tok3\n', 'me@corp.example\n:tok3', 'vault1:pa@ss2\ntok3\nword4', 'va@ult1\nx:pass2'];
+    for (const odd of split) {
+      for (const env of [{ GIT_TRACE: '1' }, {}]) {
+        const broken = await runGit(['ls-remote', `http://${odd}@127.0.0.1:9/o/r.git`], { cwd, env });
+        assert.notEqual(broken.code, 0);
+        assert.equal(broken.stderr, "fatal: the remote's URL holds a line break, which git refuses (check the secret it is built from)\n", JSON.stringify(odd));
+      }
+    }
+  });
+
+  it('removes a URL credential split over lines, however its @ and line breaks fall', () => {
+    // Text in which a URL runs over lines but git did not refuse it, such as a trace of the command.
+    const shapes = ['mex4@corp9.example:pass2tok3\n', 'vault1\n:pak7@tok3', 'vault1:pak7@tok3\n', 'mex4@corp9.example\n:tok3', 'vault1:pak7@ss29\ntok3\nword4', 'usr9:pak7@ss29\r\ntok3\r\n', 'vak7@ult1\nxq79:pass2', 'vault1:pass2tok3\n'];
+    for (const odd of shapes) {
+      const text = `trace: built-in: git ls-remote 'http://${odd}@127.0.0.1:9/o/r.git'\nfatal: unable to access 'http://127.0.0.1:9/o/r.git/': Failed to connect\n`;
+      const scrubbed = scrubGitText(text);
+      for (const part of odd.split(/[\r\n:@]+/).filter((p) => p !== '')) assert.ok(!scrubbed.includes(part), `${JSON.stringify(odd)} left ${JSON.stringify(part)}: ${scrubbed}`);
+      assert.match(scrubbed, /127\.0\.0\.1:9\/o\/r\.git'\n/);
+    }
+    // Text with no credential is left as git wrote it.
+    const plain = "fatal: unable to access 'https://github.example/o/r/': The requested URL returned error: 403\n";
+    assert.equal(scrubGitText(plain), plain);
   });
 
   it('keeps curl tracing and request headers out of the errors an http remote gives', async () => {
@@ -221,7 +246,7 @@ describe('GitStateStore', () => {
     const { port } = server.address() as AddressInfo;
     const url = `http://s3cr3t-user@127.0.0.1:${port}/o/r.git`;
     const header = ['-c', 'http.extraheader=X-Deploy-Token: s3cr3t-header'];
-    const set = { GIT_CURL_VERBOSE: '1', GIT_TRACE_REDACT: '0', GIT_TRACE_REFS: '1', GIT_TRACE_CURL_NO_DATA: '1' };
+    const set = { GIT_CURL_VERBOSE: '1', GIT_TRACE_CURL: '1', GIT_TRACE_PACKET: '1', GIT_TRACE_REDACT: '0', GIT_TRACE_REFS: '1', GIT_TRACE_CURL_NO_DATA: '1' };
     const saved = Object.fromEntries([...Object.keys(set), 'GIT_CONFIG_GLOBAL'].map((k) => [k, process.env[k]]));
     try {
       // trace2 can also be turned on in git config, for every git on a machine.

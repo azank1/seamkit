@@ -41,12 +41,18 @@ type Env = Record<string, string | undefined>;
 
 const input = (env: Env, name: string): string => (env[`INPUT_${name.replace(/ /g, '_').toUpperCase()}`] ?? '').trim();
 
-/** The check run's name: the input, else one per production host, so each address has its own check. */
+/**
+ * The check run's name: the input, else one per production address, its host and any path, so two
+ * productions on one host do not overwrite each other's check.
+ */
 export function checkNameFor(env: Env): string {
   const given = input(env, 'check-name');
   if (given !== '') return given;
   try {
-    return `seamkit readback (${new URL(input(env, 'url')).host})`;
+    const url = new URL(input(env, 'url'));
+    // As displayUrl shows it: anything but an http address, such as user:token@host read as a scheme, is not shown.
+    if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.host === '') return 'seamkit readback';
+    return `seamkit readback (${url.host}${url.pathname.replace(/\/+$/, '')})`;
   } catch {
     return 'seamkit readback';
   }

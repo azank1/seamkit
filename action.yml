@@ -28,7 +28,8 @@ inputs:
       name such as production, also written refs/heads/production or origin/production, means the remote's branch,
       which the Action fetches before reading; origin/HEAD means the default branch. When the input is not a branch
       name, such as HEAD, or the branch cannot be fetched, there is no verdict. It does not change which commit counts
-      as deployed.
+      as deployed. On a schedule the check still goes on the job's commit, the default branch's tip, so a watch that
+      reads another branch should have its own check-name.
     default: ''
   version-url:
     description: Where production's version document is, when it is not at one of the usual paths.
@@ -48,12 +49,14 @@ inputs:
       actions/checkout's default persist-credentials.
     default: auto
   check-name:
-    description: The check run's name. Defaults to "seamkit readback (<host>)", so each production address gets its own check.
+    description: >-
+      The check run's name. Defaults to "seamkit readback (<host><path>)" from the url input, so each production address
+      gets its own check; two jobs that read the same url need names of their own.
     default: ''
   sha:
     description: >-
-      The deployed commit, full or abbreviated (an abbreviation that a tag or branch is also named after gives no
-      verdict; give the full id). The check run goes on it, and once the ledger holds a run at this
+      The deployed commit, full or abbreviated (an abbreviation that a tag or branch pointing at another commit is also
+      named after, or an annotated tag's own id, gives no verdict; give the full id). The check run goes on it, and once the ledger holds a run at this
       address, a change merged after it is left to the next deploy unless it was seen live there or in a build
       production was seen running there, and nothing is left once production there was seen running a commit this
       repository does not have. Defaults to the deployed commit for
