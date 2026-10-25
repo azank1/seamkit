@@ -2,3 +2,7 @@ node_modules/
 dist/
 *.tsbuildinfo
 release/
+
+# The research page: its stamp is made at deploy time, and its Vercel link is machine-local.
+research/version.json
+research/.vercel/
