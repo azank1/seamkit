@@ -524,11 +524,13 @@ FAIL  readback  origin/main
       <p>Readback proves that what production serves contains a change. It does not prove that the change behaves
       correctly, which remains the job of tests and monitoring. It cannot examine a database change, for which there is
       no adapter yet, so such a marker is reported as not examined rather than guessed. It needs to reach production
-      over HTTP, and it trusts the version document the build stamped, which is why the stamp refuses a build made from
-      uncommitted changes.</p>
-      <p>The 0.2.0 Action has so far run against a local fake production and a stand-in for GitHub's check-run API,
-      and on Linux only. A run on a real GitHub-hosted runner against a real host's deployment events is the next
-      proof, and Windows and macOS runners are untested.</p>
+      over HTTP, and it trusts the version document the build stamped. A build made from uncommitted changes is stamped
+      dirty and never counts as proof, but a build with no git history, such as an upload from the Vercel CLI, takes its
+      commit from the host and cannot tell whether the files it was given were committed.</p>
+      <p>The 0.2.0 Action has run on GitHub-hosted runners against real Vercel deployments of a sample site. It passed
+      the deploys that went live, failed a rollback as not live, and failed a deploy that Vercel built and GitHub listed
+      as a successful production deployment while the rollback kept the address on the old build. Vercel is the only
+      host it has met, it has run on Linux runners only, and Windows and macOS runners are untested.</p>
     </div>
   </div>
 </section>
