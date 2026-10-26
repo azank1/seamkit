@@ -339,6 +339,29 @@ describe('the seamkit action', () => {
     }
   });
 
+  it('merges a ledger another run pushed while it waited into the one it created, and reports a refused push once', async () => {
+    const { remote, ci, commits } = await project();
+    deploy(commits[1]);
+    // The scheduled watch has read this address in a clone of its own, and pushes its ledger while this run waits.
+    const watch = join(root, `watch-${++counter}`);
+    await git(['clone', '-q', `file://${remote}`, watch], { cwd: root });
+    await seamkit(['readback', '--url', prod.url, '--record'], watch);
+    await writeFile(join(remote, 'hooks', 'pre-receive'), "#!/bin/sh\nwhile read old new ref; do [ \"$ref\" = refs/heads/seamkit/state ] && [ -e refuse ] && { echo 'Permission to o/r denied' >&2; exit 1; }; done\nexit 0\n", { mode: 0o755 });
+    const ran = await act(ci, { ledger: 'true' }, success(commits[1] as string), {
+      log: (line) => {
+        if (!/created seamkit\/state/.test(line)) return;
+        execFileSync('git', ['push', '-q', 'origin', 'refs/heads/seamkit/state'], { cwd: watch });
+        execFileSync('touch', [join(remote, 'refuse')]);
+      },
+    });
+    assert.equal(ran.code, 0, ran.warnings.join('\n'));
+    // With the watch's run merged in, the change merged after the deployed commit is left to the next deploy.
+    assert.equal((lastPost()['output'] as { title: string }).title, 'PASS: 2 live of 2');
+    assert.match((lastPost()['output'] as { summary: string }).summary, /not examined: 1 change merged after the deployed commit/);
+    assert.equal(ran.warnings.length, 1, ran.warnings.join('\n'));
+    assert.match(ran.warnings[0] ?? '', /not pushed, so it is lost with this runner; give the job "permissions: contents: write"/);
+  });
+
   it('advises on a failed ledger push by what the error says, and only then', () => {
     assert.match(pushAdvice('seamkit: git ls-remote origin refs/heads/seamkit/state exited 128: remote: Permission to o/r denied; fatal: ... 403') ?? '', /contents: write/);
     assert.match(pushAdvice('seamkit: origin refused the push to seamkit/state while no other writer was pushing: hook declined') ?? '', /ledger: false, which also stops this workflow reading the ledger$/);

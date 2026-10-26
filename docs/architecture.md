@@ -282,7 +282,10 @@ commit that the CI system provides, such as `VERCEL_GIT_COMMIT_SHA` or `GITHUB_S
 and leaves `dirty` out because it cannot know. Only git's own "not a git repository" means there is no history: a
 repository git refuses to read, such as one owned by another user or written by a newer git, and a checkout on a
 machine without git, end with no stamp, since only git could have checked the tree. A file renamed counts at the path
-it left. `--require-clean` refuses to stamp a dirty tree. Vercel's build checks
+it left, and a change counts inside a submodule set to `ignore` and in a file marked skip-worktree or assume-unchanged,
+which `git status` leaves out. Status runs with `--no-optional-locks`, so stamp never rewrites the index.
+`--require-clean` refuses to stamp a dirty tree, and refuses a stamp that cannot say whether the tree is clean: one
+from a CI variable, outside a repository, or with `--commit` naming anything but HEAD. Vercel's build checks
 the commit out with its history and then writes `vercel.json` into the checkout, the committed settings on one line or
 `{}` when none is committed, so before 0.2.0 every Vercel build stamped as dirty and its version was never taken as
 proof. On Vercel's build of HEAD, where `VERCEL` is `1` and `VERCEL_GIT_COMMIT_SHA` names HEAD, a `vercel.json` whose
@@ -471,8 +474,9 @@ interface Observed<T> { value: T; at: string; source: string; raw?: string }  //
 ```
 
 Adapters are read-only by construction. They take credentials from the environment, document the narrowest token scope
-that suffices, and never write the credential or a response payload into an event. A production URL, or a card's
-URL, that carries credentials, a query string or a fragment is refused, because URLs are recorded. Each observation is recorded with its source and
+that suffices, and never write the credential or a response payload into an event. A production URL that carries
+credentials or a query string is refused, and its fragment dropped, because URLs are recorded; a card's URL that
+carries credentials, a query string or a fragment is refused. Each observation is recorded with its source and
 time so that the verdict built on it can be replayed. GitHub follows in M6, and Vercel, Supabase and Postgres in the
 milestones that need them.
 
@@ -641,9 +645,12 @@ the proxy curl quotes when git cut a proxy's password short. The :: of a remote 
 git's words before an address it prints with no // (`url has no scheme`, `unable to look up`), start a URL too, and
 quoted text loses everything from its first quote to its last @, so a quote in a credential does not stop it. Since no
 list of wordings can be complete, the credentials git can see are also hidden wherever they appear: the user names,
-passwords and their pieces in the URLs and addresses its config holds, in its http extra headers and in the proxy
-variables, looked up only when git wrote an error. The removal runs only on text up to the last @, which keeps it
-linear on long text.
+passwords and their pieces in the URLs and addresses its config holds, in its http extra headers, in the credential
+helpers it runs (whole, as the shell echoes a failing one, and each name=value in them) and in the proxy variables,
+looked up only when git wrote an error. A line git quotes from a helper's output (`invalid credential line`, and a
+helper's url= with no scheme) is not shown at all. The removal runs only on text up to the last @, which keeps it
+linear on long text. The Action fetches and merges the ledger without pushing until its final push, so a refused push
+is reported once, with advice.
 git refuses a URL holding a line break and prints it whole, so its words about one are replaced by the reason. `ledger: false` neither reads nor
 records the ledger, even one the checkout already holds: the Action passes `--no-ledger`, which judges as if there
 were no ledger and records nothing, and the docs and the push advice say what that costs. `--no-record` notes that it kept the run out of

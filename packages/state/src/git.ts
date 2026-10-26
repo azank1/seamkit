@@ -59,6 +59,12 @@ const NAMED_HOST = /(Could not resolve (?:host|proxy|hostname):? |Failed to conn
 /** git ends a proxy's authority at its first / ? or #, so the proxy curl quotes can be a user name and part of a password. */
 const QUOTED_PROXY = /(Unsupported proxy (?:syntax in |scheme for )?|Couldn't resolve proxy )'[^\r\n]*'/gi;
 
+/**
+ * git's words before a line it took from a credential helper and could not use, which it prints
+ * as the helper wrote it: a token with no URL around it, or a URL with no @, is the whole line.
+ */
+const HELPER_LINE = /(invalid credential line: |url has no scheme: |credential url cannot be parsed: )[^\r\n]*/gi;
+
 /** What git says when a URL holds a line break. It refuses such a URL, and prints it whole. */
 const SPLIT_URL = /url contains a newline in its [a-z ]+ component/i;
 
@@ -84,7 +90,10 @@ export function scrubGitText(text: string): string {
   const at = scrubbed.lastIndexOf('@');
   const quote = scrubbed.indexOf("'");
   if (quote >= 0 && quote < at) scrubbed = scrubbed.slice(0, quote + 1) + scrubbed.slice(at + 1);
-  return scrubbed.replace(NAMED_HOST, '$1(host not shown)').replace(QUOTED_PROXY, "$1'(proxy not shown)'");
+  return scrubbed
+    .replace(HELPER_LINE, '$1(not shown)')
+    .replace(NAMED_HOST, '$1(host not shown)')
+    .replace(QUOTED_PROXY, "$1'(proxy not shown)'");
 }
 
 /** The proxy variables curl reads, whose user name and password git may print in any wording. */
@@ -119,6 +128,18 @@ function splitPieces(credential: string): string[] {
   return pieces;
 }
 
+/**
+ * A credential helper as the shell may print it when one of its commands fails: whole, as git
+ * runs it without its leading !, and the value of each name=value in it, which is how a helper
+ * written into config holds a literal token. A helper named by one word, such as store, is a
+ * program and holds no credential, so that word is not hidden.
+ */
+function helperPieces(helper: string): string[] {
+  const pieces = /^!|\s/.test(helper) ? [helper, helper.replace(/^!/, '')] : [];
+  for (const m of helper.matchAll(/=([^\s;'"`|&)]+)/g)) pieces.push(m[1] ?? '');
+  return pieces;
+}
+
 /** The credential in an http.extraheader value: its token and, for Basic, the user name and password it encodes. */
 function headerPieces(header: string): string[] {
   const words = header.slice(header.indexOf(':') + 1).trim().split(/\s+/);
@@ -130,7 +151,7 @@ function headerPieces(header: string): string[] {
 /**
  * The credentials git can see from where it runs: in the URLs and addresses its config holds
  * (remotes, rewrites, proxies, and every URL that names a config section), in its http extra
- * headers, and in the proxy variables. git, curl and ssh print them in wordings no pattern can
+ * headers, in the credential helpers it runs, and in the proxy variables. git, curl and ssh print them in wordings no pattern can
  * list, so whatever holds one of them is hidden too.
  */
 function knownSecrets(cwd: string, env: NodeJS.ProcessEnv): Promise<string[]> {
@@ -151,6 +172,7 @@ function knownSecrets(cwd: string, env: NodeJS.ProcessEnv): Promise<string[]> {
         if (lastDot > first) pieces.push(...credentialPieces(key.slice(first + 1, lastDot)));
         if (/\.(?:url|pushurl|proxy|insteadof|pushinsteadof)$/i.test(key)) pieces.push(...credentialPieces(value));
         if (/\.extraheader$/i.test(key)) pieces.push(...headerPieces(value));
+        if (/^credential\.(?:.+\.)?helper$/i.test(key)) pieces.push(...helperPieces(value.trim()));
       }
       resolve([...new Set(pieces.filter((p) => p.length >= SHORTEST_SECRET))].sort((a, b) => b.length - a.length));
     });

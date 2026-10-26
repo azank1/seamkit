@@ -59,7 +59,7 @@ Usage:
   seamkit state init
   seamkit state list [--json]
   seamkit state verify [--json]
-  seamkit state sync [--remote <name>]
+  seamkit state sync [--remote <name>] [--no-push]
   seamkit version
 
 readback proves whether production holds each merged change: by the commit production says it
@@ -79,7 +79,9 @@ Every command that produces a verdict exits with its outcome:
 
 Verdicts are recorded on the ${STATE_BRANCH} branch when it exists (create it with
 "seamkit state init"), or always with --record. Recording touches nothing else in the
-repository; "seamkit stamp --out" writes only the file it names.
+repository; "seamkit stamp --out" writes only the file it names. "seamkit stamp
+--require-clean" refuses a dirty tree, and a stamp that cannot say whether the tree is
+clean. "seamkit state sync --no-push" merges the remote's ledger here without pushing.
 `;
 
 class UsageError extends Error {
@@ -91,6 +93,7 @@ type Flags = {
   json?: boolean;
   record?: boolean;
   'no-record'?: boolean;
+  'no-push'?: boolean;
   'no-ledger'?: boolean;
   remote?: string;
   cwd?: string;
@@ -120,6 +123,7 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         json: { type: 'boolean' },
         record: { type: 'boolean' },
         'no-record': { type: 'boolean' },
+        'no-push': { type: 'boolean' },
         'no-ledger': { type: 'boolean' },
         remote: { type: 'string' },
         cwd: { type: 'string' },
@@ -476,12 +480,14 @@ async function cmdState(args: string[], flags: Flags, cwd: string, io: Io): Prom
     }
     case 'sync': {
       const store = await GitStateStore.open(cwd);
-      const r = await store.sync(flags.remote ?? 'origin');
+      const push = flags['no-push'] !== true;
+      const r = await store.sync(flags.remote ?? 'origin', { push });
       const messages: Record<string, string> = {
         up_to_date: `${STATE_BRANCH} is up to date with ${r.remote}`,
         pushed: `pushed ${STATE_BRANCH} to ${r.remote}`,
         pulled: `updated ${STATE_BRANCH} from ${r.remote}`,
-        merged: `merged ${STATE_BRANCH} with ${r.remote} and pushed the result`,
+        merged: push ? `merged ${STATE_BRANCH} with ${r.remote} and pushed the result` : `merged ${STATE_BRANCH} with ${r.remote}, without pushing`,
+        ahead: `${STATE_BRANCH} holds events ${r.remote} does not; not pushed`,
         empty: `${STATE_BRANCH} exists neither here nor on ${r.remote}; nothing to do`,
         no_remote: `there is no remote called ${r.remote}`,
       };

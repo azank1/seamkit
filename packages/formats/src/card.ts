@@ -147,7 +147,8 @@ function url(value: unknown, field: string, problems: string[]): string | undefi
   if (/^\/(?!\/)[^\s?#]*$/.test(text)) return text;
   try {
     const u = new URL(text);
-    // URLs are recorded, so one holding credentials, a query string or a fragment is refused, as the CLI refuses one.
+    // URLs are recorded, so one holding credentials, a query string or a fragment is refused. The CLI refuses a
+    // production URL's credentials and query string the same way, and drops its fragment.
     if ((u.protocol === 'http:' || u.protocol === 'https:') && u.username === '' && u.password === '' && !/[?#]/.test(text)) return text;
   } catch {
     // fall through

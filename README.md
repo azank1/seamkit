@@ -75,7 +75,10 @@ from uncommitted changes proves nothing about what it contains. Where the build 
 commit the CI system provides (`VERCEL_GIT_COMMIT_SHA`, `GITHUB_SHA`, `CF_PAGES_COMMIT_SHA`, `COMMIT_REF`,
 `RENDER_GIT_COMMIT`, `CI_COMMIT_SHA`, `BITBUCKET_COMMIT` or `SOURCE_VERSION`) and records which one it used. In a
 checkout it needs git: a checkout that git is missing or refuses to read gets no stamp, rather than one that cannot say
-whether its tree was clean.
+whether its tree was clean. A change counts even where `git status` would not show it: inside a submodule set to
+`ignore`, or in a file marked skip-worktree or assume-unchanged. Stamp asks git not to refresh its index, so it writes
+nothing to the repository. `--require-clean` refuses a dirty tree, and also refuses any stamp that cannot say whether
+the tree is clean: outside a repository, or with `--commit` naming anything but the commit checked out.
 
 Vercel's build keeps the history and then writes `vercel.json` into the checkout: the committed settings on one line,
 or `{}` when none is committed. On Vercel's build of the commit, stamp does not count a `vercel.json` that holds exactly
@@ -285,7 +288,8 @@ The parser is strict. It rejects unknown fields, YAML aliases and custom tags, a
 each naming the field and the fix, so an agent can repair a card with one edit. A card lists at most 20 markers, and
 one readback reads at most 100 version documents, 100 pages and 1000 marker texts on a page; the newest changes come
 first, and an older card whose markers do not fit is proven by version alone and says so. A marker's `url` may be a path, which
-readback resolves against the production URL it is given, so one card serves staging and production alike. A marker of
+readback resolves against the production URL it is given, so one card serves staging and production alike. It may
+also be an absolute URL on another host, such as a separate API, which readback reads as given. A marker of
 kind `none` with a reason declares that nothing deployed changes.
 
 Readback finds cards in the history, so a card counts once its merge commit carries it. GitHub writes the pull request
@@ -300,7 +304,7 @@ event named by the SHA-256 of its content. That history is what lets a later run
 production, as after a rollback, rather than merely that it is not proven. The branch is written with git plumbing, so
 it never touches your working tree, index or HEAD. `seamkit state verify` checks every file against its name,
 `seamkit replay` recomputes every recorded verdict from its recorded observations and fails if any comes out
-differently, and `seamkit state sync` merges and pushes the branch without forcing.
+differently, and `seamkit state sync` merges and pushes the branch without forcing (`--no-push` merges here only).
 
 The ledger is a branch, so whatever builds every branch sees each push to it. The Action pushes with the job's token,
 which starts no workflows, but a push from your own machine starts every `on: push` workflow that does not leave the
@@ -309,7 +313,8 @@ whose git integration does not build commits by an author outside the team, ever
 is blocked and shows on GitHub as a failed `Preview` deployment, with nothing built or served.
 
 seamkit records URLs, commit ids, marker texts and digests of what production served, never the content itself. A
-production URL, or a card's URL, with credentials, a query string or a fragment is refused for that reason.
+production URL with credentials or a query string is refused for that reason, and its fragment is dropped before
+anything reads or records it; a card's URL with credentials, a query string or a fragment is refused.
 
 ## Try the demo
 
@@ -349,7 +354,7 @@ cover, is in [`docs/prior-art.md`](docs/prior-art.md).
 
 ```sh
 npm ci
-npm test             # 255 tests, using temporary repositories and a local fake production
+npm test             # 262 tests, using temporary repositories and a local fake production
 npm run demo         # add -- --keep to keep the demo repository
 npm run pack:cli     # builds the npm package into release/seamkit
 npm run smoke:pack   # installs that package into an empty project and runs it

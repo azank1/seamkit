@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -979,6 +979,90 @@ describe('seamkit stamp', () => {
     assert.match(r.err, /refusing to stamp a build with 1 uncommitted change \(such as README\.md\)/);
   });
 
+  it('counts the changes git status leaves out: an ignored submodule, and files marked skip-worktree or assume-unchanged', async () => {
+    const { dir } = await repo();
+    const lib = (await repo()).dir;
+    await git(['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'lib'], { cwd: dir });
+    await git(['config', '-f', '.gitmodules', 'submodule.lib.ignore', 'all'], { cwd: dir });
+    await git(['add', '.gitmodules', 'lib'], { cwd: dir });
+    await git([...ID, 'commit', '-q', '-m', 'add lib'], { cwd: dir });
+    assert.equal(JSON.parse((await cli(['stamp'], dir)).out).dirty, false);
+    await writeFile(join(dir, 'lib', 'README.md'), 'edited\n');
+    const edited = await cli(['stamp', '--require-clean'], dir);
+    assert.equal(edited.code, 1);
+    assert.match(edited.err, /refusing to stamp a build with 1 uncommitted change \(such as lib\)/);
+    await git(['checkout', '-q', '--', 'README.md'], { cwd: join(dir, 'lib') });
+    await git([...ID, 'commit', '-q', '--allow-empty', '-m', 'moved'], { cwd: join(dir, 'lib') });
+    await git(['config', 'diff.ignoreSubmodules', 'all'], { cwd: dir });
+    assert.equal(JSON.parse((await cli(['stamp'], dir)).out).dirty, true);
+    await git(['reset', '-q', '--hard', 'HEAD~1'], { cwd: join(dir, 'lib') });
+    assert.equal(JSON.parse((await cli(['stamp'], dir)).out).dirty, false);
+
+    for (const flag of ['--skip-worktree', '--assume-unchanged']) {
+      await git(['update-index', flag, 'README.md'], { cwd: dir });
+      await writeFile(join(dir, 'README.md'), 'local override\n');
+      const hidden = await cli(['stamp', '--require-clean'], dir);
+      assert.equal(hidden.code, 1, flag);
+      assert.match(hidden.err, /1 uncommitted change \(such as README\.md\)/);
+      // Marked but unchanged, or absent from the work tree as in a sparse checkout, it is not a change.
+      await writeFile(join(dir, 'README.md'), 'x\n');
+      assert.equal(JSON.parse((await cli(['stamp'], dir)).out).dirty, false, flag);
+      await rm(join(dir, 'README.md'));
+      if (flag === '--skip-worktree') assert.equal(JSON.parse((await cli(['stamp'], dir)).out).dirty, false, flag);
+      await git(['update-index', flag.replace('--', '--no-'), 'README.md'], { cwd: dir });
+      await git(['checkout', '-q', '--', 'README.md'], { cwd: dir });
+    }
+  });
+
+  it('writes nothing to the repository, its index included', async () => {
+    const { dir } = await repo();
+    // A file touched but not changed makes git status refresh, and rewrite, the index.
+    const later = new Date(Date.now() + 5000);
+    await utimes(join(dir, 'README.md'), later, later);
+    const index = await readFile(join(dir, '.git', 'index'));
+    assert.equal(JSON.parse((await cli(['stamp'], dir)).out).dirty, false);
+    assert.deepEqual(await readFile(join(dir, '.git', 'index')), index);
+  });
+
+  it('knows its own output through a symbolic link, stamped again', async () => {
+    for (const through of ['cwd', 'out']) {
+      const { dir } = await repo();
+      const link = join(root, `link-${++counter}`);
+      await symlink(dir, link);
+      const [cwd, out] = through === 'cwd' ? [link, 'public/version.json'] : [dir, join(link, 'public', 'version.json')];
+      for (const time of ['first', 'second']) {
+        const r = await cli(['stamp', '--require-clean', '--out', out], cwd);
+        assert.equal(r.code, 0, `${time} ${out}: ${r.err}`);
+      }
+    }
+  });
+
+  it('checks the tree for --require-clean with --commit, or refuses when it cannot', async () => {
+    const { dir, direct, merges } = await repo();
+    const head = await cli(['stamp', '--commit', 'HEAD', '--require-clean'], dir);
+    assert.equal(head.code, 0, head.err);
+    assert.deepEqual(JSON.parse(head.out), { schema: 'seamkit.version/1', commit: direct, source: 'argument', builtAt: AT, dirty: false });
+    await writeFile(join(dir, 'README.md'), 'edited\n');
+    assert.equal((await cli(['stamp', '--commit', direct, '--require-clean'], dir)).code, 1);
+    // Without --require-clean, --commit stamps as asked.
+    assert.equal((await cli(['stamp', '--commit', direct], dir)).code, 0);
+    const other = await cli(['stamp', '--commit', merges[0] as string, '--require-clean'], dir);
+    assert.equal(other.code, 2);
+    assert.match(other.err, /--require-clean cannot tell whether the tree is clean: --commit \S+ is not the commit checked out/);
+    const plain = await mkdtemp(join(root, 'plain-'));
+    const sha = 'c'.repeat(40);
+    assert.match((await cli(['stamp', '--commit', sha, '--require-clean'], plain)).err, /--require-clean cannot tell whether the tree is clean: --commit was given outside a repository/);
+    const env = await cli(['stamp', '--require-clean'], plain, { GITHUB_SHA: sha });
+    assert.equal(env.code, 2);
+    assert.match(env.err, /--require-clean cannot tell whether the tree is clean: this is not a repository/);
+    process.env['GIT_TEST_ASSUME_DIFFERENT_OWNER'] = '1';
+    try {
+      assert.match((await cli(['stamp', '--commit', direct, '--require-clean'], dir)).err, /--require-clean cannot tell whether the tree is clean: git cannot read this repository: fatal: detected dubious ownership/);
+    } finally {
+      delete process.env['GIT_TEST_ASSUME_DIFFERENT_OWNER'];
+    }
+  });
+
   it('stamps without git from the CI variable or --commit, but never a checkout it cannot read', async () => {
     const { dir } = await repo();
     const plain = await mkdtemp(join(root, 'nogit-'));
@@ -997,6 +1081,14 @@ describe('seamkit stamp', () => {
       assert.equal(checkout.code, 2);
       assert.match(checkout.err, /git is not installed, so this checkout cannot be checked for uncommitted changes/);
       assert.equal(existsSync(join(dir, 'public')), false);
+      // From below the checkout's top, as a Root Directory build runs, and with GIT_DIR naming it.
+      await mkdir(join(dir, 'web'), { recursive: true });
+      for (const [cwd, extra] of [[join(dir, 'web'), {}], [plain, { GIT_DIR: join(dir, '.git') }]] as const) {
+        const r = await cli(['stamp'], cwd, { GITHUB_SHA: sha, ...extra });
+        assert.equal(r.code, 2, cwd);
+        assert.match(r.err, /git is not installed/);
+        assert.equal((await cli(['stamp', '--commit', sha], cwd, extra)).code, 0);
+      }
       assert.equal((await cli(['stamp', '--commit', sha], dir)).code, 0);
     } finally {
       process.env['PATH'] = path;

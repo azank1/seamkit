@@ -90,7 +90,8 @@ function readbackArgs(inputs: ActionInputs, deployed: string | undefined): strin
  */
 async function openLedger(inputs: ActionInputs, cli: (args: string[]) => Promise<CliResult>, deps: ActionDeps): Promise<'recording' | 'created' | false> {
   if (inputs.ledger === 'false') return false;
-  const sync = await cli(['state', 'sync', '--json']);
+  // Only the push at the end of the run pushes, so a refused push is reported once, with advice.
+  const sync = await cli(['state', 'sync', '--no-push', '--json']);
   if (sync.code !== 0 && /"status":"no_remote"/.test(sync.out)) {
     deps.log('seamkit: the checkout has no origin remote, so this run is not recorded');
     return false;
@@ -101,7 +102,7 @@ async function openLedger(inputs: ActionInputs, cli: (args: string[]) => Promise
   }
   const status = (JSON.parse(sync.out) as { status: string }).status;
   if (status !== 'empty') {
-    deps.log(`seamkit: ledger ${status === 'up_to_date' ? 'is up to date' : status}`);
+    deps.log(`seamkit: ledger ${status === 'up_to_date' ? 'is up to date' : status === 'ahead' ? 'holds events origin does not have yet' : status}`);
     return 'recording';
   }
   if (inputs.ledger === 'auto') {
@@ -469,13 +470,10 @@ export async function runAction(deps: ActionDeps): Promise<number> {
     // runs may have pushed to the ledger, and changes may have merged, during the wait, so both
     // are fetched again first. A recording that fails leaves the verdict as it was read, and says
     // it was not recorded.
-    // A ledger this run created exists only here until the final push, which reports a refusal
-    // once, with what to change; until another run pushes one, there is nothing to fetch.
-    const remoteLedger = recording === 'created' ? await runGit(['ls-remote', 'origin', 'refs/heads/seamkit/state'], { cwd }) : undefined;
-    if (remoteLedger === undefined || remoteLedger.code !== 0 || remoteLedger.stdout.length > 0) {
-      const resync = await cli(['state', 'sync', '--json']);
-      if (resync.code !== 0) deps.warn(`seamkit: the ledger could not be synchronised with origin after the wait, so this run judges the ledger this checkout holds: ${clean(resync.err.trim())}`);
-    }
+    // This fetch and merge pushes nothing, so the final push alone reports a refusal, once, with
+    // what to change.
+    const resync = await cli(['state', 'sync', '--no-push', '--json']);
+    if (resync.code !== 0) deps.warn(`seamkit: the ledger could not be fetched from origin after the wait, so this run judges the ledger this checkout holds: ${clean(resync.err.trim())}`);
     const refetch = read === undefined ? undefined : await fetchBranch(cwd, read);
     if (read !== undefined) fetchedAfter = refetch === undefined;
     if (refetch !== undefined) deps.warn(`seamkit: could not fetch ${read} from origin again: ${refetch}`);

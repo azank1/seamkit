@@ -42,7 +42,7 @@ export interface AppendResult {
   created: boolean;
 }
 
-export type SyncStatus = 'up_to_date' | 'pushed' | 'pulled' | 'merged' | 'empty' | 'no_remote';
+export type SyncStatus = 'up_to_date' | 'pushed' | 'pulled' | 'merged' | 'ahead' | 'empty' | 'no_remote';
 
 export interface SyncResult {
   status: SyncStatus;
@@ -143,9 +143,10 @@ export class GitStateStore {
   /**
    * Merges the local branch with the remote's and pushes the result, never forcing. Because every
    * event file is named by its content, two writers can only ever add different paths, so the
-   * merge is a union of files and cannot conflict.
+   * merge is a union of files and cannot conflict. With push false the result is kept here only:
+   * merged, or ahead when the remote lacks events this branch holds.
    */
-  async sync(remote = 'origin'): Promise<SyncResult> {
+  async sync(remote = 'origin', { push = true }: { push?: boolean } = {}): Promise<SyncResult> {
     const hasRemote = await runGit(['remote', 'get-url', remote], { cwd: this.cwd });
     if (hasRemote.code !== 0) return { status: 'no_remote', remote, attempts: 0 };
     let stalled = 0;
@@ -173,6 +174,7 @@ export class GitStateStore {
         toPush = merged;
         status = 'merged';
       }
+      if (!push) return { status: status === 'merged' ? 'merged' : 'ahead', remote, local: toPush, attempts: attempt };
       // The ledger is seamkit's own data, not the project's code, so the project's pre-push hook,
       // which may refuse branch names or run its tests, does not run for it.
       const pushed = await runGit(['push', '--quiet', '--no-verify', remote, `${toPush}:${STATE_REF}`], { cwd: this.cwd });

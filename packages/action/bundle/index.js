@@ -8978,6 +8978,7 @@ function quietEnv(extra) {
 var USERINFO = /(\/\/|::|url has no scheme: |credential url cannot be parsed: |unable to (?:look up|connect to) )(?:[^\r\n]*@|[^@]*@)/gi;
 var NAMED_HOST = /(Could not resolve (?:host|proxy|hostname):? |Failed to connect to (?:proxy )?|connect to host |target host name '|in connection to |SOCKS[45] connection to |Failed to resolve ")[^\s'":]+/gi;
 var QUOTED_PROXY = /(Unsupported proxy (?:syntax in |scheme for )?|Couldn't resolve proxy )'[^\r\n]*'/gi;
+var HELPER_LINE = /(invalid credential line: |url has no scheme: |credential url cannot be parsed: )[^\r\n]*/gi;
 var SPLIT_URL = /url contains a newline in its [a-z ]+ component/i;
 function scrubGitText(text) {
   if (SPLIT_URL.test(text))
@@ -8994,7 +8995,7 @@ function scrubGitText(text) {
   const quote = scrubbed.indexOf("'");
   if (quote >= 0 && quote < at2)
     scrubbed = scrubbed.slice(0, quote + 1) + scrubbed.slice(at2 + 1);
-  return scrubbed.replace(NAMED_HOST, "$1(host not shown)").replace(QUOTED_PROXY, "$1'(proxy not shown)'");
+  return scrubbed.replace(HELPER_LINE, "$1(not shown)").replace(NAMED_HOST, "$1(host not shown)").replace(QUOTED_PROXY, "$1'(proxy not shown)'");
 }
 var PROXY_VARS = ["http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"];
 var SHORTEST_SECRET = 4;
@@ -9015,6 +9016,12 @@ function splitPieces(credential) {
     } catch {
     }
   }
+  return pieces;
+}
+function helperPieces(helper) {
+  const pieces = /^!|\s/.test(helper) ? [helper, helper.replace(/^!/, "")] : [];
+  for (const m of helper.matchAll(/=([^\s;'"`|&)]+)/g))
+    pieces.push(m[1] ?? "");
   return pieces;
 }
 function headerPieces(header) {
@@ -9046,6 +9053,8 @@ function knownSecrets(cwd, env) {
           pieces.push(...credentialPieces(value));
         if (/\.extraheader$/i.test(key))
           pieces.push(...headerPieces(value));
+        if (/^credential\.(?:.+\.)?helper$/i.test(key))
+          pieces.push(...helperPieces(value.trim()));
       }
       resolve3([...new Set(pieces.filter((p) => p.length >= SHORTEST_SECRET))].sort((a, b) => b.length - a.length));
     });
@@ -9183,9 +9192,10 @@ var GitStateStore = class _GitStateStore {
   /**
    * Merges the local branch with the remote's and pushes the result, never forcing. Because every
    * event file is named by its content, two writers can only ever add different paths, so the
-   * merge is a union of files and cannot conflict.
+   * merge is a union of files and cannot conflict. With push false the result is kept here only:
+   * merged, or ahead when the remote lacks events this branch holds.
    */
-  async sync(remote = "origin") {
+  async sync(remote = "origin", { push = true } = {}) {
     const hasRemote = await runGit(["remote", "get-url", remote], { cwd: this.cwd });
     if (hasRemote.code !== 0)
       return { status: "no_remote", remote, attempts: 0 };
@@ -9219,6 +9229,8 @@ var GitStateStore = class _GitStateStore {
         toPush = merged;
         status = "merged";
       }
+      if (!push)
+        return { status: status === "merged" ? "merged" : "ahead", remote, local: toPush, attempts: attempt };
       const pushed = await runGit(["push", "--quiet", "--no-verify", remote, `${toPush}:${STATE_REF}`], { cwd: this.cwd });
       if (pushed.code === 0)
         return { status, remote, local: toPush, attempts: attempt };
@@ -10033,9 +10045,9 @@ function auditAdvice(context) {
 }
 
 // packages/cli/dist/stamp.js
-import { existsSync } from "node:fs";
+import { existsSync, readlinkSync, realpathSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { basename, dirname, join as join2, relative, resolve } from "node:path";
 var STAMP_ENV_VARS = [
   "VERCEL_GIT_COMMIT_SHA",
   "GITHUB_SHA",
@@ -10061,8 +10073,17 @@ async function gitText(args, cwd) {
   const r = await runGit(args, { cwd });
   return r.code === 0 ? r.stdout.toString("utf8").trim() : void 0;
 }
+function physical(path) {
+  let dir = path;
+  const rest = [];
+  while (!existsSync(dir) && dirname(dir) !== dir) {
+    rest.unshift(basename(dir));
+    dir = dirname(dir);
+  }
+  return join2(realpathSync(dir), ...rest);
+}
 async function uncommitted(top, outPath) {
-  const r = await runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: top });
+  const r = await runGit(["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"], { cwd: top });
   if (r.code !== 0)
     throw new StampError(`git status failed: ${r.stderr.trim()}`);
   const tokens = r.stdout.toString("utf8").split("\0");
@@ -10078,8 +10099,53 @@ async function uncommitted(top, outPath) {
     if (xy.includes("R") || xy.includes("C"))
       i++;
   }
-  const own = outPath === void 0 ? void 0 : relative(top, outPath).split("\\").join("/");
-  return paths.filter((p) => p !== own);
+  paths.push(...await hiddenFromStatus(top));
+  const own = outPath === void 0 ? void 0 : relative(realpathSync(top), physical(outPath)).split("\\").join("/");
+  return [...new Set(paths)].filter((p) => p !== own);
+}
+async function hiddenFromStatus(top) {
+  const tagged = await runGit(["--no-optional-locks", "ls-files", "-v", "-z"], { cwd: top });
+  if (tagged.code !== 0)
+    throw new StampError(`git ls-files failed: ${tagged.stderr.trim()}`);
+  const marked = /* @__PURE__ */ new Set();
+  for (const entry of tagged.stdout.toString("utf8").split("\0")) {
+    const tag = entry[0] ?? "";
+    if (entry.length > 2 && (tag === "S" || /[a-z]/.test(tag)))
+      marked.add(entry.slice(2));
+  }
+  if (marked.size === 0)
+    return [];
+  const staged = await runGit(["--no-optional-locks", "ls-files", "-s", "-z"], { cwd: top });
+  if (staged.code !== 0)
+    throw new StampError(`git ls-files failed: ${staged.stderr.trim()}`);
+  const changed = [];
+  const files2 = [];
+  for (const entry of staged.stdout.toString("utf8").split("\0")) {
+    const tab = entry.indexOf("	");
+    const path = entry.slice(tab + 1);
+    if (tab < 0 || !marked.has(path) || !existsSync(resolve(top, path)))
+      continue;
+    const [mode = "", blob = ""] = entry.slice(0, tab).split(" ");
+    if (mode === "120000") {
+      const link = await runGit(["--no-optional-locks", "hash-object", "--stdin"], { cwd: top, input: readlinkSync(resolve(top, path)) });
+      if (link.stdout.toString("utf8").trim() !== blob)
+        changed.push(path);
+    } else if ((mode === "100644" || mode === "100755") && !path.includes("\n"))
+      files2.push({ path, blob });
+    else
+      changed.push(path);
+  }
+  if (files2.length > 0) {
+    const hashed = await runGit(["--no-optional-locks", "hash-object", "--stdin-paths"], { cwd: top, input: files2.map((f) => f.path).join("\n") + "\n" });
+    if (hashed.code !== 0)
+      throw new StampError(`git hash-object failed: ${hashed.stderr.trim()}`);
+    const hashes = hashed.stdout.toString("utf8").trim().split("\n");
+    files2.forEach((f, i) => {
+      if (hashes[i] !== f.blob)
+        changed.push(f.path);
+    });
+  }
+  return changed;
 }
 function onVercel(env, head) {
   return env["VERCEL"] === "1" && env["VERCEL_GIT_COMMIT_SHA"]?.trim().toLowerCase() === head;
@@ -10123,9 +10189,22 @@ async function repositoryTop(cwd) {
   const reason = r.stderr.trim().split("\n")[0] ?? `git exited ${r.code}`;
   return { refused: /dubious ownership/.test(reason) ? `${reason} (git config --global --add safe.directory <dir> trusts it)` : reason };
 }
+async function treeChanges(top, head, outPath, env) {
+  const vercel = onVercel(env, head);
+  const changed = [];
+  const hostWritten = [];
+  for (const path of await uncommitted(top, outPath)) {
+    if (vercel && await writtenByVercel(top, path))
+      hostWritten.push(path);
+    else
+      changed.push(path);
+  }
+  return { changed, hostWritten };
+}
 async function makeStamp(cwd, req, env, builtAt) {
   const outPath = req.out === void 0 ? void 0 : resolve(cwd, req.out);
   const { top, refused } = await repositoryTop(cwd);
+  const unclear = (reason) => new StampError(`--require-clean cannot tell whether the tree is clean: ${reason}`);
   if (req.commit !== void 0) {
     let full;
     if (req.commit.startsWith("-"))
@@ -10136,7 +10215,17 @@ async function makeStamp(cwd, req, env, builtAt) {
       full = req.commit.toLowerCase();
     if (full === void 0)
       throw new StampError(`--commit ${req.commit} does not name a commit${top === void 0 ? "; outside a repository give the full commit id" : ""}`);
-    return { doc: { schema: VERSION_DOC_SCHEMA, commit: full, source: "argument", builtAt }, uncommitted: [], hostWritten: [] };
+    const doc = { schema: VERSION_DOC_SCHEMA, commit: full, source: "argument", builtAt };
+    if (!req.requireClean)
+      return { doc, uncommitted: [], hostWritten: [] };
+    if (refused !== void 0)
+      throw unclear(`git cannot read this repository: ${refused}`);
+    if (top === void 0)
+      throw unclear("--commit was given outside a repository git can read");
+    if (full !== await gitText(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], top))
+      throw unclear(`--commit ${req.commit} is not the commit checked out, so the tree is not that commit's`);
+    const { changed, hostWritten } = await treeChanges(top, full, outPath, env);
+    return { doc: { ...doc, dirty: changed.length > 0 }, uncommitted: changed, hostWritten };
   }
   if (refused !== void 0)
     throw new StampError(`git cannot read this repository, so stamp cannot tell whether the tree is clean: ${refused}`);
@@ -10146,22 +10235,16 @@ async function makeStamp(cwd, req, env, builtAt) {
   if (top !== void 0) {
     const head = await gitText(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], top);
     if (head !== void 0) {
-      const vercel = onVercel(env, head);
-      const changed = [];
-      const hostWritten = [];
-      for (const path of await uncommitted(top, outPath)) {
-        if (vercel && await writtenByVercel(top, path))
-          hostWritten.push(path);
-        else
-          changed.push(path);
-      }
+      const { changed, hostWritten } = await treeChanges(top, head, outPath, env);
       const doc = { schema: VERSION_DOC_SCHEMA, commit: head, dirty: changed.length > 0, source: "git", builtAt };
-      const ref = (vercel ? env["VERCEL_GIT_COMMIT_REF"]?.trim() : void 0) || await gitText(["symbolic-ref", "--short", "-q", "HEAD"], top);
+      const ref = (onVercel(env, head) ? env["VERCEL_GIT_COMMIT_REF"]?.trim() : void 0) || await gitText(["symbolic-ref", "--short", "-q", "HEAD"], top);
       if (ref)
         doc.ref = ref;
       return { doc, uncommitted: changed, hostWritten };
     }
   }
+  if (req.requireClean)
+    throw unclear(top === void 0 ? "this is not a repository git can read, so there is no tree to check" : "the repository has no commit checked out");
   for (const name of STAMP_ENV_VARS) {
     const value = env[name]?.trim().toLowerCase();
     if (value !== void 0 && COMMIT_PATTERN.test(value)) {
@@ -10193,7 +10276,7 @@ Usage:
   seamkit state init
   seamkit state list [--json]
   seamkit state verify [--json]
-  seamkit state sync [--remote <name>]
+  seamkit state sync [--remote <name>] [--no-push]
   seamkit version
 
 readback proves whether production holds each merged change: by the commit production says it
@@ -10213,7 +10296,9 @@ Every command that produces a verdict exits with its outcome:
 
 Verdicts are recorded on the ${STATE_BRANCH} branch when it exists (create it with
 "seamkit state init"), or always with --record. Recording touches nothing else in the
-repository; "seamkit stamp --out" writes only the file it names.
+repository; "seamkit stamp --out" writes only the file it names. "seamkit stamp
+--require-clean" refuses a dirty tree, and a stamp that cannot say whether the tree is
+clean. "seamkit state sync --no-push" merges the remote's ledger here without pushing.
 `;
 var UsageError = class extends Error {
   name = "UsageError";
@@ -10231,6 +10316,7 @@ async function run(argv, io) {
         json: { type: "boolean" },
         record: { type: "boolean" },
         "no-record": { type: "boolean" },
+        "no-push": { type: "boolean" },
         "no-ledger": { type: "boolean" },
         remote: { type: "string" },
         cwd: { type: "string" },
@@ -10619,12 +10705,14 @@ async function cmdState(args, flags, cwd, io) {
     }
     case "sync": {
       const store = await GitStateStore.open(cwd);
-      const r = await store.sync(flags.remote ?? "origin");
+      const push = flags["no-push"] !== true;
+      const r = await store.sync(flags.remote ?? "origin", { push });
       const messages = {
         up_to_date: `${STATE_BRANCH} is up to date with ${r.remote}`,
         pushed: `pushed ${STATE_BRANCH} to ${r.remote}`,
         pulled: `updated ${STATE_BRANCH} from ${r.remote}`,
-        merged: `merged ${STATE_BRANCH} with ${r.remote} and pushed the result`,
+        merged: push ? `merged ${STATE_BRANCH} with ${r.remote} and pushed the result` : `merged ${STATE_BRANCH} with ${r.remote}, without pushing`,
+        ahead: `${STATE_BRANCH} holds events ${r.remote} does not; not pushed`,
         empty: `${STATE_BRANCH} exists neither here nor on ${r.remote}; nothing to do`,
         no_remote: `there is no remote called ${r.remote}`
       };
@@ -11018,7 +11106,7 @@ function readbackArgs(inputs, deployed) {
 async function openLedger(inputs, cli, deps) {
   if (inputs.ledger === "false")
     return false;
-  const sync = await cli(["state", "sync", "--json"]);
+  const sync = await cli(["state", "sync", "--no-push", "--json"]);
   if (sync.code !== 0 && /"status":"no_remote"/.test(sync.out)) {
     deps.log("seamkit: the checkout has no origin remote, so this run is not recorded");
     return false;
@@ -11029,7 +11117,7 @@ async function openLedger(inputs, cli, deps) {
   }
   const status = JSON.parse(sync.out).status;
   if (status !== "empty") {
-    deps.log(`seamkit: ledger ${status === "up_to_date" ? "is up to date" : status}`);
+    deps.log(`seamkit: ledger ${status === "up_to_date" ? "is up to date" : status === "ahead" ? "holds events origin does not have yet" : status}`);
     return "recording";
   }
   if (inputs.ledger === "auto") {
@@ -11283,12 +11371,9 @@ async function runAction(deps) {
   let fetchedAfter;
   const clean = (text) => scrub(text, [inputs.url, inputs.versionUrl]);
   if (recording && result.code !== EXIT_USAGE2) {
-    const remoteLedger = recording === "created" ? await runGit(["ls-remote", "origin", "refs/heads/seamkit/state"], { cwd }) : void 0;
-    if (remoteLedger === void 0 || remoteLedger.code !== 0 || remoteLedger.stdout.length > 0) {
-      const resync = await cli(["state", "sync", "--json"]);
-      if (resync.code !== 0)
-        deps.warn(`seamkit: the ledger could not be synchronised with origin after the wait, so this run judges the ledger this checkout holds: ${clean(resync.err.trim())}`);
-    }
+    const resync = await cli(["state", "sync", "--no-push", "--json"]);
+    if (resync.code !== 0)
+      deps.warn(`seamkit: the ledger could not be fetched from origin after the wait, so this run judges the ledger this checkout holds: ${clean(resync.err.trim())}`);
     const refetch = read === void 0 ? void 0 : await fetchBranch(cwd, read);
     if (read !== void 0)
       fetchedAfter = refetch === void 0;

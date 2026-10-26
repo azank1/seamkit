@@ -357,6 +357,51 @@ describe('GitStateStore', () => {
     assert.equal(proxied.stderr, '*** ***\n');
   });
 
+  it('hides a credential however its address writes it: encoded, holding an @, or starting with its user name', async () => {
+    const cases: Array<[string, string, Record<string, string>?]> = [
+      ['https://vault1:tok%33sec99@127.0.0.1:9/o/r.git', 'tok3sec99'],
+      ['https://vault1:p@ss3cret9@127.0.0.1:9/o/r.git', 'ss3cret9'],
+      ['https://deploy:deploy-2026-secret@127.0.0.1:9/o/r.git', 'deploy-2026-secret'],
+      ['', 'lowuser lowpa55', { http_proxy: 'http://lowuser:lowpa55@127.0.0.1:3128' }],
+      ['', 'alluser allpa55', { all_proxy: 'socks5://alluser:allpa55@127.0.0.1:1080' }],
+    ];
+    for (const [remote, said, env] of cases) {
+      const cwd = await repo('pieces');
+      if (remote !== '') await git(['remote', 'add', 'origin', remote], { cwd });
+      const r = await runGit(['-c', `alias.say=!echo '${said} kept' >&2`, 'say'], { cwd, env: env ?? {} });
+      assert.equal(r.stderr, `${said.split(' ').map(() => '***').join(' ')} kept\n`, said);
+    }
+  });
+
+  it('keeps what a credential helper holds or prints out of the errors git reports', async () => {
+    const cwd = await repo('helper');
+    const server = createServer((_req, res) => {
+      res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="r"' });
+      res.end();
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const { port } = server.address() as AddressInfo;
+    const url = `http://127.0.0.1:${port}/o/r.git`;
+    try {
+      // A helper printing a bare token, which git quotes as a line it cannot use.
+      const bare = await runGit(['-c', 'credential.helper=!f() { echo "ghp_HelperTok3n0123"; }; f', 'ls-remote', url], { cwd });
+      assert.notEqual(bare.code, 0);
+      assert.match(bare.stderr, /^warning: invalid credential line: \(not shown\)\nfatal: could not read Username/);
+      // A helper printing url= with no scheme, which git quotes twice.
+      const noScheme = await runGit(['-c', 'credential.helper=!f() { echo "url=ghp_UrlTok3n55555"; }; f', 'ls-remote', url], { cwd });
+      assert.equal(noScheme.stderr, 'warning: url has no scheme: (not shown)\nfatal: credential url cannot be parsed: (not shown)\n');
+      // A helper holding a literal token whose first command is missing: the shell prints the helper whole.
+      const literal = '!f() { missing-helper-cmd; echo username=x-access-token; echo password=ghp_LiteralTok3n98765; }; f';
+      await git(['config', 'credential.helper', literal], { cwd });
+      const echoed = await runGit(['ls-remote', url], { cwd });
+      assert.notEqual(echoed.code, 0);
+      assert.match(echoed.stderr, /^\*\*\* get: 1: missing-helper-cmd: not found\n/);
+      for (const r of [bare, noScheme, echoed]) assert.ok(!/ghp_/.test(r.stderr), r.stderr);
+    } finally {
+      await new Promise((done) => server.close(done));
+    }
+  });
+
   it('keeps curl tracing and request headers out of the errors an http remote gives', async () => {
     const cwd = await repo('curl');
     const server = createServer((_req, res) => {
