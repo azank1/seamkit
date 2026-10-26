@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>seamkit research</title>
-<meta name="description" content="How deploy tools score a check that examined nothing, how seamkit reads production back instead, and what 26 rounds of adversarial review found while building it.">
+<meta name="description" content="How deploy tools score a check that examined nothing, how seamkit reads production back instead, and what 27 rounds of adversarial review found while building it.">
 <meta property="og:title" content="The seam between merge and production">
 <meta property="og:description" content="A survey of how deploy tools treat a check that examined nothing, the read-back method seamkit uses instead, and what adversarial review found while building it.">
 <meta property="og:type" content="article">
@@ -219,7 +219,7 @@ ol.sources a { overflow-wrap: anywhere; }
       <h1>The seam between merge and production</h1>
       <p class="lede">Coding agents made it fast to write and merge a change. They did not make it any faster to find out
       what actually shipped. This note reports how existing deploy tools score a check that examined nothing, the
-      read-back method seamkit uses instead, and what 26 rounds of adversarial review found while it was built.</p>
+      read-back method seamkit uses instead, and what 27 rounds of adversarial review found while it was built.</p>
       <div class="byline">
         <span>azank</span>
         <a href="https://github.com/azank1/seamkit">azank1/seamkit</a>
@@ -396,16 +396,16 @@ FAIL  readback  origin/main
       <p>The 0.2.0 GitHub Action, which reads production back after every deploy and posts the verdict as a check run,
       was built under a loop of adversarial review. Each round ran six reviewing agents with distinct lenses, such as how
       a deploy is scoped, how the wait for production behaves, security, whether the documentation is true, the
-      ledger's lifecycle, and whether the tests prove what they claim; round 26 turned two of them to the version stamp
-      and the packaged artifacts. Every finding was then given to two independent skeptics
+      ledger's lifecycle, and whether the tests prove what they claim; rounds 26 and 27 turned two of them to the version
+      stamp and the packaged artifacts. Every finding was then given to two independent skeptics
       instructed to refute it, and a completeness critic closed the round by looking for what the lenses had not run.
       Each fix was afterwards broken on purpose in the compiled code to confirm that a test fails.</p>
     </div>
     <figure>
       <div class="panel chart" id="chart">
         <svg id="chart-svg" viewBox="0 0 900 300" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="chart-t chart-d">
-          <title id="chart-t">Findings reported per review round, rounds 3 to 26</title>
-          <desc id="chart-d">Bar chart. Round 3 reported 21 findings. Counts fell to between 2 and 9 from round 7 to round 25; round 23 reported 2 and round 25 reported 7. Round 26, whose lenses read code no earlier round had, reported 21. The full data is in the table below the chart.</desc>
+          <title id="chart-t">Findings reported per review round, rounds 3 to 27</title>
+          <desc id="chart-d">Bar chart. Round 3 reported 21 findings. Counts fell to between 2 and 9 from round 7 to round 25; round 23 reported 2 and round 25 reported 7. Round 26, whose lenses read code no earlier round had, reported 21, and round 27 reported 13. The full data is in the table below the chart.</desc>
         </svg>
         <div class="tip" id="tip" hidden></div>
       </div>
@@ -413,7 +413,7 @@ FAIL  readback  origin/main
       those confirmed by one, and the completeness critic's. Rounds 1 and 2 used a different setup and are not shown.
       Counts fell from 21 in round 3 to 2 in round 23, then rose to 9 in round 24, when five reviewers found the same
       gap. Round 26 reported 21 after its lenses were turned to code no round had read before: the version stamp, the
-      packaged npm module and Action as users receive them, and the ledger over a full run of jobs. Round 12 was the last round with a finding confirmed as high severity, and no round has yet come back with no
+      packaged npm module and Action as users receive them, and the ledger over a full run of jobs. Round 27 reported 13 on the same lenses, three of them medium. Round 12 was the last round with a finding confirmed as high severity, and no round has yet come back with no
       findings. The setup guide's changelog also counts an earlier pass by a single reviewer, so its round numbers run
       one ahead of these.</figcaption>
       <details>
@@ -446,6 +446,7 @@ FAIL  readback  origin/main
               <tr><td>24</td><td class="num">9</td><td>5 distinct; 5 reports of one gap</td></tr>
               <tr><td>25</td><td class="num">7</td><td>all low; credentials leaked outside the URL itself</td></tr>
               <tr><td>26</td><td class="num">21</td><td>all low; new lenses; the critic did not run</td></tr>
+              <tr><td>27</td><td class="num">13</td><td>three medium; a credential helper's text, and changes git status does not show</td></tr>
             </tbody>
           </table>
         </div>
@@ -458,7 +459,7 @@ FAIL  readback  origin/main
     <div class="classes col">
       <div class="cls">
         <h3>Credentials leaking through git's own error text</h3>
-        <p>Ten rounds (11, 12, 14 and 20 to 26) found a way for a token in a git remote URL to reach a public
+        <p>Eleven rounds (11, 12, 14 and 20 to 27) found a way for a token in a git remote URL to reach a public
         check run, which GitHub does not mask. The routes were trace output, a curl verbosity variable that turns tracing
         on whatever its value (introduced by the fix for round 11), trace settings read from git config, and passwords
         holding an unencoded @, quote, slash or line break that ended the scrub early. The defence has two layers:
@@ -470,7 +471,9 @@ FAIL  readback  origin/main
         after splitting a URL differently from git, a remote git reads as a local path and quotes whole, a proxy that
         git cuts short, and remotes written in git's transport form. Each was one more wording a pattern had to know,
         so a third layer was added that knows none: the credentials git can see, in its configuration and the proxy
-        variables, are hidden wherever they appear in what it writes.</p>
+        variables, are hidden wherever they appear in what it writes. Round 27 found that a credential helper is one
+        more source: git quotes a line it could not use from a helper's output, and the shell echoes a failing helper
+        whole, token included. Those lines are no longer shown, and what a helper holds is hidden like the rest.</p>
       </div>
       <div class="cls">
         <h3>Precedence rules that trade a bug for its mirror</h3>
@@ -489,7 +492,7 @@ FAIL  readback  origin/main
       </div>
     </div>
     <div class="col">
-      <p>From round 11 on, 80 fixes were broken on purpose across 14 rounds by editing the compiled code and rerunning
+      <p>From round 11 on, 138 fixes were broken on purpose across 17 rounds by editing the compiled code and rerunning
       the tests. Every break is caught by the current tests. Several survived at first, and each of those exposed a
       missing test that was then written, which is the main reason for doing it.</p>
     </div>
