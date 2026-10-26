@@ -282,8 +282,10 @@ commit that the CI system provides, such as `VERCEL_GIT_COMMIT_SHA` or `GITHUB_S
 and leaves `dirty` out because it cannot know. Only git's own "not a git repository" means there is no history: a
 repository git refuses to read, such as one owned by another user or written by a newer git, and a checkout on a
 machine without git, end with no stamp, since only git could have checked the tree. A file renamed counts at the path
-it left, and a change counts inside a submodule set to `ignore` and in a file marked skip-worktree or assume-unchanged,
-which `git status` leaves out. Status runs with `--no-optional-locks`, so stamp never rewrites the index.
+it left, and a change counts inside a submodule, named by its path there, whatever its `ignore` setting, and in a file
+marked skip-worktree or assume-unchanged, which `git status` leaves out: status then runs on a copy of the index,
+outside the repository, holding those entries unmarked and without their file data, so git reads each one (in a sparse
+checkout, a skip-worktree file absent from the work tree keeps its mark). Status runs with `--no-optional-locks`, so stamp never rewrites the index.
 `--require-clean` refuses to stamp a dirty tree, and refuses a stamp that cannot say whether the tree is clean: one
 from a CI variable, outside a repository, or with `--commit` naming anything but HEAD. Vercel's build checks
 the commit out with its history and then writes `vercel.json` into the checkout, the committed settings on one line or
@@ -646,7 +648,7 @@ git's words before an address it prints with no // (`url has no scheme`, `unable
 quoted text loses everything from its first quote to its last @, so a quote in a credential does not stop it. Since no
 list of wordings can be complete, the credentials git can see are also hidden wherever they appear: the user names,
 passwords and their pieces in the URLs and addresses its config holds, in its http extra headers, in the credential
-helpers it runs (whole, as the shell echoes a failing one, and each name=value in them) and in the proxy variables,
+helpers it runs (whole, as the shell echoes a failing one, and each name=value in them, quoted or not) and in the proxy variables,
 looked up only when git wrote an error. A line git quotes from a helper's output (`invalid credential line`, and a
 helper's url= with no scheme) is not shown at all. The removal runs only on text up to the last @, which keeps it
 linear on long text. The Action fetches and merges the ledger without pushing until its final push, so a refused push

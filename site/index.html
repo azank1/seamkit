@@ -744,7 +744,7 @@ releaseNote: Notes now show when they were last saved.
 <span class="c"># usage: scripts/wait-live.sh https://your.app [seconds]</span>
 url="$1"; deadline=$(( $(date +%s) + ${2:-300} ))
 git fetch --quiet origin
-npx seamkit state sync &gt;/dev/null   <span class="c"># the ledger as CI and others left it</span>
+npx seamkit state sync --no-push &gt;/dev/null   <span class="c"># the ledger as CI and others left it</span>
 while :; do
   npx seamkit readback --url "$url" --last 1 --no-record
   code=$?
@@ -932,7 +932,7 @@ fi</pre></div>
     (<code>echo "::remove-matcher owner=tsc::"</code>, and the same for <code>eslint-stylish</code> and
     <code>eslint-compact</code>), which would read a change's title as an error. With <code>BRANCH</code> set to your
     default branch, fetch it as it is now (<code>git fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"</code>), run
-    <code>npx --yes seamkit@0.2 state sync</code> (when it fails, leave out <code>--deployed</code>, because a ledger copy left
+    <code>npx --yes seamkit@0.2 state sync --no-push</code> (when it fails, leave out <code>--deployed</code>, because a ledger copy left
     on the runner may lack runs others pushed), then
     <code>npx --yes seamkit@0.2 readback --url https://your.app --last 20 --branch "$BRANCH" --deployed &lt;deployed commit&gt;</code>
     in the job that deployed, where the deployed commit is usually <code>$GITHUB_SHA</code> or your CI's equivalent,
@@ -987,8 +987,8 @@ fi</pre></div>
   </div>
   <p class="muted">The production URL can also come from <code>SEAMKIT_URL</code>. seamkit sends only <code>GET</code>s to
     production and follows redirects as a browser does, so an address that redirects elsewhere is judged by what it
-    redirects to. It writes only the <code>seamkit/state</code> branch and, for <code>seamkit stamp --out</code>, the
-    version document at the path you give; it records URLs, commit ids and digests but never content, and runs no
+    redirects to. It writes only the <code>seamkit/state</code> branch (and, as any git fetch does, <code>.git/FETCH_HEAD</code> when
+    it fetches the ledger) and, for <code>seamkit stamp --out</code>, the version document at the path you give; it records URLs, commit ids and digests but never content, and runs no
     model.</p>
 </section>
 
@@ -1016,7 +1016,7 @@ fi</pre></div>
     updated: '2026-10-22',
     version: '0.2.0',
     npm: '0.1.0',   // the version npm serves; the release commit bumps it
-    tests: '262',
+    tests: '267',
     dogfood: '20 of 20',
     milestones: [
       { m: 'M1', title: 'Verdict core and ledger', state: 'done', when: '2026-10-15',
@@ -1098,6 +1098,7 @@ fi</pre></div>
       ['2026-10-26', 'Twenty-sixth review round (19 agents, 6 findings, all confirmed by both skeptics and all low, and 1 from the critic): the host that curl names in an error, or that ssh names for a URL missing its scheme, can be part of a password, so it is hidden; a remote that git reads as a local path, such as https//… or token@host/…, loses its credentials where git quotes it; the deploy readback and its watch share one check name, as the recipes have it; a ledger push without credentials is no longer blamed on a ruleset; SECURITY.md says what the Action touches; and the scrub and trace tests now tell the rules from a fixed number of passes or a list of names. 252 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
       ['2026-10-26', 'Twenty-seventh review round (52 agents, 23 findings, 20 confirmed by both skeptics, 1 split and 2 refuted, all low; the critic did not run, as the machine restarted mid-round): since no list of git\'s wordings is complete, the credentials git can see, in the URLs its config holds, its extra headers and the proxy variables, are now hidden wherever its errors show them; remotes given as https::… or git://, a proxy cut short at a / ? or #, SOCKS5 errors and a quote inside a credential are scrubbed too; stamp needs git in a checkout, refuses one git cannot read, and counts a renamed file where it was; the push advice names a ruleset only when the push was declined, and a ledger a run starts is pushed and reported once; a card URL with a query string is refused; the action smoke runs the bundle outside the repository; and the tests no longer need the network. 255 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
       ['2026-10-26', 'Twenty-eighth review round (39 agents, 16 findings, 13 confirmed by both skeptics and 3 refuted, 3 of them medium; nothing new from the critic): a line git quotes from a credential helper, and a helper holding a literal token that the shell echoes when one of its commands fails, no longer reach a check run; stamp counts changes inside a submodule set to ignore and in files marked skip-worktree or assume-unchanged, knows its own output through a symbolic link, and no longer rewrites the index; --require-clean refuses any stamp that cannot say whether the tree is clean, --commit included; the Action merges the ledger without pushing until its last push, so a refused push is reported once; SECURITY.md names the card hosts readback reads, and the docs say a production URL loses its fragment rather than being refused. 262 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
+      ['2026-10-26', 'Twenty-ninth review round (53 agents, 23 findings, 20 confirmed by both skeptics, 2 split and 1 refuted, 4 of them medium; nothing new from the critic): most findings were in the last round\'s check of files marked skip-worktree or assume-unchanged, which compared contents by hand and so missed deleted files, mode and type changes, symbolic links, unusual names and submodules, so stamp now asks git itself, running status on a copy of the index outside the repository with those files unmarked; a submodule is judged by what is inside it, so stamp\'s own output there is not a change; a helper\'s quoted name=value is hidden; the CLI recipe\'s first state sync no longer pushes; the action bundle is written only after it passes its check; SECURITY.md names FETCH_HEAD and the temporary index copy. 267 tests; each fix was broken on purpose in the compiled code, and a test caught every break but one that this git already prevents itself.'],
     ],
     decisions: [
       ['Program readback adapter (requested by an internal project)', 'Accept with changes, scheduled after M4. Notes in the knowledge base.', 'azank', 'wait'],

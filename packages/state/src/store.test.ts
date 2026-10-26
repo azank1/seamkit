@@ -98,6 +98,31 @@ describe('GitStateStore', () => {
     assert.deepEqual(new Set(files.map((f) => f.path)), new Set(results.map((r) => r.path)));
   });
 
+  it('merges with the remote without pushing when asked, and says how the two stand', async () => {
+    const remote = join(root, `nopush-${++counter}.git`);
+    await git(['init', '-q', '--bare', '-b', 'main', remote], { cwd: root });
+    const advertised = (): Promise<string> => git(['ls-remote', remote, STATE_REF], { cwd: root });
+    const a = await repo('nopush-a');
+    await git(['remote', 'add', 'origin', remote], { cwd: a });
+    const store = await GitStateStore.open(a);
+    await store.append(event(1));
+    assert.equal((await store.sync('origin', { push: false })).status, 'ahead');
+    assert.equal(await advertised(), '');
+    assert.equal((await store.sync()).status, 'pushed');
+    const b = await repo('nopush-b');
+    await git(['remote', 'add', 'origin', remote], { cwd: b });
+    const other = await GitStateStore.open(b);
+    assert.equal((await other.sync('origin', { push: false })).status, 'pulled');
+    assert.equal((await other.sync('origin', { push: false })).status, 'up_to_date');
+    await other.append(event(2));
+    await store.append(event(3));
+    assert.equal((await store.sync()).status, 'pushed');
+    const before = await advertised();
+    assert.equal((await other.sync('origin', { push: false })).status, 'merged');
+    assert.equal(await advertised(), before);
+    assert.equal((await other.list()).length, 3);
+  });
+
   it('creates the branch with only a README on init, once', async () => {
     const store = await GitStateStore.open(await repo('init'));
     const a = await store.init();
@@ -373,6 +398,20 @@ describe('GitStateStore', () => {
     }
   });
 
+  it('hides a credential held only in a push URL, and one that arrives split across writes', async () => {
+    const cwd = await repo('pushurl');
+    await git(['remote', 'add', 'origin', 'https://127.0.0.1:9/o/r.git'], { cwd });
+    await git(['config', 'remote.origin.pushurl', 'https://pusher:ghs_PushOnly123456@127.0.0.1:9/o/r.git'], { cwd });
+    const pushed = await runGit(['-c', "alias.say=!echo 'ghs_PushOnly123456 kept' >&2", 'say'], { cwd });
+    assert.equal(pushed.stderr, '*** kept\n');
+    // Whatever size the pipe hands over, the credential is hidden in the whole of what git wrote.
+    await git(['config', 'remote.origin.pushurl', 'https://x-access-token:ghs_ChunkSecret123456@127.0.0.1:9/o/r.git'], { cwd });
+    const split = await runGit(['-c', "alias.say=!printf '%s' 'pre ghs_Chunk' >&2; sleep 0.3; printf '%s' 'Secret123456 tail' >&2", 'say'], { cwd });
+    assert.equal(split.stderr, 'pre *** tail');
+    const long = await runGit(['-c', `alias.say=!printf '%s' '${'x'.repeat(65528)}ghs_ChunkSecret123456 tail' >&2`, 'say'], { cwd });
+    assert.ok(long.stderr.endsWith('x*** tail'), long.stderr.slice(-40));
+  });
+
   it('keeps what a credential helper holds or prints out of the errors git reports', async () => {
     const cwd = await repo('helper');
     const server = createServer((_req, res) => {
@@ -391,12 +430,28 @@ describe('GitStateStore', () => {
       const noScheme = await runGit(['-c', 'credential.helper=!f() { echo "url=ghp_UrlTok3n55555"; }; f', 'ls-remote', url], { cwd });
       assert.equal(noScheme.stderr, 'warning: url has no scheme: (not shown)\nfatal: credential url cannot be parsed: (not shown)\n');
       // A helper holding a literal token whose first command is missing: the shell prints the helper whole.
+      // dash and bash word their error differently; either way the helper it names is hidden.
+      const missing = /^\*\*\*[^\n]*: (?:line )?1: missing-helper-cmd: (?:command )?not found\n/;
       const literal = '!f() { missing-helper-cmd; echo username=x-access-token; echo password=ghp_LiteralTok3n98765; }; f';
       await git(['config', 'credential.helper', literal], { cwd });
       const echoed = await runGit(['ls-remote', url], { cwd });
       assert.notEqual(echoed.code, 0);
-      assert.match(echoed.stderr, /^\*\*\* get: 1: missing-helper-cmd: not found\n/);
-      for (const r of [bare, noScheme, echoed]) assert.ok(!/ghp_/.test(r.stderr), r.stderr);
+      assert.match(echoed.stderr, missing);
+      // A helper for one URL only is hidden the same way.
+      await git(['config', '--unset', 'credential.helper'], { cwd });
+      await git(['config', `credential.${url}.helper`, literal.replace('Literal', 'Scoped')], { cwd });
+      const scoped = await runGit(['ls-remote', url], { cwd });
+      assert.match(scoped.stderr, missing);
+      await git(['config', '--unset', `credential.${url}.helper`], { cwd });
+      // A helper that traces itself prints each value as the shell expands it, without its quotes.
+      const traced: string[] = [];
+      for (const value of ['ghp_Bare0Tok3n4567', "'ghp_Single0Tok3n4567'", '"ghp_Double0Tok3n4567"', "'ghp_Spaced0Tok3n with spaces9'"]) {
+        await git(['config', 'credential.helper', `!f() { set -x; echo username=x; echo password=${value}; }; f`], { cwd });
+        const r = await runGit(['ls-remote', url], { cwd });
+        assert.match(r.stderr, /\+ echo '?password=\*\*\*/, r.stderr);
+        traced.push(r.stderr);
+      }
+      for (const text of [bare.stderr, noScheme.stderr, echoed.stderr, scoped.stderr, ...traced]) assert.ok(!/ghp_|Tok3n|spaces9/.test(text), text);
     } finally {
       await new Promise((done) => server.close(done));
     }

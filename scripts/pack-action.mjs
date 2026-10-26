@@ -18,8 +18,10 @@ const cli = JSON.parse(await readFile(at('packages/cli/package.json'), 'utf8'));
 if (action.version !== cli.version) throw new Error(`packages/action is ${action.version} but seamkit is ${cli.version}; make them equal`);
 
 await mkdir(out(''), { recursive: true });
+// Nothing is written until the bundle passes the check below, so a refused build never replaces the committed one.
 const built = await build({
   metafile: true,
+  write: false,
   entryPoints: [at('packages/action/dist/main.js')],
   outfile: out('index.js'),
   bundle: true,
@@ -34,6 +36,8 @@ const built = await build({
 // GitHub runs the bundle with no install step, so it may import nothing but Node's own modules.
 const external = Object.values(built.metafile.outputs).flatMap((o) => o.imports).filter((i) => i.external && !isBuiltin(i.path)).map((i) => i.path);
 if (external.length > 0) throw new Error(`the bundle would import ${[...new Set(external)].join(', ')}, which a checkout of the action does not hold`);
+if (built.outputFiles.length !== 1) throw new Error(`esbuild wrote ${built.outputFiles.length} files; the action runs one`);
+await writeFile(out('index.js'), built.outputFiles[0].contents);
 await writeFile(
   out('THIRD_PARTY_NOTICES'),
   `index.js bundles the following package.\n\n${yaml.name} ${yaml.version} (${yaml.license})\n\n${await readFile(at('node_modules/yaml/LICENSE'), 'utf8')}`,

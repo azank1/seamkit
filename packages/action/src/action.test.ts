@@ -362,9 +362,28 @@ describe('the seamkit action', () => {
     assert.match(ran.warnings[0] ?? '', /not pushed, so it is lost with this runner; give the job "permissions: contents: write"/);
   });
 
+  it('says so when the ledger cannot be fetched again after the wait, and judges the copy it holds', async () => {
+    const { remote, ci, commits } = await project();
+    deploy(commits[2]);
+    assert.equal((await act(ci, { ledger: 'true' }, success(commits[2] as string))).code, 0);
+    try {
+      const ran = await act(ci, {}, success(commits[2] as string), {
+        log: (line) => {
+          if (/^seamkit: ledger /.test(line)) renameSync(remote, `${remote}.gone`);
+        },
+      });
+      assert.equal(ran.code, 0, ran.warnings.join('\n'));
+      assert.ok(ran.warnings.some((w) => /^seamkit: the ledger could not be fetched from origin after the wait, so this run judges the ledger this checkout holds: /.test(w)), ran.warnings.join('\n'));
+    } finally {
+      if (existsSync(`${remote}.gone`)) renameSync(`${remote}.gone`, remote);
+    }
+  });
+
   it('advises on a failed ledger push by what the error says, and only then', () => {
     assert.match(pushAdvice('seamkit: git ls-remote origin refs/heads/seamkit/state exited 128: remote: Permission to o/r denied; fatal: ... 403') ?? '', /contents: write/);
     assert.match(pushAdvice('seamkit: origin refused the push to seamkit/state while no other writer was pushing: hook declined') ?? '', /ledger: false, which also stops this workflow reading the ledger$/);
+    // GitHub refuses a token without write access with a 403 and no word about permission.
+    assert.match(pushAdvice("seamkit: origin refused the push to seamkit/state while no other writer was pushing: remote: Write access to repository not granted.\nfatal: unable to access 'https://github.com/o/r/': The requested URL returned error: 403") ?? '', /contents: write/);
     // persist-credentials: false leaves a public repository readable and the push without a credential.
     // A URL or credential.username naming a user and no password asks for the password instead.
     for (const what of ['Username', 'Password']) {

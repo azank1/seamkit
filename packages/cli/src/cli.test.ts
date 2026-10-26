@@ -6,7 +6,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { git, GitStateStore, STATE_REF } from '@seamkit/state';
+import { git, GitStateStore, STATE_BRANCH, STATE_REF } from '@seamkit/state';
 import { detectActor, inert, run, VERSION, type Io } from './cli.js';
 
 const AT = '2026-10-14T09:00:00.000Z';
@@ -194,6 +194,21 @@ describe('seamkit cli', () => {
     assert.match(r.err, /^seamkit: state branches disagree about "events\/2026\/10\/22\/.*PASS\.json"; one copy has been altered/);
     assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029]/.test(r.err), JSON.stringify(r.err));
     assert.equal(r.err.split('\n').length, 2, JSON.stringify(r.err));
+  });
+
+  it('merges the ledger here only with state sync --no-push, and says it did not push', async () => {
+    const dir = await repo();
+    assert.equal((await cli(['state', 'init'], { cwd: dir })).code, 0);
+    const remote = join(root, 'nopush.git');
+    assert.equal(spawnSync('git', ['init', '-q', '--bare', remote]).status, 0);
+    assert.equal(spawnSync('git', ['remote', 'add', 'origin', remote], { cwd: dir }).status, 0);
+    const kept = await cli(['state', 'sync', '--no-push'], { cwd: dir });
+    assert.equal(kept.code, 0, kept.err);
+    assert.equal(kept.out, `${STATE_BRANCH} holds events origin does not; not pushed\n`);
+    assert.equal(spawnSync('git', ['ls-remote', remote], { encoding: 'utf8' }).stdout, '');
+    assert.equal(JSON.parse((await cli(['state', 'sync', '--no-push', '--json'], { cwd: dir })).out).status, 'ahead');
+    assert.match((await cli(['state', 'sync'], { cwd: dir })).out, /^pushed /);
+    assert.equal((await cli(['state', 'sync', '--no-push'], { cwd: dir })).out, `${STATE_BRANCH} is up to date with origin\n`);
   });
 
   it('verifies and replays a clean ledger, and reports an empty one as examined nothing', async () => {

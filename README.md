@@ -75,8 +75,9 @@ from uncommitted changes proves nothing about what it contains. Where the build 
 commit the CI system provides (`VERCEL_GIT_COMMIT_SHA`, `GITHUB_SHA`, `CF_PAGES_COMMIT_SHA`, `COMMIT_REF`,
 `RENDER_GIT_COMMIT`, `CI_COMMIT_SHA`, `BITBUCKET_COMMIT` or `SOURCE_VERSION`) and records which one it used. In a
 checkout it needs git: a checkout that git is missing or refuses to read gets no stamp, rather than one that cannot say
-whether its tree was clean. A change counts even where `git status` would not show it: inside a submodule set to
-`ignore`, or in a file marked skip-worktree or assume-unchanged. Stamp asks git not to refresh its index, so it writes
+whether its tree was clean. A change counts even where `git status` would not show it: inside a submodule, whatever
+its `ignore` setting, or in a file marked skip-worktree or assume-unchanged, which counts as it would unmarked (in a
+sparse checkout, a skip-worktree file left out of the checkout is not a change). Stamp asks git not to refresh its index, so it writes
 nothing to the repository. `--require-clean` refuses a dirty tree, and also refuses any stamp that cannot say whether
 the tree is clean: outside a repository, or with `--commit` naming anything but the commit checked out.
 
@@ -208,7 +209,7 @@ Anywhere else, run readback as a step of the job that deploys, once the deploy i
     echo "::remove-matcher owner=eslint-compact::"
     git fetch --quiet --no-tags origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"   # the branch as it is now
     deployed=(--deployed "$DEPLOYED_COMMIT")
-    npx --yes seamkit@0.2 state sync || deployed=()   # without the ledger as it is now, judge every change
+    npx --yes seamkit@0.2 state sync --no-push || deployed=()   # without the ledger as it is now, judge every change
     status=0
     npx --yes seamkit@0.2 readback --url https://your.app --last 20 --branch "$BRANCH" "${deployed[@]}" || status=$?
     npx --yes seamkit@0.2 state sync || echo '::warning::seamkit: the ledger was not pushed'
@@ -219,9 +220,9 @@ Anywhere else, run readback as a step of the job that deploys, once the deploy i
 ```
 
 The step exits with readback's code: it fails when a change is not live or not proven, and exits 3 when nothing could
-be examined, so a broken read never passes silently. When the first `state sync` fails, the step leaves out
-`--deployed`: a ledger copy left on a runner that keeps its workspace may lack runs others pushed, and scoping from it
-could pass a rollback. Readback records the run when the checkout has a ledger
+be examined, so a broken read never passes silently. The first `state sync` only fetches and merges, so a push
+problem is reported once, by the last. When the first fails, the step leaves out `--deployed`: a ledger copy left on a
+runner that keeps its workspace may lack runs others pushed, and scoping from it could pass a rollback. Readback records the run when the checkout has a ledger
 (`seamkit state init` starts one), and pushing it needs `permissions: contents: write`. In a GitHub Actions step, the
 CLI's output cannot run a workflow command: where a change's own words would read as one, a zero-width space keeps them
 plain text. Problem matchers are different: they read every line of the log, so a matcher an earlier step added, such
@@ -354,7 +355,7 @@ cover, is in [`docs/prior-art.md`](docs/prior-art.md).
 
 ```sh
 npm ci
-npm test             # 262 tests, using temporary repositories and a local fake production
+npm test             # 267 tests, using temporary repositories and a local fake production
 npm run demo         # add -- --keep to keep the demo repository
 npm run pack:cli     # builds the npm package into release/seamkit
 npm run smoke:pack   # installs that package into an empty project and runs it

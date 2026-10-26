@@ -18,7 +18,7 @@ export class GitError extends Error {
 
 export interface GitOptions {
   cwd: string;
-  input?: string;
+  input?: string | Buffer;
   env?: Record<string, string>;
 }
 
@@ -130,13 +130,17 @@ function splitPieces(credential: string): string[] {
 
 /**
  * A credential helper as the shell may print it when one of its commands fails: whole, as git
- * runs it without its leading !, and the value of each name=value in it, which is how a helper
- * written into config holds a literal token. A helper named by one word, such as store, is a
+ * runs it without its leading !, and the value of each name=value in it, quoted or not, which is
+ * how a helper written into config holds a literal token. A helper named by one word, such as store, is a
  * program and holds no credential, so that word is not hidden.
  */
 function helperPieces(helper: string): string[] {
   const pieces = /^!|\s/.test(helper) ? [helper, helper.replace(/^!/, '')] : [];
-  for (const m of helper.matchAll(/=([^\s;'"`|&)]+)/g)) pieces.push(m[1] ?? '');
+  // A value may be quoted, and the shell prints it without its quotes, as words when it holds spaces.
+  for (const m of helper.matchAll(/=(?:'([^']*)'|"((?:[^"\\]|\\.)*)"|([^\s;'"`|&)]+))/g)) {
+    const value = m[1] ?? m[2]?.replace(/\\(.)/g, '$1') ?? m[3] ?? '';
+    pieces.push(value, ...splitPieces(value));
+  }
   return pieces;
 }
 

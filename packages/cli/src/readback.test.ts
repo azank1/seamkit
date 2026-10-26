@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FakeProduction } from '@seamkit/adapters';
-import { git } from '@seamkit/state';
+import { git, runGit } from '@seamkit/state';
 import { execFileSync } from 'node:child_process';
 import { run, type Io } from './cli.js';
 import { gatherReadback } from './readback.js';
@@ -979,7 +979,7 @@ describe('seamkit stamp', () => {
     assert.match(r.err, /refusing to stamp a build with 1 uncommitted change \(such as README\.md\)/);
   });
 
-  it('counts the changes git status leaves out: an ignored submodule, and files marked skip-worktree or assume-unchanged', async () => {
+  it('counts the changes in an ignored submodule, and inside any submodule by their own path', async () => {
     const { dir } = await repo();
     const lib = (await repo()).dir;
     await git(['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'lib'], { cwd: dir });
@@ -990,28 +990,84 @@ describe('seamkit stamp', () => {
     await writeFile(join(dir, 'lib', 'README.md'), 'edited\n');
     const edited = await cli(['stamp', '--require-clean'], dir);
     assert.equal(edited.code, 1);
-    assert.match(edited.err, /refusing to stamp a build with 1 uncommitted change \(such as lib\)/);
+    assert.match(edited.err, /refusing to stamp a build with 1 uncommitted change \(such as lib\/README\.md\)/);
     await git(['checkout', '-q', '--', 'README.md'], { cwd: join(dir, 'lib') });
+    // A file marked inside the submodule counts too.
+    await git(['update-index', '--skip-worktree', 'README.md'], { cwd: join(dir, 'lib') });
+    await writeFile(join(dir, 'lib', 'README.md'), 'local\n');
+    assert.match((await cli(['stamp', '--require-clean'], dir)).err, /1 uncommitted change \(such as lib\/README\.md\)/);
+    await git(['update-index', '--no-skip-worktree', 'README.md'], { cwd: join(dir, 'lib') });
+    await git(['checkout', '-q', '--', 'README.md'], { cwd: join(dir, 'lib') });
+    // Stamp's own output inside the submodule is not a change, stamped again.
+    for (const time of ['first', 'second']) assert.equal((await cli(['stamp', '--require-clean', '--out', 'lib/public/version.json'], dir)).code, 0, time);
+    await rm(join(dir, 'lib', 'public'), { recursive: true });
     await git([...ID, 'commit', '-q', '--allow-empty', '-m', 'moved'], { cwd: join(dir, 'lib') });
     await git(['config', 'diff.ignoreSubmodules', 'all'], { cwd: dir });
-    assert.equal(JSON.parse((await cli(['stamp'], dir)).out).dirty, true);
+    assert.match((await cli(['stamp'], dir)).err, /1 uncommitted change \(such as lib\)/);
     await git(['reset', '-q', '--hard', 'HEAD~1'], { cwd: join(dir, 'lib') });
     assert.equal(JSON.parse((await cli(['stamp'], dir)).out).dirty, false);
+  });
 
+  it('counts a change to a file marked skip-worktree or assume-unchanged as git would unmarked', async () => {
+    const { dir } = await repo();
+    await writeFile(join(dir, 'run.sh'), 'echo\n');
+    await writeFile(join(dir, 'crlf.txt'), 'one\r\ntwo\r\n');
+    await symlink('README.md', join(dir, 'link'));
+    const odd = Buffer.concat([Buffer.from('caf'), Buffer.from([0xe9]), Buffer.from('"q\r')]);
+    await writeFile(Buffer.concat([Buffer.from(`${dir}/`), odd]), 'odd\n');
+    await git(['add', '-A'], { cwd: dir });
+    await git([...ID, 'commit', '-q', '-m', 'files'], { cwd: dir });
+    // The index holds crlf.txt with CRLF, which git then leaves as it is under text=auto.
+    await writeFile(join(dir, '.gitattributes'), '* text=auto\n');
+    await git(['add', '.gitattributes'], { cwd: dir });
+    await git([...ID, 'commit', '-q', '-m', 'attributes'], { cwd: dir });
+    assert.match(await git(['cat-file', 'blob', 'HEAD:crlf.txt'], { cwd: dir }), /\r/);
+    // Every name as git holds it, bytes and all.
+    const names = (await runGit(['ls-files', '-z'], { cwd: dir })).stdout;
+    const mark = async (flag: string): Promise<void> => assert.equal((await runGit(['update-index', flag, '-z', '--stdin'], { cwd: dir, input: names })).code, 0);
+    const edits: Array<[string, () => Promise<void>]> = [
+      ['README.md', () => writeFile(join(dir, 'README.md'), 'local override\n')],
+      ['README.md', () => rm(join(dir, 'README.md'))],
+      ['README.md', async () => { await rm(join(dir, 'README.md')); await symlink('nowhere', join(dir, 'README.md')); }],
+      ['README.md', async () => { await rm(join(dir, 'README.md')); await mkdir(join(dir, 'README.md')); }],
+      ['run.sh', () => chmod(join(dir, 'run.sh'), 0o755)],
+      ['link', async () => { await rm(join(dir, 'link')); await symlink('nowhere', join(dir, 'link')); }],
+      ['link', async () => { await rm(join(dir, 'link')); await writeFile(join(dir, 'link'), 'README.md'); }],
+      ['odd', () => writeFile(Buffer.concat([Buffer.from(`${dir}/`), odd]), 'edited\n')],
+    ];
     for (const flag of ['--skip-worktree', '--assume-unchanged']) {
-      await git(['update-index', flag, 'README.md'], { cwd: dir });
-      await writeFile(join(dir, 'README.md'), 'local override\n');
-      const hidden = await cli(['stamp', '--require-clean'], dir);
-      assert.equal(hidden.code, 1, flag);
-      assert.match(hidden.err, /1 uncommitted change \(such as README\.md\)/);
-      // Marked but unchanged, or absent from the work tree as in a sparse checkout, it is not a change.
-      await writeFile(join(dir, 'README.md'), 'x\n');
-      assert.equal(JSON.parse((await cli(['stamp'], dir)).out).dirty, false, flag);
-      await rm(join(dir, 'README.md'));
-      if (flag === '--skip-worktree') assert.equal(JSON.parse((await cli(['stamp'], dir)).out).dirty, false, flag);
-      await git(['update-index', flag.replace('--', '--no-'), 'README.md'], { cwd: dir });
-      await git(['checkout', '-q', '--', 'README.md'], { cwd: dir });
+      for (const [name, edit] of edits) {
+        // Every file marked, and a clean tree still stamps clean, CRLF in the index included.
+        await mark(flag);
+        const clean = await cli(['stamp', '--require-clean'], dir);
+        assert.equal(clean.code, 0, `${flag} clean: ${clean.err}`);
+        await edit();
+        const r = await cli(['stamp', '--require-clean'], dir);
+        assert.equal(r.code, 1, `${flag} ${name}: ${r.err}`);
+        assert.match(r.err, /refusing to stamp a build with 1 uncommitted change/, `${flag} ${name}`);
+        if (name !== 'odd') assert.match(r.err, new RegExp(`\\(such as ${name.replace('.', '\\.')}\\)`), `${flag} ${name}`);
+        await mark(flag.replace('--', '--no-'));
+        if (name !== 'odd') await rm(join(dir, name), { recursive: true, force: true });
+        await git(['checkout', '-q', '--', '.'], { cwd: dir });
+        await chmod(join(dir, 'run.sh'), 0o644);
+      }
     }
+    // In a sparse checkout, a file marked skip-worktree and absent is left out on purpose.
+    await git(['config', 'core.sparseCheckout', 'true'], { cwd: dir });
+    await git(['update-index', '--skip-worktree', 'README.md'], { cwd: dir });
+    await rm(join(dir, 'README.md'));
+    assert.equal(JSON.parse((await cli(['stamp'], dir)).out).dirty, false);
+    // A dangling symbolic link in its place is there, and is a change.
+    await git(['update-index', '--skip-worktree', 'crlf.txt'], { cwd: dir });
+    await rm(join(dir, 'crlf.txt'));
+    await symlink('nowhere', join(dir, 'crlf.txt'));
+    assert.match((await cli(['stamp'], dir)).err, /1 uncommitted change \(such as crlf\.txt\)/);
+    await git(['update-index', '--no-skip-worktree', 'crlf.txt'], { cwd: dir });
+    await rm(join(dir, 'crlf.txt'));
+    await git(['checkout', '-q', '--', 'crlf.txt'], { cwd: dir });
+    await git(['update-index', '--assume-unchanged', 'run.sh'], { cwd: dir });
+    await rm(join(dir, 'run.sh'));
+    assert.match((await cli(['stamp'], dir)).err, /1 uncommitted change \(such as run\.sh\)/);
   });
 
   it('writes nothing to the repository, its index included', async () => {

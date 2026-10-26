@@ -9020,8 +9020,10 @@ function splitPieces(credential) {
 }
 function helperPieces(helper) {
   const pieces = /^!|\s/.test(helper) ? [helper, helper.replace(/^!/, "")] : [];
-  for (const m of helper.matchAll(/=([^\s;'"`|&)]+)/g))
-    pieces.push(m[1] ?? "");
+  for (const m of helper.matchAll(/=(?:'([^']*)'|"((?:[^"\\]|\\.)*)"|([^\s;'"`|&)]+))/g)) {
+    const value = m[1] ?? m[2]?.replace(/\\(.)/g, "$1") ?? m[3] ?? "";
+    pieces.push(value, ...splitPieces(value));
+  }
   return pieces;
 }
 function headerPieces(header) {
@@ -10045,8 +10047,9 @@ function auditAdvice(context) {
 }
 
 // packages/cli/dist/stamp.js
-import { existsSync, readlinkSync, realpathSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { copyFile, mkdir, mkdtemp as mkdtemp2, readFile, rm as rm2, writeFile } from "node:fs/promises";
+import { tmpdir as tmpdir2 } from "node:os";
 import { basename, dirname, join as join2, relative, resolve } from "node:path";
 var STAMP_ENV_VARS = [
   "VERCEL_GIT_COMMIT_SHA",
@@ -10082,70 +10085,82 @@ function physical(path) {
   }
   return join2(realpathSync(dir), ...rest);
 }
+async function indexEntries(top) {
+  const r = await runGit(["--no-optional-locks", "ls-files", "-v", "-s", "-z"], { cwd: top });
+  if (r.code !== 0)
+    throw new StampError(`git ls-files failed: ${r.stderr.trim()}`);
+  const entries = [];
+  for (let at2 = 0; at2 < r.stdout.length; ) {
+    const end = r.stdout.indexOf(0, at2);
+    const record = r.stdout.subarray(at2, end < 0 ? r.stdout.length : end);
+    at2 = end < 0 ? r.stdout.length : end + 1;
+    const tab = record.indexOf(9);
+    if (tab < 0)
+      continue;
+    const [tag = "", mode = "", blob = ""] = record.subarray(0, tab).toString("latin1").split(" ");
+    const pathBytes = record.subarray(tab + 1);
+    entries.push({ tag, mode, blob, info: record.subarray(2), pathBytes, path: pathBytes.toString("utf8") });
+  }
+  return entries;
+}
+function present(top, path) {
+  return lstatSync(Buffer.concat([Buffer.from(`${top}/`), path]), { throwIfNoEntry: false }) !== void 0;
+}
+async function unmarkedIndex(top, entries, dir) {
+  const sparse = await gitText(["config", "--bool", "core.sparseCheckout"], top) === "true";
+  const marked = entries.filter((e) => (e.tag === "S" || /^[a-z]$/.test(e.tag)) && !(sparse && e.tag.toUpperCase() === "S" && !present(top, e.pathBytes)));
+  if (marked.length === 0)
+    return void 0;
+  const where = await gitText(["rev-parse", "--git-path", "index"], top);
+  if (where === void 0)
+    throw new StampError("git cannot say where the index is");
+  const index = join2(dir, "index");
+  await copyFile(resolve(top, where), index);
+  const env = { GIT_INDEX_FILE: index };
+  const rewrite = await runGit(["update-index", "-z", "--index-info"], { cwd: top, env, input: Buffer.concat(marked.flatMap((e) => [e.info, Buffer.from([0])])) });
+  if (rewrite.code !== 0)
+    throw new StampError(`git update-index failed: ${rewrite.stderr.trim()}`);
+  return env;
+}
 async function uncommitted(top, outPath) {
-  const r = await runGit(["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"], { cwd: top });
+  const entries = await indexEntries(top);
+  const dir = await mkdtemp2(join2(tmpdir2(), "seamkit-stamp-"));
+  let r;
+  try {
+    const env = await unmarkedIndex(top, entries, dir);
+    r = await runGit(["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"], { cwd: top, ...env ? { env } : {} });
+  } finally {
+    await rm2(dir, { recursive: true, force: true });
+  }
   if (r.code !== 0)
     throw new StampError(`git status failed: ${r.stderr.trim()}`);
   const tokens = r.stdout.toString("utf8").split("\0");
-  const paths = [];
+  const listed = /* @__PURE__ */ new Map();
   for (let i = 0; i < tokens.length; i++) {
     const entry = tokens[i];
     if (entry.length < 4)
       continue;
     const xy = entry.slice(0, 2);
-    paths.push(entry.slice(3));
+    listed.set(entry.slice(3), xy);
     if (xy.includes("R"))
-      paths.push(tokens[i + 1] ?? "");
+      listed.set(tokens[i + 1] ?? "", xy);
     if (xy.includes("R") || xy.includes("C"))
       i++;
   }
-  paths.push(...await hiddenFromStatus(top));
+  const paths = [...listed.keys()];
+  for (const link of entries.filter((e) => e.mode === "160000" && present(top, Buffer.concat([e.pathBytes, Buffer.from("/.git")])))) {
+    const inner = resolve(top, link.path);
+    const head = await gitText(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], inner);
+    if (head !== link.blob || (listed.get(link.path) ?? " ")[0] !== " ")
+      continue;
+    const changes = await uncommitted(inner, outPath);
+    const at2 = paths.indexOf(link.path);
+    if (at2 >= 0)
+      paths.splice(at2, 1);
+    paths.push(...changes.map((p) => `${link.path}/${p}`));
+  }
   const own = outPath === void 0 ? void 0 : relative(realpathSync(top), physical(outPath)).split("\\").join("/");
   return [...new Set(paths)].filter((p) => p !== own);
-}
-async function hiddenFromStatus(top) {
-  const tagged = await runGit(["--no-optional-locks", "ls-files", "-v", "-z"], { cwd: top });
-  if (tagged.code !== 0)
-    throw new StampError(`git ls-files failed: ${tagged.stderr.trim()}`);
-  const marked = /* @__PURE__ */ new Set();
-  for (const entry of tagged.stdout.toString("utf8").split("\0")) {
-    const tag = entry[0] ?? "";
-    if (entry.length > 2 && (tag === "S" || /[a-z]/.test(tag)))
-      marked.add(entry.slice(2));
-  }
-  if (marked.size === 0)
-    return [];
-  const staged = await runGit(["--no-optional-locks", "ls-files", "-s", "-z"], { cwd: top });
-  if (staged.code !== 0)
-    throw new StampError(`git ls-files failed: ${staged.stderr.trim()}`);
-  const changed = [];
-  const files2 = [];
-  for (const entry of staged.stdout.toString("utf8").split("\0")) {
-    const tab = entry.indexOf("	");
-    const path = entry.slice(tab + 1);
-    if (tab < 0 || !marked.has(path) || !existsSync(resolve(top, path)))
-      continue;
-    const [mode = "", blob = ""] = entry.slice(0, tab).split(" ");
-    if (mode === "120000") {
-      const link = await runGit(["--no-optional-locks", "hash-object", "--stdin"], { cwd: top, input: readlinkSync(resolve(top, path)) });
-      if (link.stdout.toString("utf8").trim() !== blob)
-        changed.push(path);
-    } else if ((mode === "100644" || mode === "100755") && !path.includes("\n"))
-      files2.push({ path, blob });
-    else
-      changed.push(path);
-  }
-  if (files2.length > 0) {
-    const hashed = await runGit(["--no-optional-locks", "hash-object", "--stdin-paths"], { cwd: top, input: files2.map((f) => f.path).join("\n") + "\n" });
-    if (hashed.code !== 0)
-      throw new StampError(`git hash-object failed: ${hashed.stderr.trim()}`);
-    const hashes = hashed.stdout.toString("utf8").trim().split("\n");
-    files2.forEach((f, i) => {
-      if (hashes[i] !== f.blob)
-        changed.push(f.path);
-    });
-  }
-  return changed;
 }
 function onVercel(env, head) {
   return env["VERCEL"] === "1" && env["VERCEL_GIT_COMMIT_SHA"]?.trim().toLowerCase() === head;

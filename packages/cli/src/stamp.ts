@@ -1,5 +1,6 @@
-import { existsSync, readlinkSync, realpathSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { existsSync, lstatSync, realpathSync } from 'node:fs';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { canonicalJson, COMMIT_PATTERN, VERSION_DOC_SCHEMA, versionDocText, type VersionDoc } from '@seamkit/core';
 import { runGit } from '@seamkit/state';
@@ -52,70 +53,103 @@ function physical(path: string): string {
   return join(realpathSync(dir), ...rest);
 }
 
+/** An index entry as `git ls-files -v -s -z` lists it, its path kept as bytes, since a name need not be UTF-8. */
+interface IndexEntry {
+  tag: string;
+  mode: string;
+  blob: string;
+  /** The entry as `git update-index --index-info -z` reads it: mode, blob, stage, a tab and the path. */
+  info: Buffer;
+  pathBytes: Buffer;
+  path: string;
+}
+
+async function indexEntries(top: string): Promise<IndexEntry[]> {
+  const r = await runGit(['--no-optional-locks', 'ls-files', '-v', '-s', '-z'], { cwd: top });
+  if (r.code !== 0) throw new StampError(`git ls-files failed: ${r.stderr.trim()}`);
+  const entries: IndexEntry[] = [];
+  for (let at = 0; at < r.stdout.length; ) {
+    const end = r.stdout.indexOf(0, at);
+    const record = r.stdout.subarray(at, end < 0 ? r.stdout.length : end);
+    at = end < 0 ? r.stdout.length : end + 1;
+    const tab = record.indexOf(9);
+    if (tab < 0) continue;
+    const [tag = '', mode = '', blob = ''] = record.subarray(0, tab).toString('latin1').split(' ');
+    const pathBytes = record.subarray(tab + 1);
+    entries.push({ tag, mode, blob, info: record.subarray(2), pathBytes, path: pathBytes.toString('utf8') });
+  }
+  return entries;
+}
+
+/** Whether a path exists in the work tree, a dangling symbolic link included. */
+function present(top: string, path: Buffer): boolean {
+  return lstatSync(Buffer.concat([Buffer.from(`${top}/`), path]), { throwIfNoEntry: false }) !== undefined;
+}
+
 /**
- * Paths with uncommitted changes, from `git status -z`, the stamp's own output excluded. Neither a
- * submodule's ignore setting nor a file marked skip-worktree or assume-unchanged can hide one, and
- * git is asked not to refresh its index, so stamp writes nothing to the repository.
+ * The environment for a git status that sees files marked skip-worktree or assume-unchanged, which
+ * status otherwise never looks at: a copy of the index, outside the repository, in which those
+ * entries are written again without the mark and without the file data git compares first, so git
+ * reads each of them. In a sparse checkout, a file marked skip-worktree and absent from the work
+ * tree is left out of the checkout on purpose, so it keeps its mark.
+ */
+async function unmarkedIndex(top: string, entries: readonly IndexEntry[], dir: string): Promise<Record<string, string> | undefined> {
+  const sparse = (await gitText(['config', '--bool', 'core.sparseCheckout'], top)) === 'true';
+  const marked = entries.filter((e) => (e.tag === 'S' || /^[a-z]$/.test(e.tag)) && !(sparse && e.tag.toUpperCase() === 'S' && !present(top, e.pathBytes)));
+  if (marked.length === 0) return undefined;
+  const where = await gitText(['rev-parse', '--git-path', 'index'], top);
+  if (where === undefined) throw new StampError('git cannot say where the index is');
+  const index = join(dir, 'index');
+  await copyFile(resolve(top, where), index);
+  const env = { GIT_INDEX_FILE: index };
+  const rewrite = await runGit(['update-index', '-z', '--index-info'], { cwd: top, env, input: Buffer.concat(marked.flatMap((e) => [e.info, Buffer.from([0])])) });
+  if (rewrite.code !== 0) throw new StampError(`git update-index failed: ${rewrite.stderr.trim()}`);
+  return env;
+}
+
+/**
+ * Paths with uncommitted changes, from `git status -z`, the stamp's own output excluded. A file
+ * marked skip-worktree or assume-unchanged counts as git would count it unmarked, and so does a
+ * submodule, whatever its ignore setting, where a change inside it is named by its own path. git
+ * is asked not to refresh the repository's index, so stamp writes nothing to the repository.
  */
 async function uncommitted(top: string, outPath: string | undefined): Promise<string[]> {
-  const r = await runGit(['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none'], { cwd: top });
+  const entries = await indexEntries(top);
+  const dir = await mkdtemp(join(tmpdir(), 'seamkit-stamp-'));
+  let r;
+  try {
+    const env = await unmarkedIndex(top, entries, dir);
+    r = await runGit(['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none'], { cwd: top, ...(env ? { env } : {}) });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
   if (r.code !== 0) throw new StampError(`git status failed: ${r.stderr.trim()}`);
   const tokens = r.stdout.toString('utf8').split('\0');
-  const paths: string[] = [];
+  const listed = new Map<string, string>();
   for (let i = 0; i < tokens.length; i++) {
     const entry = tokens[i] as string;
     if (entry.length < 4) continue;
     const xy = entry.slice(0, 2);
-    paths.push(entry.slice(3));
+    listed.set(entry.slice(3), xy);
     // The original path of a rename or copy follows. A renamed file is gone from where HEAD has it;
     // a copied one is still there.
-    if (xy.includes('R')) paths.push(tokens[i + 1] ?? '');
+    if (xy.includes('R')) listed.set(tokens[i + 1] ?? '', xy);
     if (xy.includes('R') || xy.includes('C')) i++;
   }
-  paths.push(...(await hiddenFromStatus(top)));
+  const paths = [...listed.keys()];
+  // A checked-out submodule on the commit the index records is judged by what is inside it, so a
+  // marked file there counts, and stamp's own output there does not.
+  for (const link of entries.filter((e) => e.mode === '160000' && present(top, Buffer.concat([e.pathBytes, Buffer.from('/.git')])))) {
+    const inner = resolve(top, link.path);
+    const head = await gitText(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], inner);
+    if (head !== link.blob || (listed.get(link.path) ?? ' ')[0] !== ' ') continue;
+    const changes = await uncommitted(inner, outPath);
+    const at = paths.indexOf(link.path);
+    if (at >= 0) paths.splice(at, 1);
+    paths.push(...changes.map((p) => `${link.path}/${p}`));
+  }
   const own = outPath === undefined ? undefined : relative(realpathSync(top), physical(outPath)).split('\\').join('/');
   return [...new Set(paths)].filter((p) => p !== own);
-}
-
-/**
- * Files git status does not look at, because they are marked skip-worktree or assume-unchanged,
- * whose content differs from what the index holds. A marked file absent from the work tree, as in
- * a sparse checkout, is not a change.
- */
-async function hiddenFromStatus(top: string): Promise<string[]> {
-  const tagged = await runGit(['--no-optional-locks', 'ls-files', '-v', '-z'], { cwd: top });
-  if (tagged.code !== 0) throw new StampError(`git ls-files failed: ${tagged.stderr.trim()}`);
-  const marked = new Set<string>();
-  for (const entry of tagged.stdout.toString('utf8').split('\0')) {
-    const tag = entry[0] ?? '';
-    if (entry.length > 2 && (tag === 'S' || /[a-z]/.test(tag))) marked.add(entry.slice(2));
-  }
-  if (marked.size === 0) return [];
-  const staged = await runGit(['--no-optional-locks', 'ls-files', '-s', '-z'], { cwd: top });
-  if (staged.code !== 0) throw new StampError(`git ls-files failed: ${staged.stderr.trim()}`);
-  const changed: string[] = [];
-  const files: Array<{ path: string; blob: string }> = [];
-  for (const entry of staged.stdout.toString('utf8').split('\0')) {
-    const tab = entry.indexOf('\t');
-    const path = entry.slice(tab + 1);
-    if (tab < 0 || !marked.has(path) || !existsSync(resolve(top, path))) continue;
-    const [mode = '', blob = ''] = entry.slice(0, tab).split(' ');
-    if (mode === '120000') {
-      const link = await runGit(['--no-optional-locks', 'hash-object', '--stdin'], { cwd: top, input: readlinkSync(resolve(top, path)) });
-      if (link.stdout.toString('utf8').trim() !== blob) changed.push(path);
-    } else if ((mode === '100644' || mode === '100755') && !path.includes('\n')) files.push({ path, blob });
-    else changed.push(path);
-  }
-  if (files.length > 0) {
-    // hash-object applies the same filters, such as line endings, that git add would.
-    const hashed = await runGit(['--no-optional-locks', 'hash-object', '--stdin-paths'], { cwd: top, input: files.map((f) => f.path).join('\n') + '\n' });
-    if (hashed.code !== 0) throw new StampError(`git hash-object failed: ${hashed.stderr.trim()}`);
-    const hashes = hashed.stdout.toString('utf8').trim().split('\n');
-    files.forEach((f, i) => {
-      if (hashes[i] !== f.blob) changed.push(f.path);
-    });
-  }
-  return changed;
 }
 
 /** Whether this is Vercel's build of HEAD, whose checkout Vercel has written into before the build. */
