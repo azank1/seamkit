@@ -1,18 +1,25 @@
-// Runs the committed action bundle the way GitHub does, `node packages/action/bundle/index.js` with
-// INPUT_* and GITHUB_* variables, in a throwaway clone of a local origin, against a local production
+// Runs the action bundle the way GitHub does: from a copy of the files a checkout of the action holds
+// (action.yml, the action's package.json and its bundle) outside this repository, where no
+// node_modules can be found, as `node <runs.main>` with INPUT_* and GITHUB_* variables, in a
+// throwaway clone of a local origin, against a local production
 // and a local stand-in for the GitHub API. The first deploy must pass, start the ledger and push it;
 // the second, which production does not run, must fail as not live and push its run too. A change
 // title written as workflow commands must reach the job log only inside a stop-commands fence.
 import { execFile, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FakeProduction } from '../packages/adapters/dist/index.js';
 
-const bundle = fileURLToPath(new URL('../packages/action/bundle/index.js', import.meta.url));
+const repo = fileURLToPath(new URL('..', import.meta.url));
 const root = await mkdtemp(join(tmpdir(), 'seamkit-smoke-action-'));
+const action = join(root, 'action');
+for (const path of ['action.yml', 'packages/action/package.json', 'packages/action/bundle']) await cp(join(repo, path), join(action, path), { recursive: true });
+const main = /^runs:\n(?:[ \t]+.*\n)*?[ \t]+main:[ \t]*(\S+)/m.exec(await readFile(join(action, 'action.yml'), 'utf8'))?.[1];
+if (main === undefined) throw new Error('action.yml names no runs.main');
+const bundle = join(action, main);
 const origin = join(root, 'origin.git');
 const dev = join(root, 'dev');
 const ci = join(root, 'ci');

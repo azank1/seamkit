@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -948,8 +949,70 @@ describe('seamkit stamp', () => {
     await mkdir(join(dir, 'web'), { recursive: true });
     await writeFile(join(dir, 'web', 'vercel.json'), '{}');
     assert.equal(JSON.parse((await cli(['stamp'], dir, built)).out).dirty, false);
+    // Vercel builds a project with a Root Directory from inside it.
+    const below = await cli(['stamp'], join(dir, 'web'), built);
+    assert.equal(JSON.parse(below.out).dirty, false);
+    assert.match(below.err, /^note: web\/vercel\.json is not counted as uncommitted/m);
     await writeFile(join(dir, 'web', 'vercel.json'), '{"cleanUrls":true}');
     assert.equal(JSON.parse((await cli(['stamp'], dir, built)).out).dirty, true);
+    assert.equal(JSON.parse((await cli(['stamp'], join(dir, 'web'), built)).out).dirty, true);
+    await rm(join(dir, 'web'), { recursive: true });
+    // A file renamed onto vercel.json is gone from where the commit has it.
+    await writeFile(join(dir, 'flags.json'), '{}');
+    await git(['add', 'flags.json'], { cwd: dir });
+    await git([...ID, 'commit', '-q', '-m', 'add flags'], { cwd: dir });
+    await git(['rm', '-q', 'vercel.json'], { cwd: dir });
+    await git([...ID, 'commit', '-q', '-m', 'drop vercel.json'], { cwd: dir });
+    const dropped = { ...vercel, VERCEL_GIT_COMMIT_SHA: await git(['rev-parse', 'HEAD'], { cwd: dir }) };
+    await git(['mv', 'flags.json', 'vercel.json'], { cwd: dir });
+    const renamed = await cli(['stamp'], dir, dropped);
+    assert.equal(JSON.parse(renamed.out).dirty, true);
+    assert.match(renamed.err, /warning: 1 uncommitted change \(such as flags\.json\)/);
+  });
+
+  it("counts a file renamed onto stamp's own output as gone", async () => {
+    const { dir } = await repo();
+    await mkdir(join(dir, 'public'), { recursive: true });
+    await git(['mv', 'README.md', 'public/version.json'], { cwd: dir });
+    const r = await cli(['stamp', '--require-clean', '--out', 'public/version.json'], dir);
+    assert.equal(r.code, 1);
+    assert.match(r.err, /refusing to stamp a build with 1 uncommitted change \(such as README\.md\)/);
+  });
+
+  it('stamps without git from the CI variable or --commit, but never a checkout it cannot read', async () => {
+    const { dir } = await repo();
+    const plain = await mkdtemp(join(root, 'nogit-'));
+    const sha = 'c'.repeat(40);
+    const path = process.env['PATH'];
+    process.env['PATH'] = await mkdtemp(join(root, 'nopath-'));
+    try {
+      const env = await cli(['stamp'], plain, { GITHUB_SHA: sha });
+      assert.equal(env.code, 0, env.err);
+      assert.equal(JSON.parse(env.out).source, 'env:GITHUB_SHA');
+      const given = await cli(['stamp', '--commit', sha], plain);
+      assert.equal(given.code, 0, given.err);
+      assert.equal(JSON.parse(given.out).source, 'argument');
+      // A checkout is there, and only git could say whether its tree is clean.
+      const checkout = await cli(['stamp', '--out', 'public/version.json'], dir, { GITHUB_SHA: sha });
+      assert.equal(checkout.code, 2);
+      assert.match(checkout.err, /git is not installed, so this checkout cannot be checked for uncommitted changes/);
+      assert.equal(existsSync(join(dir, 'public')), false);
+      assert.equal((await cli(['stamp', '--commit', sha], dir)).code, 0);
+    } finally {
+      process.env['PATH'] = path;
+    }
+    // A repository git refuses to read is not taken for no repository.
+    await writeFile(join(dir, 'README.md'), 'edited\n');
+    process.env['GIT_TEST_ASSUME_DIFFERENT_OWNER'] = '1';
+    try {
+      const refused = await cli(['stamp', '--require-clean', '--out', 'public/version.json'], dir, { GITHUB_SHA: sha });
+      assert.equal(refused.code, 2);
+      assert.match(refused.err, /git cannot read this repository, so stamp cannot tell whether the tree is clean: fatal: detected dubious ownership.*safe\.directory/);
+      assert.equal(existsSync(join(dir, 'public')), false);
+    } finally {
+      delete process.env['GIT_TEST_ASSUME_DIFFERENT_OWNER'];
+    }
+    assert.equal((await cli(['stamp', '--require-clean'], dir, { GITHUB_SHA: sha })).code, 1);
   });
 
   it('names the branch Vercel built, not the branch of its checkout', async () => {

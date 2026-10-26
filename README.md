@@ -73,7 +73,9 @@ whose fields name two different commits, and a web page served in place of a doc
 Stamp prefers git, because only git can tell a clean working tree from one with uncommitted changes, and a build made
 from uncommitted changes proves nothing about what it contains. Where the build has no history, stamp falls back to the
 commit the CI system provides (`VERCEL_GIT_COMMIT_SHA`, `GITHUB_SHA`, `CF_PAGES_COMMIT_SHA`, `COMMIT_REF`,
-`RENDER_GIT_COMMIT`, `CI_COMMIT_SHA`, `BITBUCKET_COMMIT` or `SOURCE_VERSION`) and records which one it used.
+`RENDER_GIT_COMMIT`, `CI_COMMIT_SHA`, `BITBUCKET_COMMIT` or `SOURCE_VERSION`) and records which one it used. In a
+checkout it needs git: a checkout that git is missing or refuses to read gets no stamp, rather than one that cannot say
+whether its tree was clean.
 
 Vercel's build keeps the history and then writes `vercel.json` into the checkout: the committed settings on one line,
 or `{}` when none is committed. On Vercel's build of the commit, stamp does not count a `vercel.json` that holds exactly
@@ -307,7 +309,7 @@ whose git integration does not build commits by an author outside the team, ever
 is blocked and shows on GitHub as a failed `Preview` deployment, with nothing built or served.
 
 seamkit records URLs, commit ids, marker texts and digests of what production served, never the content itself. A
-production URL with credentials or a query string is refused for that reason.
+production URL, or a card's URL, with credentials, a query string or a fragment is refused for that reason.
 
 ## Try the demo
 
@@ -347,7 +349,7 @@ cover, is in [`docs/prior-art.md`](docs/prior-art.md).
 
 ```sh
 npm ci
-npm test             # 252 tests, using temporary repositories and a local fake production
+npm test             # 255 tests, using temporary repositories and a local fake production
 npm run demo         # add -- --keep to keep the demo repository
 npm run pack:cli     # builds the npm package into release/seamkit
 npm run smoke:pack   # installs that package into an empty project and runs it

@@ -8962,7 +8962,7 @@ var GitError = class extends Error {
   result;
   name = "GitError";
   constructor(args, result) {
-    super(`git ${args.join(" ")} exited ${result.code}: ${result.stderr.trim()}`);
+    super(`git ${scrubGitText(args.join(" "))} exited ${result.code}: ${result.stderr.trim()}`);
     this.args = args;
     this.result = result;
   }
@@ -8975,34 +8975,104 @@ function quietEnv(extra) {
   }
   return { ...env, GIT_TRACE2: "0", GIT_TRACE2_PERF: "0", GIT_TRACE2_EVENT: "0", GIT_TRACE_REDACT: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...extra };
 }
-var USERINFO = /((?:[a-z][a-z0-9+.-]*:?)?\/\/)(?:[^\r\n]*@|[^@]*@)/gi;
-var QUOTED = /'[^']*@/g;
-var NAMED_HOST = /(Could not resolve (?:host|proxy|hostname):? |Failed to connect to (?:proxy )?|connect to host |target host name '|in connection to )[^\s':]+/gi;
+var USERINFO = /(\/\/|::|url has no scheme: |credential url cannot be parsed: |unable to (?:look up|connect to) )(?:[^\r\n]*@|[^@]*@)/gi;
+var NAMED_HOST = /(Could not resolve (?:host|proxy|hostname):? |Failed to connect to (?:proxy )?|connect to host |target host name '|in connection to |SOCKS[45] connection to |Failed to resolve ")[^\s'":]+/gi;
+var QUOTED_PROXY = /(Unsupported proxy (?:syntax in |scheme for )?|Couldn't resolve proxy )'[^\r\n]*'/gi;
 var SPLIT_URL = /url contains a newline in its [a-z ]+ component/i;
 function scrubGitText(text) {
   if (SPLIT_URL.test(text))
     return "fatal: the remote's URL holds a line break, which git refuses (check the secret it is built from)\n";
-  let scrubbed = text;
+  const last = text.lastIndexOf("@");
+  let scrubbed = text.slice(0, last + 1);
   let before;
   do {
     before = scrubbed;
     scrubbed = scrubbed.replace(USERINFO, "$1");
   } while (scrubbed !== before);
-  return scrubbed.replace(QUOTED, "'").replace(NAMED_HOST, "$1(host not shown)");
+  scrubbed += text.slice(last + 1);
+  const at2 = scrubbed.lastIndexOf("@");
+  const quote = scrubbed.indexOf("'");
+  if (quote >= 0 && quote < at2)
+    scrubbed = scrubbed.slice(0, quote + 1) + scrubbed.slice(at2 + 1);
+  return scrubbed.replace(NAMED_HOST, "$1(host not shown)").replace(QUOTED_PROXY, "$1'(proxy not shown)'");
+}
+var PROXY_VARS = ["http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"];
+var SHORTEST_SECRET = 4;
+function credentialPieces(address) {
+  const text = address.trim().replace(/^[a-z][a-z0-9+.-]*::/i, "").replace(/^(?:[a-z][a-z0-9+.-]*:?)?\/\//i, "");
+  const at2 = text.lastIndexOf("@");
+  if (at2 < 0)
+    return [];
+  return splitPieces(text.slice(0, at2));
+}
+function splitPieces(credential) {
+  const colon = credential.indexOf(":");
+  const halves = colon < 0 ? [credential] : [credential.slice(0, colon), credential.slice(colon + 1)];
+  const pieces = [credential, ...halves, ...credential.split(/[@/?#:\s]+/)];
+  for (const piece of [...pieces]) {
+    try {
+      pieces.push(decodeURIComponent(piece));
+    } catch {
+    }
+  }
+  return pieces;
+}
+function headerPieces(header) {
+  const words = header.slice(header.indexOf(":") + 1).trim().split(/\s+/);
+  const pieces = words.slice(1);
+  if (/^basic$/i.test(words[0] ?? "") && words[1] !== void 0)
+    pieces.push(...splitPieces(Buffer.from(words[1], "base64").toString("utf8")));
+  return pieces;
+}
+function knownSecrets(cwd, env) {
+  return new Promise((resolve3) => {
+    const child = spawn("git", ["config", "--null", "--list"], { cwd, env, stdio: ["ignore", "pipe", "ignore"] });
+    const out = [];
+    child.stdout.on("data", (b) => out.push(b));
+    child.on("error", () => resolve3([]));
+    child.on("close", () => {
+      const pieces = [];
+      for (const name of PROXY_VARS)
+        pieces.push(...credentialPieces(env[name] ?? ""));
+      for (const entry of Buffer.concat(out).toString("utf8").split("\0")) {
+        const newline = entry.indexOf("\n");
+        const key = newline < 0 ? entry : entry.slice(0, newline);
+        const value = newline < 0 ? "" : entry.slice(newline + 1);
+        const first = key.indexOf(".");
+        const lastDot = key.lastIndexOf(".");
+        if (lastDot > first)
+          pieces.push(...credentialPieces(key.slice(first + 1, lastDot)));
+        if (/\.(?:url|pushurl|proxy|insteadof|pushinsteadof)$/i.test(key))
+          pieces.push(...credentialPieces(value));
+        if (/\.extraheader$/i.test(key))
+          pieces.push(...headerPieces(value));
+      }
+      resolve3([...new Set(pieces.filter((p) => p.length >= SHORTEST_SECRET))].sort((a, b) => b.length - a.length));
+    });
+  });
+}
+function hideSecrets(text, secrets) {
+  let hidden = text;
+  for (const secret of secrets)
+    hidden = hidden.split(secret).join("***");
+  return hidden;
 }
 function runGit(args, opts) {
   return new Promise((resolve3, reject) => {
-    const child = spawn("git", args, {
-      cwd: opts.cwd,
-      env: quietEnv(opts.env),
-      stdio: ["pipe", "pipe", "pipe"]
-    });
+    const env = quietEnv(opts.env);
+    const child = spawn("git", args, { cwd: opts.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
     const out = [];
     const err = [];
     child.stdout.on("data", (b) => out.push(b));
     child.stderr.on("data", (b) => err.push(b));
     child.on("error", reject);
-    child.on("close", (code) => resolve3({ code: code ?? 1, stdout: Buffer.concat(out), stderr: scrubGitText(Buffer.concat(err).toString("utf8")) }));
+    child.on("close", (code) => {
+      const result = (stderr) => resolve3({ code: code ?? 1, stdout: Buffer.concat(out), stderr });
+      const text = Buffer.concat(err).toString("utf8");
+      if (text === "")
+        return result("");
+      void knownSecrets(opts.cwd, env).then((secrets) => result(scrubGitText(hideSecrets(text, secrets))));
+    });
     child.stdin.on("error", () => void 0);
     child.stdin.end(opts.input ?? "");
   });
@@ -9505,11 +9575,11 @@ function url(value, field2, problems) {
     return text;
   try {
     const u = new URL(text);
-    if ((u.protocol === "http:" || u.protocol === "https:") && u.username === "" && u.password === "")
+    if ((u.protocol === "http:" || u.protocol === "https:") && u.username === "" && u.password === "" && !/[?#]/.test(text))
       return text;
   } catch {
   }
-  problems.push(`${field2} must be a path such as /version.json, or an absolute http or https URL without a user name or password`);
+  problems.push(`${field2} must be a path such as /version.json, or an absolute http or https URL without a user name, password, query string or fragment`);
   return void 0;
 }
 function list(value, field2, problems, hint) {
@@ -9963,6 +10033,7 @@ function auditAdvice(context) {
 }
 
 // packages/cli/dist/stamp.js
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 var STAMP_ENV_VARS = [
@@ -9978,6 +10049,14 @@ var STAMP_ENV_VARS = [
 var StampError = class extends Error {
   name = "StampError";
 };
+async function gitInstalled(cwd) {
+  try {
+    await runGit(["--version"], { cwd });
+    return true;
+  } catch {
+    return false;
+  }
+}
 async function gitText(args, cwd) {
   const r = await runGit(args, { cwd });
   return r.code === 0 ? r.stdout.toString("utf8").trim() : void 0;
@@ -9994,6 +10073,8 @@ async function uncommitted(top, outPath) {
       continue;
     const xy = entry.slice(0, 2);
     paths.push(entry.slice(3));
+    if (xy.includes("R"))
+      paths.push(tokens[i + 1] ?? "");
     if (xy.includes("R") || xy.includes("C"))
       i++;
   }
@@ -10014,9 +10095,37 @@ async function writtenByVercel(top, path) {
     return false;
   }
 }
+function inCheckout(cwd, env) {
+  if (env["GIT_DIR"] !== void 0)
+    return true;
+  for (let dir = resolve(cwd); ; dir = dirname(dir)) {
+    if (existsSync(resolve(dir, ".git")))
+      return true;
+    if (dirname(dir) === dir)
+      return false;
+  }
+}
+async function repositoryTop(cwd) {
+  if (!existsSync(cwd))
+    throw new StampError(`${cwd} is not a directory`);
+  let r;
+  try {
+    r = await runGit(["rev-parse", "--show-toplevel"], { cwd });
+  } catch (err) {
+    if (err.code === "ENOENT")
+      return {};
+    throw err;
+  }
+  if (r.code === 0)
+    return { top: r.stdout.toString("utf8").trim() };
+  if (/^fatal: not a git repository/m.test(r.stderr))
+    return {};
+  const reason = r.stderr.trim().split("\n")[0] ?? `git exited ${r.code}`;
+  return { refused: /dubious ownership/.test(reason) ? `${reason} (git config --global --add safe.directory <dir> trusts it)` : reason };
+}
 async function makeStamp(cwd, req, env, builtAt) {
   const outPath = req.out === void 0 ? void 0 : resolve(cwd, req.out);
-  const top = await gitText(["rev-parse", "--show-toplevel"], cwd);
+  const { top, refused } = await repositoryTop(cwd);
   if (req.commit !== void 0) {
     let full;
     if (req.commit.startsWith("-"))
@@ -10028,6 +10137,11 @@ async function makeStamp(cwd, req, env, builtAt) {
     if (full === void 0)
       throw new StampError(`--commit ${req.commit} does not name a commit${top === void 0 ? "; outside a repository give the full commit id" : ""}`);
     return { doc: { schema: VERSION_DOC_SCHEMA, commit: full, source: "argument", builtAt }, uncommitted: [], hostWritten: [] };
+  }
+  if (refused !== void 0)
+    throw new StampError(`git cannot read this repository, so stamp cannot tell whether the tree is clean: ${refused}`);
+  if (top === void 0 && inCheckout(cwd, env) && !await gitInstalled(cwd)) {
+    throw new StampError("git is not installed, so this checkout cannot be checked for uncommitted changes: install git, or pass --commit with the full commit id");
   }
   if (top !== void 0) {
     const head = await gitText(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], top);
@@ -10098,7 +10212,8 @@ Every command that produces a verdict exits with its outcome:
   2 usage or configuration error (no verdict was produced)
 
 Verdicts are recorded on the ${STATE_BRANCH} branch when it exists (create it with
-"seamkit state init"), or always with --record. Nothing else in the repository is touched.
+"seamkit state init"), or always with --record. Recording touches nothing else in the
+repository; "seamkit stamp --out" writes only the file it names.
 `;
 var UsageError = class extends Error {
   name = "UsageError";
@@ -10915,7 +11030,7 @@ async function openLedger(inputs, cli, deps) {
   const status = JSON.parse(sync.out).status;
   if (status !== "empty") {
     deps.log(`seamkit: ledger ${status === "up_to_date" ? "is up to date" : status}`);
-    return true;
+    return "recording";
   }
   if (inputs.ledger === "auto") {
     deps.log("seamkit: no ledger here or on the remote, so this run is not recorded (set ledger: true to start one)");
@@ -10927,7 +11042,7 @@ async function openLedger(inputs, cli, deps) {
     return false;
   }
   deps.log(`seamkit: ${init.out.trim()}`);
-  return true;
+  return "created";
 }
 async function fetchBranch(cwd, name) {
   const tip = await runGit(["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${name}:refs/remotes/origin/${name}`], { cwd });
@@ -11094,13 +11209,18 @@ async function written(deps, write) {
 }
 var PERMISSION = /\b403\b|denied|permission|not allowed|authentication/i;
 var NO_CREDENTIAL = /could not read (?:Username|Password) for /i;
+var READ_ONLY_KEY = /marked as read only/i;
+var DECLINED = /\bdeclined\b/i;
 function pushAdvice(err) {
   if (NO_CREDENTIAL.test(err)) {
     return "keep actions/checkout's default persist-credentials, since recording pushes with the checkout's credentials, or set ledger: false, which also stops this workflow reading the ledger";
   }
+  if (READ_ONLY_KEY.test(err)) {
+    return "allow write access for the deploy key actions/checkout's ssh-key uses, or set ledger: false, which also stops this workflow reading the ledger";
+  }
   if (PERMISSION.test(err))
     return 'give the job "permissions: contents: write"';
-  if (/refused the push to seamkit\/state while no other writer was pushing/.test(err)) {
+  if (DECLINED.test(err)) {
     return "allow this workflow to push the seamkit/state branch, which a ruleset or branch protection may block, or set ledger: false, which also stops this workflow reading the ledger";
   }
   if (/\bgit push \S+ refs\/heads\/seamkit\/state exited|could not synchronise/.test(err)) {
@@ -11163,9 +11283,12 @@ async function runAction(deps) {
   let fetchedAfter;
   const clean = (text) => scrub(text, [inputs.url, inputs.versionUrl]);
   if (recording && result.code !== EXIT_USAGE2) {
-    const resync = await cli(["state", "sync", "--json"]);
-    if (resync.code !== 0)
-      deps.warn(`seamkit: the ledger could not be fetched again after the wait, so this run judges it as it was: ${clean(resync.err.trim())}`);
+    const remoteLedger = recording === "created" ? await runGit(["ls-remote", "origin", "refs/heads/seamkit/state"], { cwd }) : void 0;
+    if (remoteLedger === void 0 || remoteLedger.code !== 0 || remoteLedger.stdout.length > 0) {
+      const resync = await cli(["state", "sync", "--json"]);
+      if (resync.code !== 0)
+        deps.warn(`seamkit: the ledger could not be synchronised with origin after the wait, so this run judges the ledger this checkout holds: ${clean(resync.err.trim())}`);
+    }
     const refetch = read === void 0 ? void 0 : await fetchBranch(cwd, read);
     if (read !== void 0)
       fetchedAfter = refetch === void 0;

@@ -333,6 +333,9 @@ describe('the seamkit action', () => {
       assert.equal(ran.code, 0, ran.warnings.join('\n'));
       assert.ok(ran.warnings.some((w) => advice.test(w)), ran.warnings.join('\n'));
       assert.ok(!ran.warnings.some((w) => /concurrency group/.test(w)), ran.warnings.join('\n'));
+      // The ledger this run created is pushed once, at the end, so its refusal is reported once.
+      assert.equal(ran.warnings.filter((w) => /seamkit\/state/.test(w)).length, 1, ran.warnings.join('\n'));
+      assert.ok(!ran.warnings.some((w) => /could not be (?:fetched|synchronised)/.test(w)), ran.warnings.join('\n'));
     }
   });
 
@@ -340,9 +343,21 @@ describe('the seamkit action', () => {
     assert.match(pushAdvice('seamkit: git ls-remote origin refs/heads/seamkit/state exited 128: remote: Permission to o/r denied; fatal: ... 403') ?? '', /contents: write/);
     assert.match(pushAdvice('seamkit: origin refused the push to seamkit/state while no other writer was pushing: hook declined') ?? '', /ledger: false, which also stops this workflow reading the ledger$/);
     // persist-credentials: false leaves a public repository readable and the push without a credential.
-    const anonymous = "seamkit: origin refused the push to seamkit/state while no other writer was pushing: fatal: could not read Username for 'https://github.com': terminal prompts disabled";
-    assert.match(pushAdvice(anonymous) ?? '', /^keep actions\/checkout's default persist-credentials/);
-    assert.doesNotMatch(pushAdvice(anonymous) ?? '', /ruleset/);
+    // A URL or credential.username naming a user and no password asks for the password instead.
+    for (const what of ['Username', 'Password']) {
+      const anonymous = `seamkit: origin refused the push to seamkit/state while no other writer was pushing: fatal: could not read ${what} for 'https://github.com': terminal prompts disabled`;
+      assert.match(pushAdvice(anonymous) ?? '', /^keep actions\/checkout's default persist-credentials/);
+      assert.doesNotMatch(pushAdvice(anonymous) ?? '', /ruleset/);
+    }
+    // A ruleset, branch protection and a pre-receive hook all decline the push in git's words.
+    for (const declined of ['! [remote rejected] seamkit/state -> seamkit/state (push declined due to repository rule violations)', '! [remote rejected] seamkit/state -> seamkit/state (protected branch hook declined)']) {
+      assert.match(pushAdvice(`seamkit: origin refused the push to seamkit/state while no other writer was pushing: ${declined}`) ?? '', /ruleset or branch protection/);
+    }
+    assert.match(pushAdvice('seamkit: origin refused the push to seamkit/state while no other writer was pushing: ERROR: The key you are authenticating with has been marked as read only.') ?? '', /^allow write access for the deploy key/);
+    // A push the host failed is not a refusal, so it gets no advice about one.
+    for (const failed of ['error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly', "fatal: unable to access 'https://github.example/o/r/': The requested URL returned error: 502", '! [remote rejected] seamkit/state -> seamkit/state (Internal Server Error)']) {
+      assert.equal(pushAdvice(`seamkit: origin refused the push to seamkit/state while no other writer was pushing: ${failed}`), undefined, failed);
+    }
     assert.match(pushAdvice('seamkit: git push origin refs/heads/seamkit/state exited 1: ! [rejected] (fetch first)') ?? '', /concurrency group/);
     assert.match(pushAdvice('seamkit: could not synchronise seamkit/state with origin after 12 attempts') ?? '', /concurrency group/);
     assert.equal(pushAdvice('seamkit: state branches disagree about "events/x.json"; one copy has been altered, run seamkit state verify'), undefined);

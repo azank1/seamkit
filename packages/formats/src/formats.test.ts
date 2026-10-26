@@ -95,6 +95,11 @@ describe('scope card', () => {
     assert.match(problemsOf(`${base}  - kind: bundle\n    text: 2024`).join('\n'), /markers\[0\]\.text must be a string; quote it, for example text: "2024"/);
     assert.match(problemsOf(`${base}  - kind: bundle\n    text: abc`).join('\n'), /at least 4 characters/);
     assert.match(problemsOf(`${base}  - kind: version\n    url: ftp://x.example/v`).join('\n'), /absolute http or https URL/);
+    for (const url of ['https://x.example/v.json?key=SECRET-KEY-123', 'https://x.example/v.json#frag', 'https://x.example/v.json?', '/v.json?key=x', '/v.json#frag']) {
+      const problems = problemsOf(`${base}  - kind: version\n    url: "${url}"`).join('\n');
+      assert.match(problems, /without a user name, password, query string or fragment/, url);
+      assert.ok(!problems.includes('SECRET'), problems);
+    }
     assert.match(problemsOf(`${base}  - kind: version\n    url: //x.example/v`).join('\n'), /must be a path such as \/version\.json/);
     const path = parseCard(`${base}  - kind: version\n    url: /api/notes-sync/version.json`);
     assert.ok(path.ok && path.card.markers[0]?.kind === 'version' && path.card.markers[0].url === '/api/notes-sync/version.json');

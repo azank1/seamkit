@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, relative, resolve } from 'node:path';
 import { canonicalJson, COMMIT_PATTERN, VERSION_DOC_SCHEMA, versionDocText, type VersionDoc } from '@seamkit/core';
@@ -25,6 +26,16 @@ export class StampError extends Error {
   override name = 'StampError';
 }
 
+/** Whether there is a git to run at all. */
+async function gitInstalled(cwd: string): Promise<boolean> {
+  try {
+    await runGit(['--version'], { cwd });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function gitText(args: string[], cwd: string): Promise<string | undefined> {
   const r = await runGit(args, { cwd });
   return r.code === 0 ? r.stdout.toString('utf8').trim() : undefined;
@@ -41,7 +52,10 @@ async function uncommitted(top: string, outPath: string | undefined): Promise<st
     if (entry.length < 4) continue;
     const xy = entry.slice(0, 2);
     paths.push(entry.slice(3));
-    if (xy.includes('R') || xy.includes('C')) i++; // the original path of a rename or copy follows
+    // The original path of a rename or copy follows. A renamed file is gone from where HEAD has it;
+    // a copied one is still there.
+    if (xy.includes('R')) paths.push(tokens[i + 1] ?? '');
+    if (xy.includes('R') || xy.includes('C')) i++;
   }
   const own = outPath === undefined ? undefined : relative(top, outPath).split('\\').join('/');
   return paths.filter((p) => p !== own);
@@ -74,9 +88,38 @@ async function writtenByVercel(top: string, path: string): Promise<boolean> {
  * systems that copy the source without its history. `hostWritten` lists the files left out of the
  * uncommitted changes because the host's build wrote them.
  */
+/** Whether a .git, or GIT_DIR, says this directory is in a checkout git could have read. */
+function inCheckout(cwd: string, env: Record<string, string | undefined>): boolean {
+  if (env['GIT_DIR'] !== undefined) return true;
+  for (let dir = resolve(cwd); ; dir = dirname(dir)) {
+    if (existsSync(resolve(dir, '.git'))) return true;
+    if (dirname(dir) === dir) return false;
+  }
+}
+
+/**
+ * The top of the repository stamp runs in, undefined outside one, or why git cannot read it. Only
+ * git's own "not a git repository" means there is none: a repository it refuses, such as one owned
+ * by another user or written by a newer git, still has a tree whose cleanliness counts.
+ */
+async function repositoryTop(cwd: string): Promise<{ top?: string; refused?: string }> {
+  if (!existsSync(cwd)) throw new StampError(`${cwd} is not a directory`);
+  let r;
+  try {
+    r = await runGit(['rev-parse', '--show-toplevel'], { cwd });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw err;
+  }
+  if (r.code === 0) return { top: r.stdout.toString('utf8').trim() };
+  if (/^fatal: not a git repository/m.test(r.stderr)) return {};
+  const reason = r.stderr.trim().split('\n')[0] ?? `git exited ${r.code}`;
+  return { refused: /dubious ownership/.test(reason) ? `${reason} (git config --global --add safe.directory <dir> trusts it)` : reason };
+}
+
 export async function makeStamp(cwd: string, req: StampRequest, env: Record<string, string | undefined>, builtAt: string): Promise<{ doc: VersionDoc; uncommitted: string[]; hostWritten: string[] }> {
   const outPath = req.out === undefined ? undefined : resolve(cwd, req.out);
-  const top = await gitText(['rev-parse', '--show-toplevel'], cwd);
+  const { top, refused } = await repositoryTop(cwd);
   if (req.commit !== undefined) {
     // Inside a repository the commit must exist there; outside one, only a full id is accepted.
     let full: string | undefined;
@@ -85,6 +128,10 @@ export async function makeStamp(cwd: string, req: StampRequest, env: Record<stri
     else if (COMMIT_PATTERN.test(req.commit.toLowerCase())) full = req.commit.toLowerCase();
     if (full === undefined) throw new StampError(`--commit ${req.commit} does not name a commit${top === undefined ? '; outside a repository give the full commit id' : ''}`);
     return { doc: { schema: VERSION_DOC_SCHEMA, commit: full, source: 'argument', builtAt }, uncommitted: [], hostWritten: [] };
+  }
+  if (refused !== undefined) throw new StampError(`git cannot read this repository, so stamp cannot tell whether the tree is clean: ${refused}`);
+  if (top === undefined && inCheckout(cwd, env) && !(await gitInstalled(cwd))) {
+    throw new StampError('git is not installed, so this checkout cannot be checked for uncommitted changes: install git, or pass --commit with the full commit id');
   }
   if (top !== undefined) {
     const head = await gitText(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], top);

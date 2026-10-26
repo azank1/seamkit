@@ -85,10 +85,10 @@ function readbackArgs(inputs: ActionInputs, deployed: string | undefined): strin
 
 /**
  * Keeps the ledger in step with the remote before the readback. Returns whether this run records
- * its verdict: auto records when a ledger already exists here or on the remote, true creates one
- * when there is none, and false never records.
+ * its verdict, and whether it created the ledger to do so: auto records when a ledger already
+ * exists here or on the remote, true creates one when there is none, and false never records.
  */
-async function openLedger(inputs: ActionInputs, cli: (args: string[]) => Promise<CliResult>, deps: ActionDeps): Promise<boolean> {
+async function openLedger(inputs: ActionInputs, cli: (args: string[]) => Promise<CliResult>, deps: ActionDeps): Promise<'recording' | 'created' | false> {
   if (inputs.ledger === 'false') return false;
   const sync = await cli(['state', 'sync', '--json']);
   if (sync.code !== 0 && /"status":"no_remote"/.test(sync.out)) {
@@ -102,7 +102,7 @@ async function openLedger(inputs: ActionInputs, cli: (args: string[]) => Promise
   const status = (JSON.parse(sync.out) as { status: string }).status;
   if (status !== 'empty') {
     deps.log(`seamkit: ledger ${status === 'up_to_date' ? 'is up to date' : status}`);
-    return true;
+    return 'recording';
   }
   if (inputs.ledger === 'auto') {
     deps.log('seamkit: no ledger here or on the remote, so this run is not recorded (set ledger: true to start one)');
@@ -114,7 +114,7 @@ async function openLedger(inputs: ActionInputs, cli: (args: string[]) => Promise
     return false;
   }
   deps.log(`seamkit: ${init.out.trim()}`);
-  return true;
+  return 'created';
 }
 
 /** Fetches a branch as origin has it now. Returns git's reason when it cannot. */
@@ -373,13 +373,22 @@ const PERMISSION = /\b403\b|denied|permission|not allowed|authentication/i;
 /** What git says when the push needs a credential and the checkout kept none: seamkit's git never prompts. */
 const NO_CREDENTIAL = /could not read (?:Username|Password) for /i;
 
+/** What GitHub says when actions/checkout's ssh-key is a deploy key without write access. */
+const READ_ONLY_KEY = /marked as read only/i;
+
+/** What git says when the remote declined the push: a ruleset, branch protection or a pre-receive hook. */
+const DECLINED = /\bdeclined\b/i;
+
 /** What to change when the ledger could not be pushed, or undefined when the error does not say. */
 export function pushAdvice(err: string): string | undefined {
   if (NO_CREDENTIAL.test(err)) {
     return "keep actions/checkout's default persist-credentials, since recording pushes with the checkout's credentials, or set ledger: false, which also stops this workflow reading the ledger";
   }
+  if (READ_ONLY_KEY.test(err)) {
+    return "allow write access for the deploy key actions/checkout's ssh-key uses, or set ledger: false, which also stops this workflow reading the ledger";
+  }
   if (PERMISSION.test(err)) return 'give the job "permissions: contents: write"';
-  if (/refused the push to seamkit\/state while no other writer was pushing/.test(err)) {
+  if (DECLINED.test(err)) {
     return 'allow this workflow to push the seamkit/state branch, which a ruleset or branch protection may block, or set ledger: false, which also stops this workflow reading the ledger';
   }
   if (/\bgit push \S+ refs\/heads\/seamkit\/state exited|could not synchronise/.test(err)) {
@@ -460,8 +469,13 @@ export async function runAction(deps: ActionDeps): Promise<number> {
     // runs may have pushed to the ledger, and changes may have merged, during the wait, so both
     // are fetched again first. A recording that fails leaves the verdict as it was read, and says
     // it was not recorded.
-    const resync = await cli(['state', 'sync', '--json']);
-    if (resync.code !== 0) deps.warn(`seamkit: the ledger could not be fetched again after the wait, so this run judges it as it was: ${clean(resync.err.trim())}`);
+    // A ledger this run created exists only here until the final push, which reports a refusal
+    // once, with what to change; until another run pushes one, there is nothing to fetch.
+    const remoteLedger = recording === 'created' ? await runGit(['ls-remote', 'origin', 'refs/heads/seamkit/state'], { cwd }) : undefined;
+    if (remoteLedger === undefined || remoteLedger.code !== 0 || remoteLedger.stdout.length > 0) {
+      const resync = await cli(['state', 'sync', '--json']);
+      if (resync.code !== 0) deps.warn(`seamkit: the ledger could not be synchronised with origin after the wait, so this run judges the ledger this checkout holds: ${clean(resync.err.trim())}`);
+    }
     const refetch = read === undefined ? undefined : await fetchBranch(cwd, read);
     if (read !== undefined) fetchedAfter = refetch === undefined;
     if (refetch !== undefined) deps.warn(`seamkit: could not fetch ${read} from origin again: ${refetch}`);

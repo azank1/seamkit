@@ -211,14 +211,31 @@ describe('GitStateStore', () => {
       for (const part of ['vault1', 'pass2', 'tok3', 'word4']) assert.ok(!quoted.stderr.includes(part), quoted.stderr);
     }
     // git and curl end the authority at its first / ? or #, so the host curl names can be a piece of
-    // the password, or with a port the user name; neither is left, traced or not.
-    for (const odd of ['vault1:pass2@tok3/word4', 'vault1:pass2@tok3?word4', 'vault1:pass2@tok3#word4', 'vault1:pass2@tok3:80/word4', 'tok3/word4', 'vault1:1234/word4', 'vault1:pass2@127.0.0.2:9/word4']) {
+    // the password, or with a port the user name; neither is left, traced or not. curl takes a name
+    // ending in .localhost for this machine without asking a resolver, so no network is involved.
+    for (const odd of ['vault1:pass2@tok3.localhost:9/word4', 'vault1:pass2@tok3.localhost:9?word4', 'vault1:pass2@tok3.localhost:9#word4', 'tok3.localhost:9/word4', 'vault1.localhost:1234/word4', 'vault1:pass2@127.0.0.2:9/word4']) {
       for (const env of [{ GIT_TRACE: '1' }, {}]) {
         const named = await runGit(['ls-remote', `http://${odd}@127.0.0.1:9/o/r.git`], { cwd, env });
         assert.match(named.stderr, /http:\/\/127\.0\.0\.1:9\/o\/r\.git/);
-        for (const part of odd.split(/[:@/?#]+/).filter((p) => !/^\d*$/.test(p))) assert.ok(!named.stderr.includes(part), `${odd} left ${part}: ${named.stderr}`);
+        for (const part of odd.split(/[:@/?#.]+/).filter((p) => !/^\d*$/.test(p))) assert.ok(!named.stderr.includes(part), `${odd} left ${part}: ${named.stderr}`);
       }
     }
+    // A remote given as <transport>::<address>, or on git's own protocol, is printed with no //.
+    for (const odd of ['https::x-access-token:tok3sec@127.0.0.1:9/o/r.git', 'http::tok3sec@127.0.0.1:9/o/r.git', 'git://x-access-token:tok3sec@127.0.0.1:1/o/r.git', 'git://tok3sec@127.0.0.1:1/o/r.git']) {
+      for (const env of [{ GIT_TRACE: '1' }, {}]) {
+        const bare = await runGit(['ls-remote', odd], { cwd, env });
+        assert.notEqual(bare.code, 0);
+        assert.ok(!bare.stderr.includes('tok3sec') && !bare.stderr.includes('x-access-token'), `${odd}: ${bare.stderr}`);
+      }
+    }
+    // git ends a proxy's authority at its first / ? or #, and curl quotes what is left.
+    for (const proxy of ['http://puser1:ps3cr/et9@127.0.0.1:3128', 'http://puser1:ps3cr?et9@127.0.0.1:3128', 'http://puser1:ps3cr#et9@127.0.0.1:3128', 'http://puser1:ps3cr et9@127.0.0.1:3128']) {
+      const r = await runGit(['-c', `http.proxy=${proxy}`, 'ls-remote', 'http://127.0.0.1:9/o/r.git'], { cwd });
+      assert.notEqual(r.code, 0);
+      for (const part of ['puser1', 'ps3cr', 'et9']) assert.ok(!r.stderr.includes(part), `${proxy} left ${part}: ${r.stderr}`);
+    }
+    // git's own error carries its arguments, and loses the credentials in them too.
+    await assert.rejects(git(['ls-remote', 'http://vault1:tok3sec@127.0.0.1:9/o/r.git'], { cwd }), (err: Error) => !/vault1|tok3sec/.test(err.message));
     // git refuses a URL holding a line break and prints it whole, traced or not, wherever the break and
     // any @ fall; its words are replaced by the reason.
     const split = ['vault1:pass2tok3\n', 'vault1\n:pass2tok3', 'vault1:pass2tok3\r\n', 'me@corp.example:pass2tok3\n', 'vault1\n:pa@tok3', 'vault1:pa@tok3\n', 'me@corp.example\n:tok3', 'vault1:pa@ss2\ntok3\nword4', 'va@ult1\nx:pass2'];
@@ -251,6 +268,12 @@ describe('GitStateStore', () => {
     // Text with no credential is left as git wrote it.
     const plain = "fatal: unable to access 'https://github.example/o/r/': The requested URL returned error: 403\n";
     assert.equal(scrubGitText(plain), plain);
+    // Every removal ends at an @, so long text with none after its slashes or letters is passed over at once.
+    for (const long of ['//'.repeat(200_000), `${'x'.repeat(400_000)}@`, `${'//x'.repeat(100_000)}\n`]) {
+      const started = process.hrtime.bigint();
+      scrubGitText(long);
+      assert.ok(process.hrtime.bigint() - started < 2_000_000_000n, `${long.length} characters took too long`);
+    }
   });
 
   it('keeps the credentials in a remote that git reads as a local path out of its errors', async () => {
@@ -262,15 +285,24 @@ describe('GitStateStore', () => {
       ['tok3@127.0.0.1/o/r.git', ['tok3']],
       ['tok3\n@127.0.0.1/o/r.git', ['tok3']],
       ['vault1@pa@tok3\nword4@127.0.0.1/o/r.git', ['vault1', 'tok3', 'word4']],
+      // A quote in the credential does not end git's quotes, nor the removal.
+      ["tok3'x9@127.0.0.1/o/r.git", ['tok3', 'x9']],
+      ["va'ult1@tok3@127.0.0.1/o/r.git", ['va', 'ult1', 'tok3']],
+      ["hunter2'\n@127.0.0.1/o/r.git", ['hunter2']],
     ];
     for (const [path, parts] of paths) {
       const r = await runGit(['ls-remote', path], { cwd });
       assert.match(r.stderr, /does not appear to be a git repository/);
       for (const part of parts) assert.ok(!r.stderr.includes(part), `${JSON.stringify(path)} left ${part}: ${r.stderr}`);
     }
-    // With a colon and no scheme, git reads host:path and hands ssh the user name or token as the host.
+    // With a colon and no scheme, git reads host:path and hands ssh the user name or token as the host,
+    // which ssh may name in any of its messages. As the checkout's origin, those are hidden wherever
+    // they appear, whatever a resolver answers for the name; ssh gives up quickly if one answers.
+    const ssh = ['-c', 'core.sshCommand=ssh -o ConnectTimeout=2 -o BatchMode=yes'];
     for (const path of ['vault1:tok3@127.0.0.1/o/r.git', 'ghs_tok3:x-oauth-basic@127.0.0.1/o/r.git']) {
-      const r = await runGit(['ls-remote', path], { cwd });
+      await git(['remote', 'add', 'origin', path], { cwd });
+      const r = await runGit([...ssh, 'ls-remote', 'origin'], { cwd });
+      await git(['remote', 'remove', 'origin'], { cwd });
       assert.notEqual(r.code, 0);
       for (const part of ['vault1', 'tok3']) assert.ok(!r.stderr.toLowerCase().includes(part), `${JSON.stringify(path)} left ${part}: ${r.stderr}`);
     }
@@ -287,22 +319,42 @@ describe('GitStateStore', () => {
   });
 
   it('hides the hosts curl names, which can be part of a password, and keeps the URL beside them', () => {
-    const text = [
-      "fatal: unable to access 'http://127.0.0.1:9/o/r.git/': Could not resolve host: tok3",
-      "fatal: unable to access 'https://127.0.0.1:9/o/r.git/': Could not resolve proxy: tok3",
-      "fatal: unable to access 'http://127.0.0.1:9/o/r.git/': Failed to connect to 127.0.0.2 port 9 after 0 ms: Couldn't connect to server",
-      "fatal: unable to access 'http://127.0.0.1:9/o/r.git/': Failed to connect to proxy tok3 port 8080",
-      "fatal: unable to access 'https://127.0.0.1:9/o/r.git/': SSL: no alternative certificate subject name matches target host name 'tok3'",
-      "fatal: unable to access 'https://127.0.0.1:9/o/r.git/': OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to tok3:443",
-    ].join('\n');
+    const lines: [string, string][] = [
+      ['Could not resolve host: tok3.part9', 'Could not resolve host: (host not shown)'],
+      ['Could not resolve proxy: tok3', 'Could not resolve proxy: (host not shown)'],
+      ["Failed to connect to 127.0.0.2 port 9 after 0 ms: Couldn't connect to server", "Failed to connect to (host not shown) port 9 after 0 ms: Couldn't connect to server"],
+      ['Failed to connect to tok3.localhost port 9 after 0 ms', 'Failed to connect to (host not shown) port 9 after 0 ms'],
+      ['Failed to connect to proxy tok3 port 8080', 'Failed to connect to proxy (host not shown) port 8080'],
+      ["SSL: no alternative certificate subject name matches target host name 'tok3.part9'", "SSL: no alternative certificate subject name matches target host name '(host not shown)'"],
+      ['OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to tok3.part9:443', 'OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to (host not shown):443'],
+      ["Can't complete SOCKS5 connection to tok3.part9. (4)", "Can't complete SOCKS5 connection to (host not shown) (4)"],
+      ['cannot complete SOCKS5 connection to tok3. (1)', 'cannot complete SOCKS5 connection to (host not shown) (1)'],
+      ['SOCKS4 connection to tok3 not supported', 'SOCKS4 connection to (host not shown) not supported'],
+      ['Failed to resolve "tok3.part9" for SOCKS5 connect.', 'Failed to resolve "(host not shown)" for SOCKS5 connect.'],
+      ["Unsupported proxy syntax in 'puser1:ps3cr': Port number was not a decimal number between 0 and 65535", "Unsupported proxy syntax in '(proxy not shown)': Port number was not a decimal number between 0 and 65535"],
+      ["Unsupported proxy scheme for 'puser1:p's3cr'", "Unsupported proxy scheme for '(proxy not shown)'"],
+      ["Couldn't resolve proxy 'puser1:ps3cr'", "Couldn't resolve proxy '(proxy not shown)'"],
+    ];
+    const text = lines.map(([line]) => `fatal: unable to access 'http://127.0.0.1:9/o/r.git/': ${line}`).join('\n');
     const scrubbed = scrubGitText(text);
-    assert.ok(!scrubbed.includes('tok3') && !scrubbed.includes('127.0.0.2'), scrubbed);
-    assert.equal(scrubbed.match(/\(host not shown\)/g)?.length, 6, scrubbed);
-    assert.equal(scrubbed.match(/'https?:\/\/127\.0\.0\.1:9\/o\/r\.git\/'/g)?.length, 6, scrubbed);
-    assert.match(scrubbed, /in connection to \(host not shown\):443$/);
+    assert.equal(scrubbed, lines.map(([, line]) => `fatal: unable to access 'http://127.0.0.1:9/o/r.git/': ${line}`).join('\n'));
     // ssh names its host the same ways, keeping the words around it.
     const ssh = 'ssh: Could not resolve hostname tok3: Name or service not known\r\nssh: connect to host tok3 port 22: Connection refused\r\n';
     assert.equal(scrubGitText(ssh), 'ssh: Could not resolve hostname (host not shown): Name or service not known\r\nssh: connect to host (host not shown) port 22: Connection refused\r\n');
+  });
+
+  it('hides the credentials git can see wherever its errors show them, in any wording', async () => {
+    const cwd = await repo('known');
+    await git(['remote', 'add', 'origin', 'https://vault1:tok3sec@127.0.0.1:9/o/r.git'], { cwd });
+    await git(['config', 'url.https://x-access-token:ghp_rewr1te@127.0.0.1:9/.insteadOf', 'https://github.example/'], { cwd });
+    await git(['config', 'http.https://127.0.0.1:9/.extraheader', `AUTHORIZATION: basic ${Buffer.from('x-access-token:ghs_head3r').toString('base64')}`], { cwd });
+    await git(['config', 'remote.origin.proxy', 'http://puser1:ps3cr/et9@127.0.0.1:3128'], { cwd });
+    // A message no pattern knows, naming each piece: shown as it was, but for the credentials in it.
+    const said = 'vault1 tok3sec ghp_rewr1te ghs_head3r ps3cr puser1 kept';
+    const r = await runGit(['-c', `alias.say=!echo '${said} ${Buffer.from('x-access-token:ghs_head3r').toString('base64')}' >&2`, 'say'], { cwd, env: { HTTPS_PROXY: 'http://envuser:envpa55@127.0.0.1:3128' } });
+    assert.equal(r.stderr, '*** *** *** *** *** *** kept ***\n');
+    const proxied = await runGit(['-c', "alias.say=!echo envuser envpa55 >&2", 'say'], { cwd, env: { HTTPS_PROXY: 'http://envuser:envpa55@127.0.0.1:3128' } });
+    assert.equal(proxied.stderr, '*** ***\n');
   });
 
   it('keeps curl tracing and request headers out of the errors an http remote gives', async () => {
@@ -342,15 +394,20 @@ describe('GitStateStore', () => {
   it('turns off every git trace, a name git has not invented yet included', async () => {
     const cwd = await repo('envdump');
     const names = ['GIT_TRACE', 'GIT_TRACE_PACKET', 'GIT_TRACE_PERFORMANCE', 'GIT_TRACE_SETUP', 'GIT_TRACE_PACKFILE', 'GIT_TRACE_PACK_ACCESS', 'GIT_TRACE_SHALLOW', 'GIT_TRACE_FSMONITOR', 'GIT_TRACE_CURL', 'GIT_TRACE_CURL_NO_DATA', 'GIT_TRACE_REFS', 'GIT_TRACE_SEAMKIT_PROBE', 'GIT_CURL_VERBOSE'];
-    const saved = Object.fromEntries([...names, 'GIT_TRACE_REDACT'].map((k) => [k, process.env[k]]));
+    const saved = Object.fromEntries([...names, 'GIT_TRACE_REDACT', 'GIT_SSH_COMMAND'].map((k) => [k, process.env[k]]));
     try {
       for (const name of names) process.env[name] = '1';
       process.env['GIT_TRACE_REDACT'] = '0';
+      // Other git variables, such as the ssh command a job pushes with, still reach git.
+      process.env['GIT_SSH_COMMAND'] = 'ssh -i deploy_key';
       // The environment git hands an alias is the one seamkit gave it.
       const r = await runGit(['-c', 'alias.seamkit-env=!env', 'seamkit-env'], { cwd });
       assert.equal(r.code, 0, r.stderr);
-      const left = r.stdout.toString('utf8').split('\n').filter((line) => /^GIT_(TRACE|CURL)/.test(line)).sort();
+      const vars = r.stdout.toString('utf8').split('\n');
+      const left = vars.filter((line) => /^GIT_(TRACE|CURL)/.test(line)).sort();
       assert.deepEqual(left, ['GIT_TRACE2=0', 'GIT_TRACE2_EVENT=0', 'GIT_TRACE2_PERF=0', 'GIT_TRACE_REDACT=1']);
+      assert.ok(vars.includes('GIT_SSH_COMMAND=ssh -i deploy_key'), 'GIT_SSH_COMMAND was dropped');
+      assert.ok(vars.includes(`GIT_CONFIG_GLOBAL=${process.env['GIT_CONFIG_GLOBAL']}`), 'GIT_CONFIG_GLOBAL was dropped');
     } finally {
       for (const [k, v] of Object.entries(saved)) {
         if (v === undefined) delete process.env[k];

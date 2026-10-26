@@ -78,7 +78,8 @@ Every command that produces a verdict exits with its outcome:
   2 usage or configuration error (no verdict was produced)
 
 Verdicts are recorded on the ${STATE_BRANCH} branch when it exists (create it with
-"seamkit state init"), or always with --record. Nothing else in the repository is touched.
+"seamkit state init"), or always with --record. Recording touches nothing else in the
+repository; "seamkit stamp --out" writes only the file it names.
 `;
 
 class UsageError extends Error {
