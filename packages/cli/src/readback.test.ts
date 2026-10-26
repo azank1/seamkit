@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FakeProduction } from '@seamkit/adapters';
 import { git, runGit } from '@seamkit/state';
@@ -996,15 +996,27 @@ describe('seamkit stamp', () => {
     await git(['update-index', '--skip-worktree', 'README.md'], { cwd: join(dir, 'lib') });
     await writeFile(join(dir, 'lib', 'README.md'), 'local\n');
     assert.match((await cli(['stamp', '--require-clean'], dir)).err, /1 uncommitted change \(such as lib\/README\.md\)/);
-    // GIT_DIR names the superproject, and git clears it in the submodule.
-    process.env['GIT_DIR'] = join(dir, '.git');
-    try {
-      assert.match((await cli(['stamp', '--require-clean'], dir)).err, /1 uncommitted change \(such as lib\/README\.md\)/);
-    } finally {
-      delete process.env['GIT_DIR'];
+    // GIT_DIR, with GIT_WORK_TREE as a deploy hook sets them, or GIT_OBJECT_DIRECTORY names the
+    // superproject's, and git clears each of them in the submodule.
+    const superproject = [{ GIT_DIR: join(dir, '.git') }, { GIT_DIR: join(dir, '.git'), GIT_WORK_TREE: dir }, { GIT_OBJECT_DIRECTORY: join(dir, '.git', 'objects') }];
+    const withEnv = async <T>(vars: Record<string, string>, body: () => Promise<T>): Promise<T> => {
+      Object.assign(process.env, vars);
+      try {
+        return await body();
+      } finally {
+        for (const name of Object.keys(vars)) delete process.env[name];
+      }
+    };
+    for (const vars of superproject) {
+      const r = await withEnv(vars, () => cli(['stamp', '--require-clean'], dir));
+      assert.match(r.err, /refusing to stamp a build with 1 uncommitted change \(such as lib\/README\.md\)/, JSON.stringify(vars));
     }
     await git(['update-index', '--no-skip-worktree', 'README.md'], { cwd: join(dir, 'lib') });
     await git(['checkout', '-q', '--', 'README.md'], { cwd: join(dir, 'lib') });
+    for (const vars of superproject) {
+      const r = await withEnv(vars, () => cli(['stamp', '--require-clean'], dir));
+      assert.equal(r.code, 0, `${JSON.stringify(vars)}: ${r.err}`);
+    }
     // Stamp's own output inside the submodule is not a change, stamped again.
     for (const time of ['first', 'second']) assert.equal((await cli(['stamp', '--require-clean', '--out', 'lib/public/version.json'], dir)).code, 0, time);
     await rm(join(dir, 'lib', 'public'), { recursive: true });
@@ -1035,6 +1047,58 @@ describe('seamkit stamp', () => {
     assert.equal(r.code, 0, r.err);
     assert.equal(JSON.parse(r.out).dirty, true);
     assert.match(r.err, /1 uncommitted change \(such as lib/);
+  });
+
+  it('counts a submodule that is no longer the directory of its checkout as changed', async () => {
+    const lib = (await repo()).dir;
+    const setUp = async (): Promise<string> => {
+      const { dir } = await repo();
+      await git(['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'lib'], { cwd: dir });
+      await git([...ID, 'commit', '-q', '-m', 'add lib'], { cwd: dir });
+      return dir;
+    };
+    const replacements: Array<[string, (dir: string) => Promise<void>]> = [
+      ['a file', async (dir) => { await rm(join(dir, 'lib'), { recursive: true }); await writeFile(join(dir, 'lib'), 'file\n'); }],
+      // A link to another clone at the same commit, clean, is still not the submodule the tree holds.
+      ['a link to a clean clone', async (dir) => {
+        const other = join(root, `other-${++counter}`);
+        await git(['clone', '-q', lib, other], { cwd: root });
+        await rm(join(dir, 'lib'), { recursive: true });
+        await symlink(other, join(dir, 'lib'));
+      }],
+    ];
+    for (const [what, replace] of replacements) {
+      const dir = await setUp();
+      await replace(dir);
+      const r = await cli(['stamp', '--require-clean'], dir);
+      assert.equal(r.code, 1, `${what}: ${r.err}`);
+      assert.match(r.err, /1 uncommitted change \(such as lib\)/, what);
+    }
+    // A submodule never checked out leaves an empty directory, which is clean; anything put in it is not.
+    const dir = await setUp();
+    await git(['submodule', 'deinit', '-q', '-f', 'lib'], { cwd: dir });
+    assert.equal((await cli(['stamp', '--require-clean'], dir)).code, 0);
+    await writeFile(join(dir, 'lib', 'added.js'), 'added\n');
+    const added = await cli(['stamp', '--require-clean'], dir);
+    assert.equal(added.code, 1, added.err);
+    assert.match(added.err, /1 uncommitted change \(such as lib\)/);
+  });
+
+  it('reads relative GIT_DIR and GIT_WORK_TREE from where it starts, as git does', async () => {
+    const { dir, direct } = await repo();
+    await mkdir(join(dir, 'apps', 'web'), { recursive: true });
+    await writeFile(join(dir, 'README.md'), 'edited\n');
+    Object.assign(process.env, { GIT_DIR: '../../.git', GIT_WORK_TREE: '../..' });
+    try {
+      const r = await cli(['stamp'], join(dir, 'apps', 'web'), { GITHUB_SHA: 'c'.repeat(40) });
+      assert.equal(r.code, 0, r.err);
+      assert.deepEqual(JSON.parse(r.out), { schema: 'seamkit.version/1', commit: direct, dirty: true, source: 'git', builtAt: AT, ref: 'main' });
+      const strict = await cli(['stamp', '--commit', direct, '--require-clean'], join(dir, 'apps', 'web'));
+      assert.equal(strict.code, 1, strict.err);
+    } finally {
+      delete process.env['GIT_DIR'];
+      delete process.env['GIT_WORK_TREE'];
+    }
   });
 
   it('counts a change to a file marked skip-worktree or assume-unchanged as git would unmarked', async () => {
@@ -1087,6 +1151,35 @@ describe('seamkit stamp', () => {
     assert.match(await git(['ls-files', '-v', 'README.md'], { cwd: dir }), /^s README\.md$/);
     await writeFile(join(dir, 'README.md'), 'both\n');
     assert.match((await cli(['stamp'], dir)).err, /1 uncommitted change \(such as README\.md\)/);
+    // The temporary index copy is removed, and is no change when TMPDIR is inside the work tree,
+    // named from anywhere.
+    const unmarkReadme = async (): Promise<void> => {
+      // update-index applies only the last of these flags it is given, so each takes a call of its own.
+      await git(['update-index', '--no-skip-worktree', '--', 'README.md'], { cwd: dir });
+      await git(['update-index', '--no-assume-unchanged', '--', 'README.md'], { cwd: dir });
+      await git(['checkout', '-q', '--', 'README.md'], { cwd: dir });
+    };
+    await unmarkReadme();
+    await mkdir(join(dir, 'tmp'));
+    const scratch = await mkdtemp(join(root, 'scratch-'));
+    for (const where of [scratch, join(dir, 'tmp'), relative(process.cwd(), join(dir, 'tmp')), dir]) {
+      await git(['update-index', '--skip-worktree', '--', 'README.md'], { cwd: dir });
+      process.env['TMPDIR'] = where;
+      try {
+        const clean = await cli(['stamp', '--require-clean'], dir);
+        assert.equal(clean.code, 0, `${where}: ${clean.err}`);
+        await writeFile(join(dir, 'README.md'), 'local\n');
+        const r = await cli(['stamp'], dir);
+        assert.match(r.err, /\b1 uncommitted change \(such as README\.md\)/, `${where}: ${r.err}`);
+      } finally {
+        delete process.env['TMPDIR'];
+      }
+      await unmarkReadme();
+    }
+    assert.deepEqual(await readdir(scratch), []);
+    assert.deepEqual(await readdir(join(dir, 'tmp')), []);
+    await rm(join(dir, 'tmp'), { recursive: true });
+    await git(['update-index', '--skip-worktree', '--', 'README.md'], { cwd: dir });
     // A marked file needs a temporary directory to be checked; nothing marked needs none.
     process.env['TMPDIR'] = join(root, 'no-such-tmp');
     try {
@@ -1107,6 +1200,18 @@ describe('seamkit stamp', () => {
     await git(['update-index', '--skip-worktree', 'README.md'], { cwd: dir });
     await rm(join(dir, 'README.md'));
     assert.equal(JSON.parse((await cli(['stamp'], dir)).out).dirty, false);
+    // A file put where the absent file's directory was is a change, not a crash.
+    await mkdir(join(dir, 'docs'));
+    await writeFile(join(dir, 'docs', 'guide.md'), 'guide\n');
+    await git(['add', 'docs/guide.md'], { cwd: dir });
+    await git([...ID, 'commit', '-q', '-m', 'docs'], { cwd: dir });
+    await git(['update-index', '--skip-worktree', 'docs/guide.md'], { cwd: dir });
+    await rm(join(dir, 'docs'), { recursive: true });
+    await writeFile(join(dir, 'docs'), 'not a directory\n');
+    const replaced = await cli(['stamp'], dir);
+    assert.equal(replaced.code, 0, replaced.err);
+    assert.match(replaced.err, /1 uncommitted change \(such as docs\)/);
+    await rm(join(dir, 'docs'));
     // A dangling symbolic link in its place is there, and is a change.
     await git(['update-index', '--skip-worktree', 'crlf.txt'], { cwd: dir });
     await rm(join(dir, 'crlf.txt'));
@@ -1155,6 +1260,12 @@ describe('seamkit stamp', () => {
     const other = await cli(['stamp', '--commit', merges[0] as string, '--require-clean'], dir);
     assert.equal(other.code, 2);
     assert.match(other.err, /--require-clean cannot tell whether the tree is clean: --commit \S+ is not the commit checked out/);
+    // A commit with the same tree is still another commit.
+    await git(['checkout', '-q', '--', 'README.md'], { cwd: dir });
+    await git([...ID, 'commit', '-q', '--allow-empty', '-m', 'empty'], { cwd: dir });
+    const sameTree = await cli(['stamp', '--commit', direct, '--require-clean'], dir);
+    assert.equal(sameTree.code, 2);
+    assert.match(sameTree.err, /--commit \S+ is not the commit checked out/);
     const plain = await mkdtemp(join(root, 'plain-'));
     const sha = 'c'.repeat(40);
     assert.match((await cli(['stamp', '--commit', sha, '--require-clean'], plain)).err, /--require-clean cannot tell whether the tree is clean: --commit was given outside a repository/);

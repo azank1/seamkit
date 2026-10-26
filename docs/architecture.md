@@ -648,12 +648,20 @@ git's words before an address it prints with no // (`url has no scheme`, `unable
 quoted text loses everything from its first quote to its last @, so a quote in a credential does not stop it. Since no
 list of wordings can be complete, the credentials git can see are also hidden wherever they appear: the user names,
 passwords and their pieces in the URLs and addresses its config holds, in its http extra headers, in the credential
-helpers it runs (whole, as the shell echoes a failing one, and each name=value in them, quoted or not) and in the proxy variables,
-looked up only when git wrote an error. A line git quotes from a helper's output (`invalid credential line`, and a
-helper's url= with no scheme) is not shown at all. The removal runs only on text up to the last @, which keeps it
+helpers it runs (whole, as the shell echoes a failing one, each name=value in them, quoted or not, and each literal
+between the shell's expansion syntax, as in `${X:-token}`) and in the proxy variables, looked up only when git wrote an
+error. A // that follows no scheme is read both as the start of an address and as part of a credential, and a decoded
+credential is cut again where git would cut it. A line git quotes from a helper's output (`invalid credential line`, and a
+helper's url= with no scheme) is not shown at all, and neither is the value of a credential-protocol key such as
+`password=` on any line, which is how a traced helper prints a secret it computed. The removal runs only on text up to the last @, which keeps it
 linear on long text. The Action fetches and merges the ledger without pushing until its final push, so a refused push
 is reported once, with advice.
-git refuses a URL holding a line break and prints it whole, so its words about one are replaced by the reason. `ledger: false` neither reads nor
+git refuses a URL holding a line break and prints it whole, so its words about one are replaced by the reason, which
+names no one URL, since git words a proxy's or a helper's the same way as the remote's. stamp runs git from the top of
+the work tree, so it first makes the caller's GIT_DIR, GIT_WORK_TREE and the other path variables absolute, as git read
+them where stamp started; a gitlink that is not the directory of its checkout (a file, a link to another clone, or an
+uninitialised submodule's directory with anything in it) counts as changed; and a `state sync --no-push` that finds
+the ledger ahead says it holds commits origin lacks, which a merge alone can make. `ledger: false` neither reads nor
 records the ledger, even one the checkout already holds: the Action passes `--no-ledger`, which judges as if there
 were no ledger and records nothing, and the docs and the push advice say what that costs. `--no-record` notes that it kept the run out of
 the ledger, not that the ledger is missing. A change whose card the run cannot read for lack of room, or cannot check, is still kept in `--deployed`

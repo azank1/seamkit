@@ -206,6 +206,8 @@ describe('GitStateStore', () => {
     assert.equal((await readFile(tries, 'utf8')).trim().split('\n').length, 3);
   });
 
+  const LINE_BREAK = "fatal: a URL git read holds a line break, which git refuses (the remote's, a proxy's from http.proxy or the proxy variables, or one a credential helper gave; check the secret it is built from)\n";
+
   it('keeps tracing and the credentials in a URL out of the errors git reports', async () => {
     const cwd = await repo('trace');
     const url = 'http://x-access-token:s3cr3t-token@127.0.0.1:9/o/r.git';
@@ -268,9 +270,12 @@ describe('GitStateStore', () => {
       for (const env of [{ GIT_TRACE: '1' }, {}]) {
         const broken = await runGit(['ls-remote', `http://${odd}@127.0.0.1:9/o/r.git`], { cwd, env });
         assert.notEqual(broken.code, 0);
-        assert.equal(broken.stderr, "fatal: the remote's URL holds a line break, which git refuses (check the secret it is built from)\n", JSON.stringify(odd));
+        assert.equal(broken.stderr, LINE_BREAK, JSON.stringify(odd));
       }
     }
+    // git words a proxy's line break the same way, so the remote's own URL is not blamed for it.
+    const proxied = await runGit(['ls-remote', 'http://127.0.0.1:9/o/r.git'], { cwd, env: { http_proxy: 'http://puser1:pass2tok3@127.0.0.1:3128\n' } });
+    assert.equal(proxied.stderr, LINE_BREAK);
   });
 
   it('removes a URL credential split over lines, however its @ and line breaks fall', () => {
@@ -387,6 +392,10 @@ describe('GitStateStore', () => {
       ['https://vault1:tok%33sec99@127.0.0.1:9/o/r.git', 'tok3sec99'],
       ['https://vault1:p@ss3cret9@127.0.0.1:9/o/r.git', 'ss3cret9'],
       ['https://deploy:deploy-2026-secret@127.0.0.1:9/o/r.git', 'deploy-2026-secret'],
+      // A // inside a credential with no scheme, and a decoded credential git cuts again.
+      ['Ab3+x9//Zq7Tok3nRest@host.localhost:o/r', 'Ab3+x9 Zq7Tok3nRest'],
+      ['git://x:Ab3x9%2FZq7Tok3nRest@nores.invalid/o/r.git', 'Ab3x9 Zq7Tok3nRest'],
+      ['ssh://x:Ab3x9%2FZq7Tok3nRest@nores.invalid/o/r.git', 'Ab3x9'],
       ['', 'lowuser lowpa55', { http_proxy: 'http://lowuser:lowpa55@127.0.0.1:3128' }],
       ['', 'alluser allpa55', { all_proxy: 'socks5://alluser:allpa55@127.0.0.1:1080' }],
     ];
@@ -449,19 +458,37 @@ describe('GitStateStore', () => {
       const scoped = await runGit(['ls-remote', url], { cwd });
       assert.match(scoped.stderr, missing);
       await git(['config', '--unset', `credential.${url}.helper`], { cwd });
-      // A helper that traces itself prints each value as the shell expands it, without its quotes.
+      // A helper that traces itself prints each value as the shell expands it, without its quotes. A
+      // user name can be the token, and is no credential key, so only the helper's own text hides it.
       const traced: string[] = [];
-      for (const value of ['ghp_Bare0Tok3n4567', "'ghp_Single0Tok3n4567'", '"ghp_Double0Tok3n4567"', "'ghp_Spaced0Tok3n with spaces9'", '"ghp_Esc\\"aped0Tok3n"', '"ghp_Joined0Tok3n"\'X9\'', '"ghp_Back\\slash0Tok3n"', 'ghp_Redir0Tok3n>&2']) {
-        await git(['config', 'credential.helper', `!f() { set -x; echo username=x; echo password=${value}; }; f`], { cwd });
+      const echoesHidden = (stderr: string): boolean => {
+        const echoes = stderr.split('\n').filter((line) => line.startsWith('+ echo'));
+        return echoes.length > 0 && echoes.every((line) => /^\+ echo '?(?:\w+=\(not shown\)|(?:\w+=)?\*\*\*'?)(?: get)?$/.test(line));
+      };
+      for (const value of ['ghp_Bare0Tok3n4567', "'ghp_Single0Tok3n4567'", '"ghp_Double0Tok3n4567"', "'ghp_Spaced0Tok3n with spaces9'", '"ghp_Esc\\"aped0Tok3n"', '"ghp_Joined0Tok3n"\'X9\'', '"ghp_Back\\slash0Tok3n"', 'ghp_Redir0Tok3n>&2', 'ghpZ9Bs\\_Tok', '"${SEAMKIT_UNSET:-ghpZ9Fallback0Tok}"', '${SEAMKIT_UNSET:-ghpZ9Bare0Fall}', '"$(echo ghpZ9Sub0Tok)"']) {
+        await git(['config', 'credential.helper', `!f() { set -x; echo username=${value}; }; f`], { cwd });
         const r = await runGit(['ls-remote', url], { cwd });
-        const echoes = r.stderr.split('\n').filter((line) => line.startsWith('+ echo'));
-        assert.ok(echoes.length > 0 && echoes.every((line) => /^\+ echo '?(?:\w+=)?\*\*\*'?$/.test(line)), r.stderr);
+        assert.ok(echoesHidden(r.stderr), r.stderr);
         traced.push(r.stderr);
       }
-      // A token that is no name's value, as a printf argument, is one of the words a trace prints.
-      await git(['config', 'credential.helper', "!f() { set -x; printf 'username=%s\\npassword=%s\\n' x ghpZ9Print0Tok3n; }; f"], { cwd });
-      traced.push((await runGit(['ls-remote', url], { cwd })).stderr);
-      for (const text of [bare.stderr, noScheme.stderr, echoed.stderr, scoped.stderr, ...traced]) assert.ok(!/ghp|Tok3n|spaces9/.test(text), text);
+      // A token assigned and expanded later, and one in the helper's last word, to which git adds get.
+      for (const helper of ['!f() { set -x; tok=ghpZ9Assign0Tok; echo username=$tok; }; f', '!set -x; echo "username=ghpZ9Last0Tok"']) {
+        await git(['config', 'credential.helper', helper], { cwd });
+        const r = await runGit(['ls-remote', url], { cwd });
+        assert.ok(echoesHidden(r.stderr), r.stderr);
+        traced.push(r.stderr);
+      }
+      // A token that is no name's value, as a printf argument, is one of the words a trace prints, a % in it included.
+      for (const token of ['ghpZ9Print0Tok3n', "'Pa%ss0Tok3n99'"]) {
+        await git(['config', 'credential.helper', `!f() { set -x; printf 'username=%s\\n' ${token}; }; f`], { cwd });
+        traced.push((await runGit(['ls-remote', url], { cwd })).stderr);
+      }
+      // A secret the helper takes from elsewhere cannot be known, but the credential line it prints is hidden by its key.
+      await git(['config', 'credential.helper', '!f() { set -x; echo username=x; echo password=$SEAMKIT_HELPER_SECRET; }; f'], { cwd });
+      const computed = await runGit(['ls-remote', url], { cwd, env: { SEAMKIT_HELPER_SECRET: 'ghpZ9Env0Tok3n' } });
+      assert.match(computed.stderr, /^\+ echo password=\(not shown\)$/m);
+      traced.push(computed.stderr);
+      for (const text of [bare.stderr, noScheme.stderr, echoed.stderr, scoped.stderr, ...traced]) assert.ok(!/ghp|Tok3n|spaces9|Tok\b|Fall/.test(text), text);
     } finally {
       await new Promise((done) => server.close(done));
     }

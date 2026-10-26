@@ -487,7 +487,7 @@ async function cmdState(args: string[], flags: Flags, cwd: string, io: Io): Prom
         pushed: `pushed ${STATE_BRANCH} to ${r.remote}`,
         pulled: `updated ${STATE_BRANCH} from ${r.remote}`,
         merged: push ? `merged ${STATE_BRANCH} with ${r.remote} and pushed the result` : `merged ${STATE_BRANCH} with ${r.remote}, without pushing`,
-        ahead: `${STATE_BRANCH} holds events ${r.remote} does not; not pushed`,
+        ahead: `${STATE_BRANCH} holds commits ${r.remote} does not have; not pushed`,
         empty: `${STATE_BRANCH} exists neither here nor on ${r.remote}; nothing to do`,
         no_remote: `there is no remote called ${r.remote}`,
       };

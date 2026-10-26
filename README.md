@@ -76,7 +76,7 @@ commit the CI system provides (`VERCEL_GIT_COMMIT_SHA`, `GITHUB_SHA`, `CF_PAGES_
 `RENDER_GIT_COMMIT`, `CI_COMMIT_SHA`, `BITBUCKET_COMMIT` or `SOURCE_VERSION`) and records which one it used. In a
 checkout it needs git: a checkout that git is missing or refuses to read gets no stamp, rather than one that cannot say
 whether its tree was clean. A change counts even where `git status` would not show it: inside a submodule, whatever
-its `ignore` setting, or in a file marked skip-worktree or assume-unchanged, which counts as it would unmarked (in a
+its `ignore` setting, in the directory of a submodule that is not checked out, or in a file marked skip-worktree or assume-unchanged, which counts as it would unmarked (in a
 sparse checkout, a skip-worktree file left out of the checkout is not a change). Stamp asks git not to refresh its index, so it writes
 nothing to the repository. `--require-clean` refuses a dirty tree, and also refuses any stamp that cannot say whether
 the tree is clean: outside a repository, or with `--commit` naming anything but the commit checked out.

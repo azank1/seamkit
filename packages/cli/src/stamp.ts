@@ -1,7 +1,7 @@
-import { existsSync, lstatSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, realpathSync, type Stats } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, relative, resolve } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { canonicalJson, COMMIT_PATTERN, VERSION_DOC_SCHEMA, versionDocText, type VersionDoc } from '@seamkit/core';
 import { runGit, type GitResult } from '@seamkit/state';
 
@@ -37,8 +37,35 @@ async function gitInstalled(cwd: string): Promise<boolean> {
   }
 }
 
-async function gitText(args: string[], cwd: string, unset: readonly string[] = []): Promise<string | undefined> {
-  const r = await runGit(args, { cwd, unset });
+/**
+ * How stamp's git calls see the repository: the superproject's with the caller's path variables
+ * made absolute, since stamp runs git from the top of the work tree rather than where it was
+ * started, and a submodule's with every variable that ties git to one repository removed.
+ */
+interface GitScope {
+  env?: Record<string, string>;
+  unset?: readonly string[];
+}
+
+/**
+ * The variables naming a path git resolves against the directory it starts in, as it would read
+ * them from cwd. GIT_INDEX_FILE is left as it is, since git reads it from the top of the work tree.
+ */
+const CWD_PATH_ENV = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_CONFIG'];
+
+function callerScope(cwd: string): GitScope {
+  const env: Record<string, string> = {};
+  for (const name of CWD_PATH_ENV) {
+    const value = process.env[name];
+    if (value) env[name] = resolve(cwd, value);
+  }
+  const alternates = process.env['GIT_ALTERNATE_OBJECT_DIRECTORIES'];
+  if (alternates) env['GIT_ALTERNATE_OBJECT_DIRECTORIES'] = alternates.split(delimiter).map((d) => (d === '' ? d : resolve(cwd, d))).join(delimiter);
+  return { env };
+}
+
+async function gitText(args: string[], cwd: string, scope: GitScope): Promise<string | undefined> {
+  const r = await runGit(args, { cwd, ...scope });
   return r.code === 0 ? r.stdout.toString('utf8').trim() : undefined;
 }
 
@@ -64,8 +91,8 @@ interface IndexEntry {
   path: string;
 }
 
-async function indexEntries(top: string, unset: readonly string[]): Promise<IndexEntry[]> {
-  const r = await runGit(['--no-optional-locks', 'ls-files', '-v', '-s', '-z'], { cwd: top, unset });
+async function indexEntries(top: string, scope: GitScope): Promise<IndexEntry[]> {
+  const r = await runGit(['--no-optional-locks', 'ls-files', '-v', '-s', '-z'], { cwd: top, ...scope });
   if (r.code !== 0) throw new StampError(`git ls-files failed: ${r.stderr.trim()}`);
   const entries: IndexEntry[] = [];
   for (let at = 0; at < r.stdout.length; ) {
@@ -81,10 +108,17 @@ async function indexEntries(top: string, unset: readonly string[]): Promise<Inde
   return entries;
 }
 
-/** Whether a path exists in the work tree, a dangling symbolic link included. */
-function present(top: string, path: Buffer): boolean {
-  return lstatSync(Buffer.concat([Buffer.from(`${top}/`), path]), { throwIfNoEntry: false }) !== undefined;
+/** What is at a path in the work tree, a dangling symbolic link included, or undefined when nothing is, a parent that is now a file included. */
+function entryAt(top: string, path: Buffer): Stats | undefined {
+  try {
+    return lstatSync(Buffer.concat([Buffer.from(`${top}/`), path]), { throwIfNoEntry: false });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOTDIR') return undefined;
+    throw err;
+  }
 }
+
+const present = (top: string, path: Buffer): boolean => entryAt(top, path) !== undefined;
 
 /**
  * git status that sees files marked skip-worktree or assume-unchanged, which status otherwise never
@@ -94,25 +128,27 @@ function present(top: string, path: Buffer): boolean {
  * skip-worktree and absent from the work tree is left out of the checkout on purpose, so it keeps
  * its mark.
  */
-async function statusSeeingMarked(top: string, entries: readonly IndexEntry[], unset: readonly string[], args: readonly string[]): Promise<GitResult> {
-  const sparse = (await gitText(['config', '--bool', 'core.sparseCheckout'], top, unset)) === 'true';
+async function statusSeeingMarked(top: string, entries: readonly IndexEntry[], scope: GitScope, args: readonly string[]): Promise<{ result: GitResult; scratch?: string }> {
+  const sparse = (await gitText(['config', '--bool', 'core.sparseCheckout'], top, scope)) === 'true';
   const marked = entries.filter((e) => (e.tag === 'S' || /^[a-z]$/.test(e.tag)) && !(sparse && e.tag.toUpperCase() === 'S' && !present(top, e.pathBytes)));
-  if (marked.length === 0) return runGit(args, { cwd: top, unset });
-  const where = await gitText(['rev-parse', '--git-path', 'index'], top, unset);
+  if (marked.length === 0) return { result: await runGit(args, { cwd: top, ...scope }) };
+  const where = await gitText(['rev-parse', '--git-path', 'index'], top, scope);
   if (where === undefined) throw new StampError('git cannot say where the index is');
+  // Absolute, so the directory made here is the one git is told of from the top of the work tree.
+  const base = resolve(tmpdir());
   let dir: string;
   try {
-    dir = await mkdtemp(join(tmpdir(), 'seamkit-stamp-'));
+    dir = await mkdtemp(join(base, 'seamkit-stamp-'));
   } catch (err) {
-    throw new StampError(`stamp needs a temporary directory to check the files marked skip-worktree or assume-unchanged, and ${tmpdir()} is not usable (${(err as NodeJS.ErrnoException).code ?? 'error'}): set TMPDIR to a writable directory`);
+    throw new StampError(`stamp needs a temporary directory to check the files marked skip-worktree or assume-unchanged, and ${base} is not usable (${(err as NodeJS.ErrnoException).code ?? 'error'}): set TMPDIR to a writable directory`);
   }
   try {
     const index = join(dir, 'index');
     await copyFile(resolve(top, where), index);
-    const env = { GIT_INDEX_FILE: index };
-    const rewrite = await runGit(['update-index', '-z', '--index-info'], { cwd: top, env, unset, input: Buffer.concat(marked.flatMap((e) => [e.info, Buffer.from([0])])) });
+    const copy: GitScope = { ...scope, env: { ...scope.env, GIT_INDEX_FILE: index } };
+    const rewrite = await runGit(['update-index', '-z', '--index-info'], { cwd: top, ...copy, input: Buffer.concat(marked.flatMap((e) => [e.info, Buffer.from([0])])) });
     if (rewrite.code !== 0) throw new StampError(`git update-index failed: ${rewrite.stderr.trim()}`);
-    return await runGit(args, { cwd: top, env, unset });
+    return { result: await runGit(args, { cwd: top, ...copy }), scratch: relative(realpathSync(top), realpathSync(dir)).split('\\').join('/') };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -128,11 +164,12 @@ const LOCAL_REPO_ENV = ['GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR', 'G
  * Paths with uncommitted changes, from `git status -z`, the stamp's own output excluded. A file
  * marked skip-worktree or assume-unchanged counts as git would count it unmarked, and so does a
  * submodule, whatever its ignore setting, where a change inside it is named by its own path. git
- * is asked not to refresh the repository's index, so stamp writes nothing to the repository.
+ * is asked not to refresh the repository's index, so stamp writes nothing to the repository. Its
+ * temporary index copy, when TMPDIR is inside the work tree, is not a change either.
  */
-async function uncommitted(top: string, outPath: string | undefined, unset: readonly string[] = []): Promise<string[]> {
-  const entries = await indexEntries(top, unset);
-  const r = await statusSeeingMarked(top, entries, unset, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none']);
+async function uncommitted(top: string, outPath: string | undefined, scope: GitScope): Promise<string[]> {
+  const entries = await indexEntries(top, scope);
+  const { result: r, scratch } = await statusSeeingMarked(top, entries, scope, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none']);
   if (r.code !== 0) throw new StampError(`git status failed: ${r.stderr.trim()}`);
   const tokens = r.stdout.toString('utf8').split('\0');
   const listed = new Map<string, string>();
@@ -147,24 +184,36 @@ async function uncommitted(top: string, outPath: string | undefined, unset: read
     if (xy.includes('R') || xy.includes('C')) i++;
   }
   const paths = [...listed.keys()];
-  // A checked-out submodule on the commit the index records is judged by what is inside it, so a
-  // marked file there counts, and stamp's own output there does not.
-  for (const link of entries.filter((e) => e.mode === '160000' && present(top, Buffer.concat([e.pathBytes, Buffer.from('/.git')])))) {
+  for (const link of entries.filter((e) => e.mode === '160000')) {
+    const found = entryAt(top, link.pathBytes);
+    if (found === undefined) continue;
+    // A submodule that is not checked out leaves an empty directory, which git does not look into,
+    // so anything put there, or anything other than a directory, is a change.
+    if (!present(top, Buffer.concat([link.pathBytes, Buffer.from('/.git')]))) {
+      if (!found.isDirectory() || readdirSync(Buffer.concat([Buffer.from(`${top}/`), link.pathBytes])).length > 0) paths.push(link.path);
+      continue;
+    }
     // A path git holds in bytes that are not UTF-8 cannot be entered, so that submodule counts as changed.
     if (!Buffer.from(link.path, 'utf8').equals(link.pathBytes)) {
       paths.push(link.path);
       continue;
     }
+    // A checked-out submodule on the commit the index records is judged by what is inside it, so a
+    // marked file there counts, and stamp's own output there does not. One that is no longer a
+    // directory, such as a link to another clone, keeps the change git reports for it.
+    const xy = listed.get(link.path) ?? '  ';
+    if (!found.isDirectory() || xy[0] !== ' ' || xy[1] === 'T') continue;
     const inner = resolve(top, link.path);
-    const head = await gitText(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], inner, LOCAL_REPO_ENV);
-    if (head !== link.blob || (listed.get(link.path) ?? ' ')[0] !== ' ') continue;
-    const changes = await uncommitted(inner, outPath, LOCAL_REPO_ENV);
+    const head = await gitText(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], inner, { unset: LOCAL_REPO_ENV });
+    if (head !== link.blob) continue;
+    const changes = await uncommitted(inner, outPath, { unset: LOCAL_REPO_ENV });
     const at = paths.indexOf(link.path);
     if (at >= 0) paths.splice(at, 1);
     paths.push(...changes.map((p) => `${link.path}/${p}`));
   }
   const own = outPath === undefined ? undefined : relative(realpathSync(top), physical(outPath)).split('\\').join('/');
-  return [...new Set(paths)].filter((p) => p !== own);
+  const inTree = scratch !== undefined && scratch !== '' && !scratch.startsWith('../') && scratch !== '..' && !isAbsolute(scratch);
+  return [...new Set(paths)].filter((p) => p !== own && !(inTree && (p === scratch || p.startsWith(`${scratch}/`))));
 }
 
 /** Whether this is Vercel's build of HEAD, whose checkout Vercel has written into before the build. */
@@ -177,11 +226,11 @@ function onVercel(env: Record<string, string | undefined>, head: string): boolea
  * committed settings reformatted, or {} when none is committed. Only a file that holds exactly the
  * settings the commit holds is left out; any other content is a change like any other.
  */
-async function writtenByVercel(top: string, path: string): Promise<boolean> {
+async function writtenByVercel(top: string, path: string, scope: GitScope): Promise<boolean> {
   if (path.split('/').pop() !== 'vercel.json') return false;
   try {
     const written = canonicalJson(JSON.parse(await readFile(resolve(top, path), 'utf8')));
-    const committed = await runGit(['cat-file', 'blob', `HEAD:${path}`], { cwd: top });
+    const committed = await runGit(['cat-file', 'blob', `HEAD:${path}`], { cwd: top, ...scope });
     return written === canonicalJson(committed.code === 0 ? JSON.parse(committed.stdout.toString('utf8')) : {});
   } catch {
     return false;
@@ -202,11 +251,11 @@ function inCheckout(cwd: string, env: Record<string, string | undefined>): boole
  * git's own "not a git repository" means there is none: a repository it refuses, such as one owned
  * by another user or written by a newer git, still has a tree whose cleanliness counts.
  */
-async function repositoryTop(cwd: string): Promise<{ top?: string; refused?: string }> {
+async function repositoryTop(cwd: string, scope: GitScope): Promise<{ top?: string; refused?: string }> {
   if (!existsSync(cwd)) throw new StampError(`${cwd} is not a directory`);
   let r;
   try {
-    r = await runGit(['rev-parse', '--show-toplevel'], { cwd });
+    r = await runGit(['rev-parse', '--show-toplevel'], { cwd, ...scope });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
     throw err;
@@ -218,12 +267,12 @@ async function repositoryTop(cwd: string): Promise<{ top?: string; refused?: str
 }
 
 /** The tree's uncommitted changes against HEAD, and the files left out because the host's build wrote them. */
-async function treeChanges(top: string, head: string, outPath: string | undefined, env: Record<string, string | undefined>): Promise<{ changed: string[]; hostWritten: string[] }> {
+async function treeChanges(top: string, head: string, outPath: string | undefined, env: Record<string, string | undefined>, scope: GitScope): Promise<{ changed: string[]; hostWritten: string[] }> {
   const vercel = onVercel(env, head);
   const changed: string[] = [];
   const hostWritten: string[] = [];
-  for (const path of await uncommitted(top, outPath)) {
-    if (vercel && (await writtenByVercel(top, path))) hostWritten.push(path);
+  for (const path of await uncommitted(top, outPath, scope)) {
+    if (vercel && (await writtenByVercel(top, path, scope))) hostWritten.push(path);
     else changed.push(path);
   }
   return { changed, hostWritten };
@@ -238,21 +287,22 @@ async function treeChanges(top: string, head: string, outPath: string | undefine
  */
 export async function makeStamp(cwd: string, req: StampRequest, env: Record<string, string | undefined>, builtAt: string): Promise<{ doc: VersionDoc; uncommitted: string[]; hostWritten: string[] }> {
   const outPath = req.out === undefined ? undefined : resolve(cwd, req.out);
-  const { top, refused } = await repositoryTop(cwd);
+  const scope = callerScope(cwd);
+  const { top, refused } = await repositoryTop(cwd, scope);
   const unclear = (reason: string): StampError => new StampError(`--require-clean cannot tell whether the tree is clean: ${reason}`);
   if (req.commit !== undefined) {
     // Inside a repository the commit must exist there; outside one, only a full id is accepted.
     let full: string | undefined;
     if (req.commit.startsWith('-')) full = undefined;
-    else if (top !== undefined) full = await gitText(['rev-parse', '--verify', '--quiet', `${req.commit}^{commit}`], top);
+    else if (top !== undefined) full = await gitText(['rev-parse', '--verify', '--quiet', `${req.commit}^{commit}`], top, scope);
     else if (COMMIT_PATTERN.test(req.commit.toLowerCase())) full = req.commit.toLowerCase();
     if (full === undefined) throw new StampError(`--commit ${req.commit} does not name a commit${top === undefined ? '; outside a repository give the full commit id' : ''}`);
     const doc: VersionDoc = { schema: VERSION_DOC_SCHEMA, commit: full, source: 'argument', builtAt };
     if (!req.requireClean) return { doc, uncommitted: [], hostWritten: [] };
     if (refused !== undefined) throw unclear(`git cannot read this repository: ${refused}`);
     if (top === undefined) throw unclear('--commit was given outside a repository git can read');
-    if (full !== (await gitText(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], top))) throw unclear(`--commit ${req.commit} is not the commit checked out, so the tree is not that commit's`);
-    const { changed, hostWritten } = await treeChanges(top, full, outPath, env);
+    if (full !== (await gitText(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], top, scope))) throw unclear(`--commit ${req.commit} is not the commit checked out, so the tree is not that commit's`);
+    const { changed, hostWritten } = await treeChanges(top, full, outPath, env, scope);
     return { doc: { ...doc, dirty: changed.length > 0 }, uncommitted: changed, hostWritten };
   }
   if (refused !== undefined) throw new StampError(`git cannot read this repository, so stamp cannot tell whether the tree is clean: ${refused}`);
@@ -260,12 +310,12 @@ export async function makeStamp(cwd: string, req: StampRequest, env: Record<stri
     throw new StampError('git is not installed, so this checkout cannot be checked for uncommitted changes: install git, or pass --commit with the full commit id');
   }
   if (top !== undefined) {
-    const head = await gitText(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], top);
+    const head = await gitText(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], top, scope);
     if (head !== undefined) {
-      const { changed, hostWritten } = await treeChanges(top, head, outPath, env);
+      const { changed, hostWritten } = await treeChanges(top, head, outPath, env, scope);
       const doc: VersionDoc = { schema: VERSION_DOC_SCHEMA, commit: head, dirty: changed.length > 0, source: 'git', builtAt };
       // Vercel's checkout is on a branch named master, whatever branch it builds; that one is in VERCEL_GIT_COMMIT_REF.
-      const ref = (onVercel(env, head) ? env['VERCEL_GIT_COMMIT_REF']?.trim() : undefined) || (await gitText(['symbolic-ref', '--short', '-q', 'HEAD'], top));
+      const ref = (onVercel(env, head) ? env['VERCEL_GIT_COMMIT_REF']?.trim() : undefined) || (await gitText(['symbolic-ref', '--short', '-q', 'HEAD'], top, scope));
       if (ref) doc.ref = ref;
       return { doc, uncommitted: changed, hostWritten };
     }

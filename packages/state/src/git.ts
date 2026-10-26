@@ -71,6 +71,12 @@ const HELPER_LINE = /(invalid credential line: |url has no scheme: |credential u
 const SPLIT_URL = /url contains a newline in its [a-z ]+ component/i;
 
 /**
+ * A line in git's credential protocol, which a credential helper that traces itself prints as it
+ * runs: the value of each key that carries a secret, whatever it was computed from.
+ */
+const CREDENTIAL_LINE = /\b(password|oauth_refresh_token|credential|authtype)=[^\r\n]*/gi;
+
+/**
  * Text git wrote, with no URL's credentials left in it. git refuses a URL holding a line break, so
  * its words about one are replaced by the reason. Elsewhere the removal repeats until no URL is
  * followed by an @, since a user name or password can hold both an @ and a line break; every
@@ -80,7 +86,9 @@ const SPLIT_URL = /url contains a newline in its [a-z ]+ component/i;
  * breaks included. That only takes text away, so no URL can match again.
  */
 export function scrubGitText(text: string): string {
-  if (SPLIT_URL.test(text)) return "fatal: the remote's URL holds a line break, which git refuses (check the secret it is built from)\n";
+  if (SPLIT_URL.test(text)) {
+    return "fatal: a URL git read holds a line break, which git refuses (the remote's, a proxy's from http.proxy or the proxy variables, or one a credential helper gave; check the secret it is built from)\n";
+  }
   const last = text.lastIndexOf('@');
   let scrubbed = text.slice(0, last + 1);
   let before: string;
@@ -94,6 +102,7 @@ export function scrubGitText(text: string): string {
   if (quote >= 0 && quote < at) scrubbed = scrubbed.slice(0, quote + 1) + scrubbed.slice(at + 1);
   return scrubbed
     .replace(HELPER_LINE, '$1(not shown)')
+    .replace(CREDENTIAL_LINE, '$1=(not shown)')
     .replace(NAMED_HOST, '$1(host not shown)')
     .replace(QUOTED_PROXY, "$1'(proxy not shown)'");
 }
@@ -107,22 +116,31 @@ const SHORTEST_SECRET = 4;
 /**
  * The credential in a URL or address as git would read it: everything before its last @, whole,
  * split at its first colon, and split again wherever git, curl or ssh may cut it, each also as it
- * reads percent-decoded.
+ * reads percent-decoded. A // that does not follow a scheme may start the address, as git reads a
+ * mistyped one, or sit inside the credential, so the text is taken both ways.
  */
 function credentialPieces(address: string): string[] {
-  const text = address.trim().replace(/^[a-z][a-z0-9+.-]*::/i, '').replace(/^(?:[a-z][a-z0-9+.-]*:?)?\/\//i, '');
-  const at = text.lastIndexOf('@');
-  if (at < 0) return [];
-  return splitPieces(text.slice(0, at));
+  const bare = address.trim().replace(/^[a-z][a-z0-9+.-]*::/i, '');
+  const pieces: string[] = [];
+  for (const text of [bare.replace(/^(?:[a-z][a-z0-9+.-]*:?)?\/\//i, ''), bare.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')]) {
+    const at = text.lastIndexOf('@');
+    if (at >= 0) pieces.push(...splitPieces(text.slice(0, at)));
+  }
+  return pieces;
 }
 
-function splitPieces(credential: string): string[] {
+function cutPieces(credential: string): string[] {
   const colon = credential.indexOf(':');
   const halves = colon < 0 ? [credential] : [credential.slice(0, colon), credential.slice(colon + 1)];
-  const pieces = [credential, ...halves, ...credential.split(/[@/?#:\s]+/)];
+  return [credential, ...halves, ...credential.split(/[@/?#:\s]+/)];
+}
+
+/** A credential cut as git, curl or ssh may cut it, and cut again as each piece reads percent-decoded. */
+function splitPieces(credential: string): string[] {
+  const pieces = cutPieces(credential);
   for (const piece of [...pieces]) {
     try {
-      pieces.push(decodeURIComponent(piece));
+      pieces.push(...cutPieces(decodeURIComponent(piece)));
     } catch {
       // not percent-encoded text
     }
@@ -166,19 +184,29 @@ function shellWords(command: string): string[] {
   return words;
 }
 
+/** A printf directive or escape, which a format holds beside its text. */
+const PRINTF = /%[-#0 +]*\d*(?:\.\d+)?[a-zA-Z%]|\\[a-z\\]/g;
+
+/** Whether a word is only letters, dashes and printf directives, such as echo, a program's name or a format. */
+const plainWord = (word: string): boolean => /^[A-Za-z_-]*$/.test(word.replace(PRINTF, ''));
+
 /**
  * A credential helper as the shell may print it: whole, as git runs it without its leading !, as
- * a trace prints its words, and the value of each name=value in it, which is how a helper written
- * into config holds a literal token. A word made only of letters and dashes, such as echo or a
- * program's name, or a printf format, holds no credential and is not hidden, so a helper named by
- * one word, such as store, hides nothing.
+ * a trace prints its words, the value of each name=value in it, which is how a helper written
+ * into config holds a literal token, and each run of a word between the shell's expansion syntax,
+ * which is how a literal sits in ${X:-token} or $(echo token). A plain word holds no credential
+ * and is not hidden, so a helper named by one word, such as store, hides nothing. A secret the
+ * helper computes as it runs, by decoding or cutting text, cannot be known here; a helper's
+ * credential lines are hidden by their keys instead.
  */
 function helperPieces(helper: string): string[] {
   const pieces = /^!|\s/.test(helper) ? [helper, helper.replace(/^!/, '')] : [];
   for (const word of shellWords(helper.replace(/^!/, ''))) {
     const eq = word.indexOf('=');
     if (eq >= 0) pieces.push(word.slice(eq + 1), ...splitPieces(word.slice(eq + 1)));
-    if (!/^[A-Za-z_-]*$/.test(word) && !word.includes('%')) pieces.push(word);
+    for (const run of [word, ...word.split(/[\s${}()`:=,]+/).map((r) => r.replace(/^[-+?#%]+/, ''))]) {
+      if (!plainWord(run)) pieces.push(run);
+    }
   }
   return pieces;
 }

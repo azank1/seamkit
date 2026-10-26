@@ -204,7 +204,7 @@ describe('seamkit cli', () => {
     assert.equal(spawnSync('git', ['remote', 'add', 'origin', remote], { cwd: dir }).status, 0);
     const kept = await cli(['state', 'sync', '--no-push'], { cwd: dir });
     assert.equal(kept.code, 0, kept.err);
-    assert.equal(kept.out, `${STATE_BRANCH} holds events origin does not; not pushed\n`);
+    assert.equal(kept.out, `${STATE_BRANCH} holds commits origin does not have; not pushed\n`);
     assert.equal(spawnSync('git', ['ls-remote', remote], { encoding: 'utf8' }).stdout, '');
     assert.equal(JSON.parse((await cli(['state', 'sync', '--no-push', '--json'], { cwd: dir })).out).status, 'ahead');
     assert.match((await cli(['state', 'sync'], { cwd: dir })).out, /^pushed /);

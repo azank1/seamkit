@@ -102,7 +102,7 @@ async function openLedger(inputs: ActionInputs, cli: (args: string[]) => Promise
   }
   const status = (JSON.parse(sync.out) as { status: string }).status;
   if (status !== 'empty') {
-    deps.log(`seamkit: ledger ${status === 'up_to_date' ? 'is up to date' : status === 'ahead' ? 'holds events origin does not have yet' : status}`);
+    deps.log(`seamkit: ledger ${status === 'up_to_date' ? 'is up to date' : status === 'ahead' ? 'holds commits origin does not have yet' : status}`);
     return 'recording';
   }
   if (inputs.ledger === 'auto') {

@@ -144,7 +144,7 @@ export class GitStateStore {
    * Merges the local branch with the remote's and pushes the result, never forcing. Because every
    * event file is named by its content, two writers can only ever add different paths, so the
    * merge is a union of files and cannot conflict. With push false the result is kept here only:
-   * merged, or ahead when the remote lacks events this branch holds.
+   * merged, or ahead when the remote lacks commits this branch holds (a merge, or events not yet pushed).
    */
   async sync(remote = 'origin', { push = true }: { push?: boolean } = {}): Promise<SyncResult> {
     const hasRemote = await runGit(['remote', 'get-url', remote], { cwd: this.cwd });

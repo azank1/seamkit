@@ -339,6 +339,24 @@ describe('the seamkit action', () => {
     }
   });
 
+  it('records a run on a ledger origin refused before, and reports only the push that fails at the end', async () => {
+    const { remote, ci, commits } = await project();
+    await writeFile(join(remote, 'hooks', 'pre-receive'), "#!/bin/sh\nwhile read old new ref; do [ \"$ref\" = refs/heads/seamkit/state ] && { echo 'Permission to o/r denied' >&2; exit 1; }; done\nexit 0\n", { mode: 0o755 });
+    deploy(commits[2]);
+    // A second seamkit step in the same job finds the ledger the first one could not push.
+    let logs: string[] = [];
+    for (const step of ['first', 'second']) {
+      const ran = await act(ci, { ledger: 'true' }, success(commits[2] as string));
+      logs = ran.logs;
+      assert.equal(ran.code, 0, `${step}: ${ran.warnings.join('\n')}`);
+      assert.equal(ran.warnings.filter((w) => /seamkit\/state/.test(w)).length, 1, `${step}: ${ran.warnings.join('\n')}`);
+      assert.match(ran.warnings.find((w) => /seamkit\/state/.test(w)) ?? '', /give the job "permissions: contents: write"/);
+      assert.ok(!ran.warnings.some((w) => /could not be synchronised/.test(w)), `${step}: ${ran.warnings.join('\n')}`);
+      assert.ok(logs.some((l) => /recorded as event/.test(l)), `${step}: ${logs.join('\n')}`);
+    }
+    assert.ok(logs.some((l) => l === 'seamkit: ledger holds commits origin does not have yet'), logs.join('\n'));
+  });
+
   it('merges a ledger another run pushed while it waited into the one it created, and reports a refused push once', async () => {
     const { remote, ci, commits } = await project();
     deploy(commits[1]);

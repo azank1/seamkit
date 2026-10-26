@@ -8980,9 +8980,11 @@ var NAMED_HOST = /(Could not resolve (?:host|proxy|hostname):? |Failed to connec
 var QUOTED_PROXY = /(Unsupported proxy (?:syntax in |scheme for )?|Couldn't resolve proxy )'[^\r\n]*'/gi;
 var HELPER_LINE = /(invalid credential line: |url has no scheme: |credential url cannot be parsed: )[^\r\n]*/gi;
 var SPLIT_URL = /url contains a newline in its [a-z ]+ component/i;
+var CREDENTIAL_LINE = /\b(password|oauth_refresh_token|credential|authtype)=[^\r\n]*/gi;
 function scrubGitText(text) {
-  if (SPLIT_URL.test(text))
-    return "fatal: the remote's URL holds a line break, which git refuses (check the secret it is built from)\n";
+  if (SPLIT_URL.test(text)) {
+    return "fatal: a URL git read holds a line break, which git refuses (the remote's, a proxy's from http.proxy or the proxy variables, or one a credential helper gave; check the secret it is built from)\n";
+  }
   const last = text.lastIndexOf("@");
   let scrubbed = text.slice(0, last + 1);
   let before;
@@ -8995,24 +8997,30 @@ function scrubGitText(text) {
   const quote = scrubbed.indexOf("'");
   if (quote >= 0 && quote < at2)
     scrubbed = scrubbed.slice(0, quote + 1) + scrubbed.slice(at2 + 1);
-  return scrubbed.replace(HELPER_LINE, "$1(not shown)").replace(NAMED_HOST, "$1(host not shown)").replace(QUOTED_PROXY, "$1'(proxy not shown)'");
+  return scrubbed.replace(HELPER_LINE, "$1(not shown)").replace(CREDENTIAL_LINE, "$1=(not shown)").replace(NAMED_HOST, "$1(host not shown)").replace(QUOTED_PROXY, "$1'(proxy not shown)'");
 }
 var PROXY_VARS = ["http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"];
 var SHORTEST_SECRET = 4;
 function credentialPieces(address) {
-  const text = address.trim().replace(/^[a-z][a-z0-9+.-]*::/i, "").replace(/^(?:[a-z][a-z0-9+.-]*:?)?\/\//i, "");
-  const at2 = text.lastIndexOf("@");
-  if (at2 < 0)
-    return [];
-  return splitPieces(text.slice(0, at2));
+  const bare = address.trim().replace(/^[a-z][a-z0-9+.-]*::/i, "");
+  const pieces = [];
+  for (const text of [bare.replace(/^(?:[a-z][a-z0-9+.-]*:?)?\/\//i, ""), bare.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")]) {
+    const at2 = text.lastIndexOf("@");
+    if (at2 >= 0)
+      pieces.push(...splitPieces(text.slice(0, at2)));
+  }
+  return pieces;
 }
-function splitPieces(credential) {
+function cutPieces(credential) {
   const colon = credential.indexOf(":");
   const halves = colon < 0 ? [credential] : [credential.slice(0, colon), credential.slice(colon + 1)];
-  const pieces = [credential, ...halves, ...credential.split(/[@/?#:\s]+/)];
+  return [credential, ...halves, ...credential.split(/[@/?#:\s]+/)];
+}
+function splitPieces(credential) {
+  const pieces = cutPieces(credential);
   for (const piece of [...pieces]) {
     try {
-      pieces.push(decodeURIComponent(piece));
+      pieces.push(...cutPieces(decodeURIComponent(piece)));
     } catch {
     }
   }
@@ -9053,14 +9061,18 @@ function shellWords(command) {
     words.push(word);
   return words;
 }
+var PRINTF = /%[-#0 +]*\d*(?:\.\d+)?[a-zA-Z%]|\\[a-z\\]/g;
+var plainWord = (word) => /^[A-Za-z_-]*$/.test(word.replace(PRINTF, ""));
 function helperPieces(helper) {
   const pieces = /^!|\s/.test(helper) ? [helper, helper.replace(/^!/, "")] : [];
   for (const word of shellWords(helper.replace(/^!/, ""))) {
     const eq = word.indexOf("=");
     if (eq >= 0)
       pieces.push(word.slice(eq + 1), ...splitPieces(word.slice(eq + 1)));
-    if (!/^[A-Za-z_-]*$/.test(word) && !word.includes("%"))
-      pieces.push(word);
+    for (const run2 of [word, ...word.split(/[\s${}()`:=,]+/).map((r) => r.replace(/^[-+?#%]+/, ""))]) {
+      if (!plainWord(run2))
+        pieces.push(run2);
+    }
   }
   return pieces;
 }
@@ -9235,7 +9247,7 @@ var GitStateStore = class _GitStateStore {
    * Merges the local branch with the remote's and pushes the result, never forcing. Because every
    * event file is named by its content, two writers can only ever add different paths, so the
    * merge is a union of files and cannot conflict. With push false the result is kept here only:
-   * merged, or ahead when the remote lacks events this branch holds.
+   * merged, or ahead when the remote lacks commits this branch holds (a merge, or events not yet pushed).
    */
   async sync(remote = "origin", { push = true } = {}) {
     const hasRemote = await runGit(["remote", "get-url", remote], { cwd: this.cwd });
@@ -10087,10 +10099,10 @@ function auditAdvice(context) {
 }
 
 // packages/cli/dist/stamp.js
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, realpathSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp as mkdtemp2, readFile, rm as rm2, writeFile } from "node:fs/promises";
 import { tmpdir as tmpdir2 } from "node:os";
-import { basename, dirname, join as join2, relative, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join as join2, relative, resolve } from "node:path";
 var STAMP_ENV_VARS = [
   "VERCEL_GIT_COMMIT_SHA",
   "GITHUB_SHA",
@@ -10112,8 +10124,21 @@ async function gitInstalled(cwd) {
     return false;
   }
 }
-async function gitText(args, cwd, unset = []) {
-  const r = await runGit(args, { cwd, unset });
+var CWD_PATH_ENV = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_CONFIG"];
+function callerScope(cwd) {
+  const env = {};
+  for (const name of CWD_PATH_ENV) {
+    const value = process.env[name];
+    if (value)
+      env[name] = resolve(cwd, value);
+  }
+  const alternates = process.env["GIT_ALTERNATE_OBJECT_DIRECTORIES"];
+  if (alternates)
+    env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = alternates.split(delimiter).map((d) => d === "" ? d : resolve(cwd, d)).join(delimiter);
+  return { env };
+}
+async function gitText(args, cwd, scope) {
+  const r = await runGit(args, { cwd, ...scope });
   return r.code === 0 ? r.stdout.toString("utf8").trim() : void 0;
 }
 function physical(path) {
@@ -10125,8 +10150,8 @@ function physical(path) {
   }
   return join2(realpathSync(dir), ...rest);
 }
-async function indexEntries(top, unset) {
-  const r = await runGit(["--no-optional-locks", "ls-files", "-v", "-s", "-z"], { cwd: top, unset });
+async function indexEntries(top, scope) {
+  const r = await runGit(["--no-optional-locks", "ls-files", "-v", "-s", "-z"], { cwd: top, ...scope });
   if (r.code !== 0)
     throw new StampError(`git ls-files failed: ${r.stderr.trim()}`);
   const entries = [];
@@ -10143,39 +10168,47 @@ async function indexEntries(top, unset) {
   }
   return entries;
 }
-function present(top, path) {
-  return lstatSync(Buffer.concat([Buffer.from(`${top}/`), path]), { throwIfNoEntry: false }) !== void 0;
+function entryAt(top, path) {
+  try {
+    return lstatSync(Buffer.concat([Buffer.from(`${top}/`), path]), { throwIfNoEntry: false });
+  } catch (err) {
+    if (err.code === "ENOTDIR")
+      return void 0;
+    throw err;
+  }
 }
-async function statusSeeingMarked(top, entries, unset, args) {
-  const sparse = await gitText(["config", "--bool", "core.sparseCheckout"], top, unset) === "true";
+var present = (top, path) => entryAt(top, path) !== void 0;
+async function statusSeeingMarked(top, entries, scope, args) {
+  const sparse = await gitText(["config", "--bool", "core.sparseCheckout"], top, scope) === "true";
   const marked = entries.filter((e) => (e.tag === "S" || /^[a-z]$/.test(e.tag)) && !(sparse && e.tag.toUpperCase() === "S" && !present(top, e.pathBytes)));
   if (marked.length === 0)
-    return runGit(args, { cwd: top, unset });
-  const where = await gitText(["rev-parse", "--git-path", "index"], top, unset);
+    return { result: await runGit(args, { cwd: top, ...scope }) };
+  const where = await gitText(["rev-parse", "--git-path", "index"], top, scope);
   if (where === void 0)
     throw new StampError("git cannot say where the index is");
+  const base = resolve(tmpdir2());
   let dir;
   try {
-    dir = await mkdtemp2(join2(tmpdir2(), "seamkit-stamp-"));
+    dir = await mkdtemp2(join2(base, "seamkit-stamp-"));
   } catch (err) {
-    throw new StampError(`stamp needs a temporary directory to check the files marked skip-worktree or assume-unchanged, and ${tmpdir2()} is not usable (${err.code ?? "error"}): set TMPDIR to a writable directory`);
+    throw new StampError(`stamp needs a temporary directory to check the files marked skip-worktree or assume-unchanged, and ${base} is not usable (${err.code ?? "error"}): set TMPDIR to a writable directory`);
   }
   try {
     const index = join2(dir, "index");
     await copyFile(resolve(top, where), index);
-    const env = { GIT_INDEX_FILE: index };
-    const rewrite = await runGit(["update-index", "-z", "--index-info"], { cwd: top, env, unset, input: Buffer.concat(marked.flatMap((e) => [e.info, Buffer.from([0])])) });
+    const copy = { ...scope, env: { ...scope.env, GIT_INDEX_FILE: index } };
+    const rewrite = await runGit(["update-index", "-z", "--index-info"], { cwd: top, ...copy, input: Buffer.concat(marked.flatMap((e) => [e.info, Buffer.from([0])])) });
     if (rewrite.code !== 0)
       throw new StampError(`git update-index failed: ${rewrite.stderr.trim()}`);
-    return await runGit(args, { cwd: top, env, unset });
+    return { result: await runGit(args, { cwd: top, ...copy }), scratch: relative(realpathSync(top), realpathSync(dir)).split("\\").join("/") };
   } finally {
     await rm2(dir, { recursive: true, force: true });
   }
 }
 var LOCAL_REPO_ENV = ["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_CONFIG", "GIT_DIR", "GIT_GRAFT_FILE", "GIT_IMPLICIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_NAMESPACE", "GIT_NO_REPLACE_OBJECTS", "GIT_OBJECT_DIRECTORY", "GIT_PREFIX", "GIT_REPLACE_REF_BASE", "GIT_SHALLOW_FILE", "GIT_WORK_TREE"];
-async function uncommitted(top, outPath, unset = []) {
-  const entries = await indexEntries(top, unset);
-  const r = await statusSeeingMarked(top, entries, unset, ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"]);
+async function uncommitted(top, outPath, scope) {
+  const entries = await indexEntries(top, scope);
+  const { result: r, scratch } = await statusSeeingMarked(top, entries, scope, ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"]);
   if (r.code !== 0)
     throw new StampError(`git status failed: ${r.stderr.trim()}`);
   const tokens = r.stdout.toString("utf8").split("\0");
@@ -10192,33 +10225,45 @@ async function uncommitted(top, outPath, unset = []) {
       i++;
   }
   const paths = [...listed.keys()];
-  for (const link of entries.filter((e) => e.mode === "160000" && present(top, Buffer.concat([e.pathBytes, Buffer.from("/.git")])))) {
+  for (const link of entries.filter((e) => e.mode === "160000")) {
+    const found = entryAt(top, link.pathBytes);
+    if (found === void 0)
+      continue;
+    if (!present(top, Buffer.concat([link.pathBytes, Buffer.from("/.git")]))) {
+      if (!found.isDirectory() || readdirSync(Buffer.concat([Buffer.from(`${top}/`), link.pathBytes])).length > 0)
+        paths.push(link.path);
+      continue;
+    }
     if (!Buffer.from(link.path, "utf8").equals(link.pathBytes)) {
       paths.push(link.path);
       continue;
     }
-    const inner = resolve(top, link.path);
-    const head = await gitText(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], inner, LOCAL_REPO_ENV);
-    if (head !== link.blob || (listed.get(link.path) ?? " ")[0] !== " ")
+    const xy = listed.get(link.path) ?? "  ";
+    if (!found.isDirectory() || xy[0] !== " " || xy[1] === "T")
       continue;
-    const changes = await uncommitted(inner, outPath, LOCAL_REPO_ENV);
+    const inner = resolve(top, link.path);
+    const head = await gitText(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], inner, { unset: LOCAL_REPO_ENV });
+    if (head !== link.blob)
+      continue;
+    const changes = await uncommitted(inner, outPath, { unset: LOCAL_REPO_ENV });
     const at2 = paths.indexOf(link.path);
     if (at2 >= 0)
       paths.splice(at2, 1);
     paths.push(...changes.map((p) => `${link.path}/${p}`));
   }
   const own = outPath === void 0 ? void 0 : relative(realpathSync(top), physical(outPath)).split("\\").join("/");
-  return [...new Set(paths)].filter((p) => p !== own);
+  const inTree = scratch !== void 0 && scratch !== "" && !scratch.startsWith("../") && scratch !== ".." && !isAbsolute(scratch);
+  return [...new Set(paths)].filter((p) => p !== own && !(inTree && (p === scratch || p.startsWith(`${scratch}/`))));
 }
 function onVercel(env, head) {
   return env["VERCEL"] === "1" && env["VERCEL_GIT_COMMIT_SHA"]?.trim().toLowerCase() === head;
 }
-async function writtenByVercel(top, path) {
+async function writtenByVercel(top, path, scope) {
   if (path.split("/").pop() !== "vercel.json")
     return false;
   try {
     const written2 = canonicalJson(JSON.parse(await readFile(resolve(top, path), "utf8")));
-    const committed = await runGit(["cat-file", "blob", `HEAD:${path}`], { cwd: top });
+    const committed = await runGit(["cat-file", "blob", `HEAD:${path}`], { cwd: top, ...scope });
     return written2 === canonicalJson(committed.code === 0 ? JSON.parse(committed.stdout.toString("utf8")) : {});
   } catch {
     return false;
@@ -10234,12 +10279,12 @@ function inCheckout(cwd, env) {
       return false;
   }
 }
-async function repositoryTop(cwd) {
+async function repositoryTop(cwd, scope) {
   if (!existsSync(cwd))
     throw new StampError(`${cwd} is not a directory`);
   let r;
   try {
-    r = await runGit(["rev-parse", "--show-toplevel"], { cwd });
+    r = await runGit(["rev-parse", "--show-toplevel"], { cwd, ...scope });
   } catch (err) {
     if (err.code === "ENOENT")
       return {};
@@ -10252,12 +10297,12 @@ async function repositoryTop(cwd) {
   const reason = r.stderr.trim().split("\n")[0] ?? `git exited ${r.code}`;
   return { refused: /dubious ownership/.test(reason) ? `${reason} (git config --global --add safe.directory <dir> trusts it)` : reason };
 }
-async function treeChanges(top, head, outPath, env) {
+async function treeChanges(top, head, outPath, env, scope) {
   const vercel = onVercel(env, head);
   const changed = [];
   const hostWritten = [];
-  for (const path of await uncommitted(top, outPath)) {
-    if (vercel && await writtenByVercel(top, path))
+  for (const path of await uncommitted(top, outPath, scope)) {
+    if (vercel && await writtenByVercel(top, path, scope))
       hostWritten.push(path);
     else
       changed.push(path);
@@ -10266,14 +10311,15 @@ async function treeChanges(top, head, outPath, env) {
 }
 async function makeStamp(cwd, req, env, builtAt) {
   const outPath = req.out === void 0 ? void 0 : resolve(cwd, req.out);
-  const { top, refused } = await repositoryTop(cwd);
+  const scope = callerScope(cwd);
+  const { top, refused } = await repositoryTop(cwd, scope);
   const unclear = (reason) => new StampError(`--require-clean cannot tell whether the tree is clean: ${reason}`);
   if (req.commit !== void 0) {
     let full;
     if (req.commit.startsWith("-"))
       full = void 0;
     else if (top !== void 0)
-      full = await gitText(["rev-parse", "--verify", "--quiet", `${req.commit}^{commit}`], top);
+      full = await gitText(["rev-parse", "--verify", "--quiet", `${req.commit}^{commit}`], top, scope);
     else if (COMMIT_PATTERN.test(req.commit.toLowerCase()))
       full = req.commit.toLowerCase();
     if (full === void 0)
@@ -10285,9 +10331,9 @@ async function makeStamp(cwd, req, env, builtAt) {
       throw unclear(`git cannot read this repository: ${refused}`);
     if (top === void 0)
       throw unclear("--commit was given outside a repository git can read");
-    if (full !== await gitText(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], top))
+    if (full !== await gitText(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], top, scope))
       throw unclear(`--commit ${req.commit} is not the commit checked out, so the tree is not that commit's`);
-    const { changed, hostWritten } = await treeChanges(top, full, outPath, env);
+    const { changed, hostWritten } = await treeChanges(top, full, outPath, env, scope);
     return { doc: { ...doc, dirty: changed.length > 0 }, uncommitted: changed, hostWritten };
   }
   if (refused !== void 0)
@@ -10296,11 +10342,11 @@ async function makeStamp(cwd, req, env, builtAt) {
     throw new StampError("git is not installed, so this checkout cannot be checked for uncommitted changes: install git, or pass --commit with the full commit id");
   }
   if (top !== void 0) {
-    const head = await gitText(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], top);
+    const head = await gitText(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], top, scope);
     if (head !== void 0) {
-      const { changed, hostWritten } = await treeChanges(top, head, outPath, env);
+      const { changed, hostWritten } = await treeChanges(top, head, outPath, env, scope);
       const doc = { schema: VERSION_DOC_SCHEMA, commit: head, dirty: changed.length > 0, source: "git", builtAt };
-      const ref = (onVercel(env, head) ? env["VERCEL_GIT_COMMIT_REF"]?.trim() : void 0) || await gitText(["symbolic-ref", "--short", "-q", "HEAD"], top);
+      const ref = (onVercel(env, head) ? env["VERCEL_GIT_COMMIT_REF"]?.trim() : void 0) || await gitText(["symbolic-ref", "--short", "-q", "HEAD"], top, scope);
       if (ref)
         doc.ref = ref;
       return { doc, uncommitted: changed, hostWritten };
@@ -10775,7 +10821,7 @@ async function cmdState(args, flags, cwd, io) {
         pushed: `pushed ${STATE_BRANCH} to ${r.remote}`,
         pulled: `updated ${STATE_BRANCH} from ${r.remote}`,
         merged: push ? `merged ${STATE_BRANCH} with ${r.remote} and pushed the result` : `merged ${STATE_BRANCH} with ${r.remote}, without pushing`,
-        ahead: `${STATE_BRANCH} holds events ${r.remote} does not; not pushed`,
+        ahead: `${STATE_BRANCH} holds commits ${r.remote} does not have; not pushed`,
         empty: `${STATE_BRANCH} exists neither here nor on ${r.remote}; nothing to do`,
         no_remote: `there is no remote called ${r.remote}`
       };
@@ -11022,10 +11068,10 @@ async function postCheckRun(fetchFn, ctx, token, name, sha, report2, detailsUrl)
 async function setOutput(path, name, value) {
   if (path === "")
     return;
-  const delimiter = `seamkit_${Math.random().toString(36).slice(2)}`;
-  await appendFile(path, `${name}<<${delimiter}
+  const delimiter2 = `seamkit_${Math.random().toString(36).slice(2)}`;
+  await appendFile(path, `${name}<<${delimiter2}
 ${value}
-${delimiter}
+${delimiter2}
 `);
 }
 async function appendSummary(path, markdown) {
@@ -11180,7 +11226,7 @@ async function openLedger(inputs, cli, deps) {
   }
   const status = JSON.parse(sync.out).status;
   if (status !== "empty") {
-    deps.log(`seamkit: ledger ${status === "up_to_date" ? "is up to date" : status === "ahead" ? "holds events origin does not have yet" : status}`);
+    deps.log(`seamkit: ledger ${status === "up_to_date" ? "is up to date" : status === "ahead" ? "holds commits origin does not have yet" : status}`);
     return "recording";
   }
   if (inputs.ledger === "auto") {
