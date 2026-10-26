@@ -404,6 +404,12 @@ describe('GitStateStore', () => {
     await git(['config', 'remote.origin.pushurl', 'https://pusher:ghs_PushOnly123456@127.0.0.1:9/o/r.git'], { cwd });
     const pushed = await runGit(['-c', "alias.say=!echo 'ghs_PushOnly123456 kept' >&2", 'say'], { cwd });
     assert.equal(pushed.stderr, '*** kept\n');
+    // GIT_CONFIG makes git config list one file, but the git that failed read every scope.
+    const configured = await runGit(['-c', "alias.say=!echo 'ghs_PushOnly123456 kept' >&2", 'say'], { cwd, env: { GIT_CONFIG: '/dev/null' } });
+    assert.equal(configured.stderr, '*** kept\n');
+    // A header with no scheme holds its token as its one word.
+    await git(['config', 'http.extraheader', 'PRIVATE-TOKEN: glpat-HdrTok3n1234'], { cwd });
+    assert.equal((await runGit(['-c', "alias.say=!echo 'glpat-HdrTok3n1234 kept' >&2", 'say'], { cwd })).stderr, '*** kept\n');
     // Whatever size the pipe hands over, the credential is hidden in the whole of what git wrote.
     await git(['config', 'remote.origin.pushurl', 'https://x-access-token:ghs_ChunkSecret123456@127.0.0.1:9/o/r.git'], { cwd });
     const split = await runGit(['-c', "alias.say=!printf '%s' 'pre ghs_Chunk' >&2; sleep 0.3; printf '%s' 'Secret123456 tail' >&2", 'say'], { cwd });
@@ -445,13 +451,17 @@ describe('GitStateStore', () => {
       await git(['config', '--unset', `credential.${url}.helper`], { cwd });
       // A helper that traces itself prints each value as the shell expands it, without its quotes.
       const traced: string[] = [];
-      for (const value of ['ghp_Bare0Tok3n4567', "'ghp_Single0Tok3n4567'", '"ghp_Double0Tok3n4567"', "'ghp_Spaced0Tok3n with spaces9'"]) {
+      for (const value of ['ghp_Bare0Tok3n4567', "'ghp_Single0Tok3n4567'", '"ghp_Double0Tok3n4567"', "'ghp_Spaced0Tok3n with spaces9'", '"ghp_Esc\\"aped0Tok3n"', '"ghp_Joined0Tok3n"\'X9\'', '"ghp_Back\\slash0Tok3n"', 'ghp_Redir0Tok3n>&2']) {
         await git(['config', 'credential.helper', `!f() { set -x; echo username=x; echo password=${value}; }; f`], { cwd });
         const r = await runGit(['ls-remote', url], { cwd });
-        assert.match(r.stderr, /\+ echo '?password=\*\*\*/, r.stderr);
+        const echoes = r.stderr.split('\n').filter((line) => line.startsWith('+ echo'));
+        assert.ok(echoes.length > 0 && echoes.every((line) => /^\+ echo '?(?:\w+=)?\*\*\*'?$/.test(line)), r.stderr);
         traced.push(r.stderr);
       }
-      for (const text of [bare.stderr, noScheme.stderr, echoed.stderr, scoped.stderr, ...traced]) assert.ok(!/ghp_|Tok3n|spaces9/.test(text), text);
+      // A token that is no name's value, as a printf argument, is one of the words a trace prints.
+      await git(['config', 'credential.helper', "!f() { set -x; printf 'username=%s\\npassword=%s\\n' x ghpZ9Print0Tok3n; }; f"], { cwd });
+      traced.push((await runGit(['ls-remote', url], { cwd })).stderr);
+      for (const text of [bare.stderr, noScheme.stderr, echoed.stderr, scoped.stderr, ...traced]) assert.ok(!/ghp|Tok3n|spaces9/.test(text), text);
     } finally {
       await new Promise((done) => server.close(done));
     }

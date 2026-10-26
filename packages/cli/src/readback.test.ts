@@ -996,16 +996,45 @@ describe('seamkit stamp', () => {
     await git(['update-index', '--skip-worktree', 'README.md'], { cwd: join(dir, 'lib') });
     await writeFile(join(dir, 'lib', 'README.md'), 'local\n');
     assert.match((await cli(['stamp', '--require-clean'], dir)).err, /1 uncommitted change \(such as lib\/README\.md\)/);
+    // GIT_DIR names the superproject, and git clears it in the submodule.
+    process.env['GIT_DIR'] = join(dir, '.git');
+    try {
+      assert.match((await cli(['stamp', '--require-clean'], dir)).err, /1 uncommitted change \(such as lib\/README\.md\)/);
+    } finally {
+      delete process.env['GIT_DIR'];
+    }
     await git(['update-index', '--no-skip-worktree', 'README.md'], { cwd: join(dir, 'lib') });
     await git(['checkout', '-q', '--', 'README.md'], { cwd: join(dir, 'lib') });
     // Stamp's own output inside the submodule is not a change, stamped again.
     for (const time of ['first', 'second']) assert.equal((await cli(['stamp', '--require-clean', '--out', 'lib/public/version.json'], dir)).code, 0, time);
     await rm(join(dir, 'lib', 'public'), { recursive: true });
+    // A build from a pre-commit hook carries the superproject's GIT_INDEX_FILE, which git clears in a submodule.
+    process.env['GIT_INDEX_FILE'] = '.git/index';
+    try {
+      const hooked = await cli(['stamp', '--require-clean'], dir);
+      assert.equal(hooked.code, 0, hooked.err);
+    } finally {
+      delete process.env['GIT_INDEX_FILE'];
+    }
     await git([...ID, 'commit', '-q', '--allow-empty', '-m', 'moved'], { cwd: join(dir, 'lib') });
+    // A submodule moved and staged is a change, though its own tree is clean.
+    await git(['add', 'lib'], { cwd: dir });
+    assert.match((await cli(['stamp', '--require-clean'], dir)).err, /1 uncommitted change \(such as lib\)/);
+    await git(['reset', '-q', 'lib'], { cwd: dir });
     await git(['config', 'diff.ignoreSubmodules', 'all'], { cwd: dir });
     assert.match((await cli(['stamp'], dir)).err, /1 uncommitted change \(such as lib\)/);
     await git(['reset', '-q', '--hard', 'HEAD~1'], { cwd: join(dir, 'lib') });
     assert.equal(JSON.parse((await cli(['stamp'], dir)).out).dirty, false);
+  });
+
+  it('counts a submodule at a path that is not UTF-8 as changed, since it cannot be entered', async () => {
+    const { dir } = await repo();
+    const lib = (await repo()).dir;
+    execFileSync('sh', ['-c', `git -c protocol.file.allow=always submodule add -q "$0" "$(printf 'lib\\377')" && git ${ID.join(' ')} commit -q -m lib`, lib], { cwd: dir });
+    const r = await cli(['stamp'], dir);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(JSON.parse(r.out).dirty, true);
+    assert.match(r.err, /1 uncommitted change \(such as lib/);
   });
 
   it('counts a change to a file marked skip-worktree or assume-unchanged as git would unmarked', async () => {
@@ -1051,6 +1080,27 @@ describe('seamkit stamp', () => {
         await git(['checkout', '-q', '--', '.'], { cwd: dir });
         await chmod(join(dir, 'run.sh'), 0o644);
       }
+    }
+    // A file can carry both marks.
+    await git(['update-index', '--skip-worktree', '--', 'README.md'], { cwd: dir });
+    await git(['update-index', '--assume-unchanged', '--', 'README.md'], { cwd: dir });
+    assert.match(await git(['ls-files', '-v', 'README.md'], { cwd: dir }), /^s README\.md$/);
+    await writeFile(join(dir, 'README.md'), 'both\n');
+    assert.match((await cli(['stamp'], dir)).err, /1 uncommitted change \(such as README\.md\)/);
+    // A marked file needs a temporary directory to be checked; nothing marked needs none.
+    process.env['TMPDIR'] = join(root, 'no-such-tmp');
+    try {
+      const noTmp = await cli(['stamp'], dir);
+      assert.equal(noTmp.code, 2);
+      assert.match(noTmp.err, /stamp needs a temporary directory .* is not usable \(ENOENT\): set TMPDIR/);
+      // update-index applies only the last of these flags it is given, so each takes a call of its own.
+      await git(['update-index', '--no-skip-worktree', '--', 'README.md'], { cwd: dir });
+      await git(['update-index', '--no-assume-unchanged', '--', 'README.md'], { cwd: dir });
+      await git(['checkout', '-q', '--', 'README.md'], { cwd: dir });
+      assert.match(await git(['ls-files', '-v', 'README.md'], { cwd: dir }), /^H README\.md$/);
+      assert.equal(JSON.parse((await cli(['stamp'], dir)).out).dirty, false);
+    } finally {
+      delete process.env['TMPDIR'];
     }
     // In a sparse checkout, a file marked skip-worktree and absent is left out on purpose.
     await git(['config', 'core.sparseCheckout', 'true'], { cwd: dir });

@@ -3,7 +3,7 @@ import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { canonicalJson, COMMIT_PATTERN, VERSION_DOC_SCHEMA, versionDocText, type VersionDoc } from '@seamkit/core';
-import { runGit } from '@seamkit/state';
+import { runGit, type GitResult } from '@seamkit/state';
 
 /** CI variables that carry the commit being built, checked in this order when git cannot say. */
 export const STAMP_ENV_VARS: readonly string[] = [
@@ -37,8 +37,8 @@ async function gitInstalled(cwd: string): Promise<boolean> {
   }
 }
 
-async function gitText(args: string[], cwd: string): Promise<string | undefined> {
-  const r = await runGit(args, { cwd });
+async function gitText(args: string[], cwd: string, unset: readonly string[] = []): Promise<string | undefined> {
+  const r = await runGit(args, { cwd, unset });
   return r.code === 0 ? r.stdout.toString('utf8').trim() : undefined;
 }
 
@@ -64,8 +64,8 @@ interface IndexEntry {
   path: string;
 }
 
-async function indexEntries(top: string): Promise<IndexEntry[]> {
-  const r = await runGit(['--no-optional-locks', 'ls-files', '-v', '-s', '-z'], { cwd: top });
+async function indexEntries(top: string, unset: readonly string[]): Promise<IndexEntry[]> {
+  const r = await runGit(['--no-optional-locks', 'ls-files', '-v', '-s', '-z'], { cwd: top, unset });
   if (r.code !== 0) throw new StampError(`git ls-files failed: ${r.stderr.trim()}`);
   const entries: IndexEntry[] = [];
   for (let at = 0; at < r.stdout.length; ) {
@@ -87,25 +87,42 @@ function present(top: string, path: Buffer): boolean {
 }
 
 /**
- * The environment for a git status that sees files marked skip-worktree or assume-unchanged, which
- * status otherwise never looks at: a copy of the index, outside the repository, in which those
- * entries are written again without the mark and without the file data git compares first, so git
- * reads each of them. In a sparse checkout, a file marked skip-worktree and absent from the work
- * tree is left out of the checkout on purpose, so it keeps its mark.
+ * git status that sees files marked skip-worktree or assume-unchanged, which status otherwise never
+ * looks at: it runs on a copy of the index, outside the repository, in which those entries are
+ * written again without the mark and without the file data git compares first, so git reads each
+ * of them. Nothing is copied when no file is marked. In a sparse checkout, a file marked
+ * skip-worktree and absent from the work tree is left out of the checkout on purpose, so it keeps
+ * its mark.
  */
-async function unmarkedIndex(top: string, entries: readonly IndexEntry[], dir: string): Promise<Record<string, string> | undefined> {
-  const sparse = (await gitText(['config', '--bool', 'core.sparseCheckout'], top)) === 'true';
+async function statusSeeingMarked(top: string, entries: readonly IndexEntry[], unset: readonly string[], args: readonly string[]): Promise<GitResult> {
+  const sparse = (await gitText(['config', '--bool', 'core.sparseCheckout'], top, unset)) === 'true';
   const marked = entries.filter((e) => (e.tag === 'S' || /^[a-z]$/.test(e.tag)) && !(sparse && e.tag.toUpperCase() === 'S' && !present(top, e.pathBytes)));
-  if (marked.length === 0) return undefined;
-  const where = await gitText(['rev-parse', '--git-path', 'index'], top);
+  if (marked.length === 0) return runGit(args, { cwd: top, unset });
+  const where = await gitText(['rev-parse', '--git-path', 'index'], top, unset);
   if (where === undefined) throw new StampError('git cannot say where the index is');
-  const index = join(dir, 'index');
-  await copyFile(resolve(top, where), index);
-  const env = { GIT_INDEX_FILE: index };
-  const rewrite = await runGit(['update-index', '-z', '--index-info'], { cwd: top, env, input: Buffer.concat(marked.flatMap((e) => [e.info, Buffer.from([0])])) });
-  if (rewrite.code !== 0) throw new StampError(`git update-index failed: ${rewrite.stderr.trim()}`);
-  return env;
+  let dir: string;
+  try {
+    dir = await mkdtemp(join(tmpdir(), 'seamkit-stamp-'));
+  } catch (err) {
+    throw new StampError(`stamp needs a temporary directory to check the files marked skip-worktree or assume-unchanged, and ${tmpdir()} is not usable (${(err as NodeJS.ErrnoException).code ?? 'error'}): set TMPDIR to a writable directory`);
+  }
+  try {
+    const index = join(dir, 'index');
+    await copyFile(resolve(top, where), index);
+    const env = { GIT_INDEX_FILE: index };
+    const rewrite = await runGit(['update-index', '-z', '--index-info'], { cwd: top, env, unset, input: Buffer.concat(marked.flatMap((e) => [e.info, Buffer.from([0])])) });
+    if (rewrite.code !== 0) throw new StampError(`git update-index failed: ${rewrite.stderr.trim()}`);
+    return await runGit(args, { cwd: top, env, unset });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
+
+/**
+ * The variables that tie git to one repository, which git removes when it enters a submodule, so
+ * that a value a hook or a build sets for the superproject does not reach it.
+ */
+const LOCAL_REPO_ENV = ['GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR', 'GIT_CONFIG', 'GIT_DIR', 'GIT_GRAFT_FILE', 'GIT_IMPLICIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_NAMESPACE', 'GIT_NO_REPLACE_OBJECTS', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX', 'GIT_REPLACE_REF_BASE', 'GIT_SHALLOW_FILE', 'GIT_WORK_TREE'];
 
 /**
  * Paths with uncommitted changes, from `git status -z`, the stamp's own output excluded. A file
@@ -113,16 +130,9 @@ async function unmarkedIndex(top: string, entries: readonly IndexEntry[], dir: s
  * submodule, whatever its ignore setting, where a change inside it is named by its own path. git
  * is asked not to refresh the repository's index, so stamp writes nothing to the repository.
  */
-async function uncommitted(top: string, outPath: string | undefined): Promise<string[]> {
-  const entries = await indexEntries(top);
-  const dir = await mkdtemp(join(tmpdir(), 'seamkit-stamp-'));
-  let r;
-  try {
-    const env = await unmarkedIndex(top, entries, dir);
-    r = await runGit(['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none'], { cwd: top, ...(env ? { env } : {}) });
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+async function uncommitted(top: string, outPath: string | undefined, unset: readonly string[] = []): Promise<string[]> {
+  const entries = await indexEntries(top, unset);
+  const r = await statusSeeingMarked(top, entries, unset, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none']);
   if (r.code !== 0) throw new StampError(`git status failed: ${r.stderr.trim()}`);
   const tokens = r.stdout.toString('utf8').split('\0');
   const listed = new Map<string, string>();
@@ -140,10 +150,15 @@ async function uncommitted(top: string, outPath: string | undefined): Promise<st
   // A checked-out submodule on the commit the index records is judged by what is inside it, so a
   // marked file there counts, and stamp's own output there does not.
   for (const link of entries.filter((e) => e.mode === '160000' && present(top, Buffer.concat([e.pathBytes, Buffer.from('/.git')])))) {
+    // A path git holds in bytes that are not UTF-8 cannot be entered, so that submodule counts as changed.
+    if (!Buffer.from(link.path, 'utf8').equals(link.pathBytes)) {
+      paths.push(link.path);
+      continue;
+    }
     const inner = resolve(top, link.path);
-    const head = await gitText(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], inner);
+    const head = await gitText(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], inner, LOCAL_REPO_ENV);
     if (head !== link.blob || (listed.get(link.path) ?? ' ')[0] !== ' ') continue;
-    const changes = await uncommitted(inner, outPath);
+    const changes = await uncommitted(inner, outPath, LOCAL_REPO_ENV);
     const at = paths.indexOf(link.path);
     if (at >= 0) paths.splice(at, 1);
     paths.push(...changes.map((p) => `${link.path}/${p}`));

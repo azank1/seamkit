@@ -8967,10 +8967,10 @@ var GitError = class extends Error {
     this.result = result;
   }
 };
-function quietEnv(extra) {
+function quietEnv(extra, unset = []) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (key.startsWith("GIT_TRACE") || key === "GIT_CURL_VERBOSE")
+    if (key.startsWith("GIT_TRACE") || key === "GIT_CURL_VERBOSE" || unset.includes(key))
       delete env[key];
   }
   return { ...env, GIT_TRACE2: "0", GIT_TRACE2_PERF: "0", GIT_TRACE2_EVENT: "0", GIT_TRACE_REDACT: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...extra };
@@ -9018,24 +9018,64 @@ function splitPieces(credential) {
   }
   return pieces;
 }
+function shellWords(command) {
+  const words = [];
+  let word;
+  const add = (text) => void (word = (word ?? "") + text);
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (/[\s;|&()<>]/.test(c)) {
+      if (word !== void 0)
+        words.push(word);
+      word = void 0;
+    } else if (c === "'" || c === "$" && command[i + 1] === "'") {
+      if (c === "$")
+        i++;
+      const end = command.indexOf("'", i + 1);
+      add(command.slice(i + 1, end < 0 ? void 0 : end));
+      i = end < 0 ? command.length : end;
+    } else if (c === '"') {
+      let j = i + 1;
+      let text = "";
+      for (; j < command.length && command[j] !== '"'; j++) {
+        if (command[j] === "\\" && /[$`"\\\n]/.test(command[j + 1] ?? ""))
+          j++;
+        text += command[j] ?? "";
+      }
+      add(text);
+      i = j;
+    } else if (c === "\\") {
+      add(command[++i] ?? "");
+    } else
+      add(c);
+  }
+  if (word !== void 0)
+    words.push(word);
+  return words;
+}
 function helperPieces(helper) {
   const pieces = /^!|\s/.test(helper) ? [helper, helper.replace(/^!/, "")] : [];
-  for (const m of helper.matchAll(/=(?:'([^']*)'|"((?:[^"\\]|\\.)*)"|([^\s;'"`|&)]+))/g)) {
-    const value = m[1] ?? m[2]?.replace(/\\(.)/g, "$1") ?? m[3] ?? "";
-    pieces.push(value, ...splitPieces(value));
+  for (const word of shellWords(helper.replace(/^!/, ""))) {
+    const eq = word.indexOf("=");
+    if (eq >= 0)
+      pieces.push(word.slice(eq + 1), ...splitPieces(word.slice(eq + 1)));
+    if (!/^[A-Za-z_-]*$/.test(word) && !word.includes("%"))
+      pieces.push(word);
   }
   return pieces;
 }
 function headerPieces(header) {
-  const words = header.slice(header.indexOf(":") + 1).trim().split(/\s+/);
-  const pieces = words.slice(1);
+  const value = header.slice(header.indexOf(":") + 1).trim();
+  const words = value.split(/\s+/);
+  const pieces = [value, ...words.slice(1)];
   if (/^basic$/i.test(words[0] ?? "") && words[1] !== void 0)
     pieces.push(...splitPieces(Buffer.from(words[1], "base64").toString("utf8")));
   return pieces;
 }
 function knownSecrets(cwd, env) {
   return new Promise((resolve3) => {
-    const child = spawn("git", ["config", "--null", "--list"], { cwd, env, stdio: ["ignore", "pipe", "ignore"] });
+    const { GIT_CONFIG: _file, ...scopes } = env;
+    const child = spawn("git", ["config", "--null", "--list"], { cwd, env: scopes, stdio: ["ignore", "pipe", "ignore"] });
     const out = [];
     child.stdout.on("data", (b) => out.push(b));
     child.on("error", () => resolve3([]));
@@ -9070,7 +9110,7 @@ function hideSecrets(text, secrets) {
 }
 function runGit(args, opts) {
   return new Promise((resolve3, reject) => {
-    const env = quietEnv(opts.env);
+    const env = quietEnv(opts.env, opts.unset);
     const child = spawn("git", args, { cwd: opts.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
     const out = [];
     const err = [];
@@ -10072,8 +10112,8 @@ async function gitInstalled(cwd) {
     return false;
   }
 }
-async function gitText(args, cwd) {
-  const r = await runGit(args, { cwd });
+async function gitText(args, cwd, unset = []) {
+  const r = await runGit(args, { cwd, unset });
   return r.code === 0 ? r.stdout.toString("utf8").trim() : void 0;
 }
 function physical(path) {
@@ -10085,8 +10125,8 @@ function physical(path) {
   }
   return join2(realpathSync(dir), ...rest);
 }
-async function indexEntries(top) {
-  const r = await runGit(["--no-optional-locks", "ls-files", "-v", "-s", "-z"], { cwd: top });
+async function indexEntries(top, unset) {
+  const r = await runGit(["--no-optional-locks", "ls-files", "-v", "-s", "-z"], { cwd: top, unset });
   if (r.code !== 0)
     throw new StampError(`git ls-files failed: ${r.stderr.trim()}`);
   const entries = [];
@@ -10106,32 +10146,36 @@ async function indexEntries(top) {
 function present(top, path) {
   return lstatSync(Buffer.concat([Buffer.from(`${top}/`), path]), { throwIfNoEntry: false }) !== void 0;
 }
-async function unmarkedIndex(top, entries, dir) {
-  const sparse = await gitText(["config", "--bool", "core.sparseCheckout"], top) === "true";
+async function statusSeeingMarked(top, entries, unset, args) {
+  const sparse = await gitText(["config", "--bool", "core.sparseCheckout"], top, unset) === "true";
   const marked = entries.filter((e) => (e.tag === "S" || /^[a-z]$/.test(e.tag)) && !(sparse && e.tag.toUpperCase() === "S" && !present(top, e.pathBytes)));
   if (marked.length === 0)
-    return void 0;
-  const where = await gitText(["rev-parse", "--git-path", "index"], top);
+    return runGit(args, { cwd: top, unset });
+  const where = await gitText(["rev-parse", "--git-path", "index"], top, unset);
   if (where === void 0)
     throw new StampError("git cannot say where the index is");
-  const index = join2(dir, "index");
-  await copyFile(resolve(top, where), index);
-  const env = { GIT_INDEX_FILE: index };
-  const rewrite = await runGit(["update-index", "-z", "--index-info"], { cwd: top, env, input: Buffer.concat(marked.flatMap((e) => [e.info, Buffer.from([0])])) });
-  if (rewrite.code !== 0)
-    throw new StampError(`git update-index failed: ${rewrite.stderr.trim()}`);
-  return env;
-}
-async function uncommitted(top, outPath) {
-  const entries = await indexEntries(top);
-  const dir = await mkdtemp2(join2(tmpdir2(), "seamkit-stamp-"));
-  let r;
+  let dir;
   try {
-    const env = await unmarkedIndex(top, entries, dir);
-    r = await runGit(["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"], { cwd: top, ...env ? { env } : {} });
+    dir = await mkdtemp2(join2(tmpdir2(), "seamkit-stamp-"));
+  } catch (err) {
+    throw new StampError(`stamp needs a temporary directory to check the files marked skip-worktree or assume-unchanged, and ${tmpdir2()} is not usable (${err.code ?? "error"}): set TMPDIR to a writable directory`);
+  }
+  try {
+    const index = join2(dir, "index");
+    await copyFile(resolve(top, where), index);
+    const env = { GIT_INDEX_FILE: index };
+    const rewrite = await runGit(["update-index", "-z", "--index-info"], { cwd: top, env, unset, input: Buffer.concat(marked.flatMap((e) => [e.info, Buffer.from([0])])) });
+    if (rewrite.code !== 0)
+      throw new StampError(`git update-index failed: ${rewrite.stderr.trim()}`);
+    return await runGit(args, { cwd: top, env, unset });
   } finally {
     await rm2(dir, { recursive: true, force: true });
   }
+}
+var LOCAL_REPO_ENV = ["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_CONFIG", "GIT_DIR", "GIT_GRAFT_FILE", "GIT_IMPLICIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_NAMESPACE", "GIT_NO_REPLACE_OBJECTS", "GIT_OBJECT_DIRECTORY", "GIT_PREFIX", "GIT_REPLACE_REF_BASE", "GIT_SHALLOW_FILE", "GIT_WORK_TREE"];
+async function uncommitted(top, outPath, unset = []) {
+  const entries = await indexEntries(top, unset);
+  const r = await statusSeeingMarked(top, entries, unset, ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"]);
   if (r.code !== 0)
     throw new StampError(`git status failed: ${r.stderr.trim()}`);
   const tokens = r.stdout.toString("utf8").split("\0");
@@ -10149,11 +10193,15 @@ async function uncommitted(top, outPath) {
   }
   const paths = [...listed.keys()];
   for (const link of entries.filter((e) => e.mode === "160000" && present(top, Buffer.concat([e.pathBytes, Buffer.from("/.git")])))) {
+    if (!Buffer.from(link.path, "utf8").equals(link.pathBytes)) {
+      paths.push(link.path);
+      continue;
+    }
     const inner = resolve(top, link.path);
-    const head = await gitText(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], inner);
+    const head = await gitText(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], inner, LOCAL_REPO_ENV);
     if (head !== link.blob || (listed.get(link.path) ?? " ")[0] !== " ")
       continue;
-    const changes = await uncommitted(inner, outPath);
+    const changes = await uncommitted(inner, outPath, LOCAL_REPO_ENV);
     const at2 = paths.indexOf(link.path);
     if (at2 >= 0)
       paths.splice(at2, 1);
@@ -10311,7 +10359,7 @@ Every command that produces a verdict exits with its outcome:
 
 Verdicts are recorded on the ${STATE_BRANCH} branch when it exists (create it with
 "seamkit state init"), or always with --record. Recording touches nothing else in the
-repository; "seamkit stamp --out" writes only the file it names. "seamkit stamp
+repository; "seamkit stamp --out" writes only the file it names there. "seamkit stamp
 --require-clean" refuses a dirty tree, and a stamp that cannot say whether the tree is
 clean. "seamkit state sync --no-push" merges the remote's ledger here without pushing.
 `;
@@ -11127,7 +11175,7 @@ async function openLedger(inputs, cli, deps) {
     return false;
   }
   if (sync.code !== 0) {
-    deps.warn(`seamkit: the ledger could not be fetched, so this run is not recorded: ${sync.err.trim()}`);
+    deps.warn(`seamkit: the ledger could not be synchronised with origin, so this run is not recorded: ${sync.err.trim()}`);
     return false;
   }
   const status = JSON.parse(sync.out).status;
@@ -11388,7 +11436,7 @@ async function runAction(deps) {
   if (recording && result.code !== EXIT_USAGE2) {
     const resync = await cli(["state", "sync", "--no-push", "--json"]);
     if (resync.code !== 0)
-      deps.warn(`seamkit: the ledger could not be fetched from origin after the wait, so this run judges the ledger this checkout holds: ${clean(resync.err.trim())}`);
+      deps.warn(`seamkit: the ledger could not be synchronised with origin after the wait, so this run judges the ledger this checkout holds: ${clean(resync.err.trim())}`);
     const refetch = read === void 0 ? void 0 : await fetchBranch(cwd, read);
     if (read !== void 0)
       fetchedAfter = refetch === void 0;

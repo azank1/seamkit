@@ -79,7 +79,7 @@ Every command that produces a verdict exits with its outcome:
 
 Verdicts are recorded on the ${STATE_BRANCH} branch when it exists (create it with
 "seamkit state init"), or always with --record. Recording touches nothing else in the
-repository; "seamkit stamp --out" writes only the file it names. "seamkit stamp
+repository; "seamkit stamp --out" writes only the file it names there. "seamkit stamp
 --require-clean" refuses a dirty tree, and a stamp that cannot say whether the tree is
 clean. "seamkit state sync --no-push" merges the remote's ledger here without pushing.
 `;

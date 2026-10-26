@@ -20,6 +20,8 @@ export interface GitOptions {
   cwd: string;
   input?: string | Buffer;
   env?: Record<string, string>;
+  /** Variables removed from the environment git runs with, as git itself removes them when it enters a submodule. */
+  unset?: readonly string[];
 }
 
 /**
@@ -29,10 +31,10 @@ export interface GitOptions {
  * rather than set to 0. trace2 also takes its targets from git config, where the environment wins,
  * so its three are set to 0, which it reads as off.
  */
-function quietEnv(extra: Record<string, string> | undefined): NodeJS.ProcessEnv {
+function quietEnv(extra: Record<string, string> | undefined, unset: readonly string[] = []): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (key.startsWith('GIT_TRACE') || key === 'GIT_CURL_VERBOSE') delete env[key];
+    if (key.startsWith('GIT_TRACE') || key === 'GIT_CURL_VERBOSE' || unset.includes(key)) delete env[key];
   }
   return { ...env, GIT_TRACE2: '0', GIT_TRACE2_PERF: '0', GIT_TRACE2_EVENT: '0', GIT_TRACE_REDACT: '1', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C', ...extra };
 }
@@ -129,25 +131,67 @@ function splitPieces(credential: string): string[] {
 }
 
 /**
- * A credential helper as the shell may print it when one of its commands fails: whole, as git
- * runs it without its leading !, and the value of each name=value in it, quoted or not, which is
- * how a helper written into config holds a literal token. A helper named by one word, such as store, is a
- * program and holds no credential, so that word is not hidden.
+ * The words of a shell command as the shell reads them, which is how a shell traces them: quotes
+ * removed, adjacent quoted and unquoted parts joined, and a backslash in double quotes kept unless
+ * it escapes $ ` " \ or a line break. A word ends at whitespace and at ; | & ( ) < and >.
+ */
+function shellWords(command: string): string[] {
+  const words: string[] = [];
+  let word: string | undefined;
+  const add = (text: string): void => void (word = (word ?? '') + text);
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i] as string;
+    if (/[\s;|&()<>]/.test(c)) {
+      if (word !== undefined) words.push(word);
+      word = undefined;
+    } else if (c === "'" || (c === '$' && command[i + 1] === "'")) {
+      if (c === '$') i++;
+      const end = command.indexOf("'", i + 1);
+      add(command.slice(i + 1, end < 0 ? undefined : end));
+      i = end < 0 ? command.length : end;
+    } else if (c === '"') {
+      let j = i + 1;
+      let text = '';
+      for (; j < command.length && command[j] !== '"'; j++) {
+        if (command[j] === '\\' && /[$`"\\\n]/.test(command[j + 1] ?? '')) j++;
+        text += command[j] ?? '';
+      }
+      add(text);
+      i = j;
+    } else if (c === '\\') {
+      add(command[++i] ?? '');
+    } else add(c);
+  }
+  if (word !== undefined) words.push(word);
+  return words;
+}
+
+/**
+ * A credential helper as the shell may print it: whole, as git runs it without its leading !, as
+ * a trace prints its words, and the value of each name=value in it, which is how a helper written
+ * into config holds a literal token. A word made only of letters and dashes, such as echo or a
+ * program's name, or a printf format, holds no credential and is not hidden, so a helper named by
+ * one word, such as store, hides nothing.
  */
 function helperPieces(helper: string): string[] {
   const pieces = /^!|\s/.test(helper) ? [helper, helper.replace(/^!/, '')] : [];
-  // A value may be quoted, and the shell prints it without its quotes, as words when it holds spaces.
-  for (const m of helper.matchAll(/=(?:'([^']*)'|"((?:[^"\\]|\\.)*)"|([^\s;'"`|&)]+))/g)) {
-    const value = m[1] ?? m[2]?.replace(/\\(.)/g, '$1') ?? m[3] ?? '';
-    pieces.push(value, ...splitPieces(value));
+  for (const word of shellWords(helper.replace(/^!/, ''))) {
+    const eq = word.indexOf('=');
+    if (eq >= 0) pieces.push(word.slice(eq + 1), ...splitPieces(word.slice(eq + 1)));
+    if (!/^[A-Za-z_-]*$/.test(word) && !word.includes('%')) pieces.push(word);
   }
   return pieces;
 }
 
-/** The credential in an http.extraheader value: its token and, for Basic, the user name and password it encodes. */
+/**
+ * The credential in an http.extraheader value: the value whole, its token after a scheme such as
+ * Bearer or the one word a header such as PRIVATE-TOKEN holds, and, for Basic, the user name and
+ * password it encodes.
+ */
 function headerPieces(header: string): string[] {
-  const words = header.slice(header.indexOf(':') + 1).trim().split(/\s+/);
-  const pieces = words.slice(1);
+  const value = header.slice(header.indexOf(':') + 1).trim();
+  const words = value.split(/\s+/);
+  const pieces = [value, ...words.slice(1)];
   if (/^basic$/i.test(words[0] ?? '') && words[1] !== undefined) pieces.push(...splitPieces(Buffer.from(words[1], 'base64').toString('utf8')));
   return pieces;
 }
@@ -160,7 +204,9 @@ function headerPieces(header: string): string[] {
  */
 function knownSecrets(cwd: string, env: NodeJS.ProcessEnv): Promise<string[]> {
   return new Promise((resolve) => {
-    const child = spawn('git', ['config', '--null', '--list'], { cwd, env, stdio: ['ignore', 'pipe', 'ignore'] });
+    // git config alone reads GIT_CONFIG, as the one file to list; the git that failed read every scope.
+    const { GIT_CONFIG: _file, ...scopes } = env;
+    const child = spawn('git', ['config', '--null', '--list'], { cwd, env: scopes, stdio: ['ignore', 'pipe', 'ignore'] });
     const out: Buffer[] = [];
     child.stdout.on('data', (b: Buffer) => out.push(b));
     child.on('error', () => resolve([]));
@@ -197,7 +243,7 @@ function hideSecrets(text: string, secrets: readonly string[]): string {
  */
 export function runGit(args: readonly string[], opts: GitOptions): Promise<GitResult> {
   return new Promise((resolve, reject) => {
-    const env = quietEnv(opts.env);
+    const env = quietEnv(opts.env, opts.unset);
     const child = spawn('git', args, { cwd: opts.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
     const out: Buffer[] = [];
     const err: Buffer[] = [];

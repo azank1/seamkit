@@ -761,14 +761,14 @@ done</pre></div>
 URL    ?= https://your.app
 
 ship:
-	@test -z "$$(git status --porcelain --untracked-files=all --ignore-submodules=none; git ls-files -v | grep '^[a-zS] ')" || { echo "make ship: commit first" &gt;&amp;2; exit 1; }
+	@test -z "$$(git status --porcelain --untracked-files=all --ignore-submodules=none; git ls-files -v --recurse-submodules | grep '^[a-zS] ')" || { echo "make ship: commit first" &gt;&amp;2; exit 1; }
 	$(DEPLOY)
 	./scripts/wait-live.sh $(URL) 300</pre></div>
   <p class="muted">Now <code>make ship</code> fails unless production actually runs the change, and the failure prints
     which change and why. It refuses to start from uncommitted changes, because <code>vercel deploy</code> uploads the
     working tree: that build names HEAD while it ships code no commit holds, and no readback can see the difference. The
     guard lists untracked files whatever <code>status.showUntrackedFiles</code> says, changes in submodules set to
-    <code>ignore</code>, and any file marked skip-worktree or assume-unchanged, whose edits status never shows (a sparse
+    <code>ignore</code>, and any file marked skip-worktree or assume-unchanged, in checked-out submodules too, whose edits status never shows (a sparse
     checkout marks files that way, so there use <code>seamkit stamp --require-clean</code>, which compares them); files git ignores are uploaded too
     unless <code>.vercelignore</code> leaves them out. Push
     before a CLI deploy as well, since wait-live judges the newest change on the default branch, and the watch fails while
@@ -1016,7 +1016,7 @@ fi</pre></div>
     updated: '2026-10-22',
     version: '0.2.0',
     npm: '0.1.0',   // the version npm serves; the release commit bumps it
-    tests: '267',
+    tests: '268',
     dogfood: '20 of 20',
     milestones: [
       { m: 'M1', title: 'Verdict core and ledger', state: 'done', when: '2026-10-15',
@@ -1099,6 +1099,7 @@ fi</pre></div>
       ['2026-10-26', 'Twenty-seventh review round (52 agents, 23 findings, 20 confirmed by both skeptics, 1 split and 2 refuted, all low; the critic did not run, as the machine restarted mid-round): since no list of git\'s wordings is complete, the credentials git can see, in the URLs its config holds, its extra headers and the proxy variables, are now hidden wherever its errors show them; remotes given as https::… or git://, a proxy cut short at a / ? or #, SOCKS5 errors and a quote inside a credential are scrubbed too; stamp needs git in a checkout, refuses one git cannot read, and counts a renamed file where it was; the push advice names a ruleset only when the push was declined, and a ledger a run starts is pushed and reported once; a card URL with a query string is refused; the action smoke runs the bundle outside the repository; and the tests no longer need the network. 255 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
       ['2026-10-26', 'Twenty-eighth review round (39 agents, 16 findings, 13 confirmed by both skeptics and 3 refuted, 3 of them medium; nothing new from the critic): a line git quotes from a credential helper, and a helper holding a literal token that the shell echoes when one of its commands fails, no longer reach a check run; stamp counts changes inside a submodule set to ignore and in files marked skip-worktree or assume-unchanged, knows its own output through a symbolic link, and no longer rewrites the index; --require-clean refuses any stamp that cannot say whether the tree is clean, --commit included; the Action merges the ledger without pushing until its last push, so a refused push is reported once; SECURITY.md names the card hosts readback reads, and the docs say a production URL loses its fragment rather than being refused. 262 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
       ['2026-10-26', 'Twenty-ninth review round (53 agents, 23 findings, 20 confirmed by both skeptics, 2 split and 1 refuted, 4 of them medium; nothing new from the critic): most findings were in the last round\'s check of files marked skip-worktree or assume-unchanged, which compared contents by hand and so missed deleted files, mode and type changes, symbolic links, unusual names and submodules, so stamp now asks git itself, running status on a copy of the index outside the repository with those files unmarked; a submodule is judged by what is inside it, so stamp\'s own output there is not a change; a helper\'s quoted name=value is hidden; the CLI recipe\'s first state sync no longer pushes; the action bundle is written only after it passes its check; SECURITY.md names FETCH_HEAD and the temporary index copy. 267 tests; each fix was broken on purpose in the compiled code, and a test caught every break but one that this git already prevents itself.'],
+      ['2026-10-26', 'Thirtieth review round (33 agents, 13 findings, 11 confirmed by both skeptics and 2 split, none refuted, 2 of them medium; nothing new from the critic): stamp makes its temporary index copy only when a file is marked, and says to set TMPDIR when it cannot; git\'s repository variables, such as the GIT_INDEX_FILE a pre-commit hook sets, are cleared before stamp enters a submodule, as git clears them; a staged submodule bump counts; a submodule at a path that is not UTF-8 counts as changed rather than crashing; the credential lookup ignores GIT_CONFIG, which only git config reads; a credential helper is split into words as the shell splits them, so a trace of it hides its token in any quoting; an extra header with no scheme is hidden whole; the make ship guard looks inside submodules; the ledger warnings say synchronised again; SECURITY.md names the private index each ledger commit is built in. 268 tests; each fix was broken on purpose in the compiled code, and a test caught every break.'],
     ],
     decisions: [
       ['Program readback adapter (requested by an internal project)', 'Accept with changes, scheduled after M4. Notes in the knowledge base.', 'azank', 'wait'],

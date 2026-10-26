@@ -18,7 +18,8 @@ Knowing its reach helps judge a report. The CLI:
 - refuses production URLs that carry credentials or a query string, and drops their fragment, because URLs are
   recorded, and refuses card URLs that carry credentials, a query string or a fragment;
 - reads your git repository, and writes only to its own `seamkit/state` branch, with git plumbing that never touches
-  your working tree, index or HEAD, to `refs/remotes/<remote>/seamkit/state` and, as every git fetch does,
+  your working tree, index or HEAD (each ledger commit is built in a private index file in the system's temporary
+  directory, removed when done), to `refs/remotes/<remote>/seamkit/state` and, as every git fetch does,
   `.git/FETCH_HEAD` when `seamkit state sync` fetches it,
   and, for `seamkit stamp --out`, to the version document at the path you give (when files are marked
   skip-worktree or assume-unchanged, stamp also copies the index to the system's temporary directory, and removes the

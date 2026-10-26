@@ -97,7 +97,7 @@ async function openLedger(inputs: ActionInputs, cli: (args: string[]) => Promise
     return false;
   }
   if (sync.code !== 0) {
-    deps.warn(`seamkit: the ledger could not be fetched, so this run is not recorded: ${sync.err.trim()}`);
+    deps.warn(`seamkit: the ledger could not be synchronised with origin, so this run is not recorded: ${sync.err.trim()}`);
     return false;
   }
   const status = (JSON.parse(sync.out) as { status: string }).status;
@@ -473,7 +473,7 @@ export async function runAction(deps: ActionDeps): Promise<number> {
     // This fetch and merge pushes nothing, so the final push alone reports a refusal, once, with
     // what to change.
     const resync = await cli(['state', 'sync', '--no-push', '--json']);
-    if (resync.code !== 0) deps.warn(`seamkit: the ledger could not be fetched from origin after the wait, so this run judges the ledger this checkout holds: ${clean(resync.err.trim())}`);
+    if (resync.code !== 0) deps.warn(`seamkit: the ledger could not be synchronised with origin after the wait, so this run judges the ledger this checkout holds: ${clean(resync.err.trim())}`);
     const refetch = read === undefined ? undefined : await fetchBranch(cwd, read);
     if (read !== undefined) fetchedAfter = refetch === undefined;
     if (refetch !== undefined) deps.warn(`seamkit: could not fetch ${read} from origin again: ${refetch}`);

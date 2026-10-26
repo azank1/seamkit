@@ -373,7 +373,7 @@ describe('the seamkit action', () => {
         },
       });
       assert.equal(ran.code, 0, ran.warnings.join('\n'));
-      assert.ok(ran.warnings.some((w) => /^seamkit: the ledger could not be fetched from origin after the wait, so this run judges the ledger this checkout holds: /.test(w)), ran.warnings.join('\n'));
+      assert.ok(ran.warnings.some((w) => /^seamkit: the ledger could not be synchronised with origin after the wait, so this run judges the ledger this checkout holds: /.test(w)), ran.warnings.join('\n'));
     } finally {
       if (existsSync(`${remote}.gone`)) renameSync(`${remote}.gone`, remote);
     }
