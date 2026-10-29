@@ -1,0 +1,684 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>seamkit research</title>
+<meta name="description" content="How deploy tools score a check that examined nothing, how seamkit reads production back instead, and what 30 rounds of adversarial review found while building it.">
+<meta property="og:title" content="The seam between merge and production">
+<meta property="og:description" content="A survey of how deploy tools treat a check that examined nothing, the read-back method seamkit uses instead, and what adversarial review found while building it.">
+<meta property="og:type" content="article">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: a research note. One reading column of about 68 characters, with figures (the seam diagram, the survey
+   table, the review chart) allowed to run wider than the text. Tokens match the seamkit setup guide, and only pass
+   is ever green. */
+:root {
+  color-scheme: light;
+  --paper: #f1f4f7;
+  --surface: #ffffff;
+  --sunk: #e8edf2;
+  --ink: #111d29;
+  --ink-2: #4b5a69;
+  --rule: #d3dbe3;
+  --accent: #2752c9;
+  --accent-soft: #e3eafb;
+  --term: #0f1922;
+  --term-ink: #d9e3ec;
+  --term-dim: #7d8e9e;
+  --pass: #1d7a4b;    --pass-soft: #e0f1e8;
+  --fail: #bf3a30;    --fail-soft: #f9e3e1;
+  --nothing: #9a6a0c; --nothing-soft: #f6ecd6;
+  --unclass: #6d47a8; --unclass-soft: #ece4f7;
+  --usage: #56636f;   --usage-soft: #e6eaee;
+
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+  --s-1: 0.8125rem; --s0: 1.0625rem; --s1: 1.25rem; --s2: 1.6rem; --s3: clamp(2.1rem, 4.6vw, 3.2rem);
+  --text: 68ch;
+  --wide: 1040px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #0d141b; --surface: #141e28; --sunk: #101922; --ink: #e4ebf1; --ink-2: #9aa9b7; --rule: #26343f;
+    --accent: #84a5ff; --accent-soft: #1b2944; --term: #070c11;
+    --pass: #4cc488; --pass-soft: #12301f; --fail: #f07a70; --fail-soft: #3a1714;
+    --nothing: #e0ac45; --nothing-soft: #33260b; --unclass: #b496ea; --unclass-soft: #2a1d40;
+    --usage: #a4b0bb; --usage-soft: #1e2933;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #0d141b; --surface: #141e28; --sunk: #101922; --ink: #e4ebf1; --ink-2: #9aa9b7; --rule: #26343f;
+  --accent: #84a5ff; --accent-soft: #1b2944; --term: #070c11;
+  --pass: #4cc488; --pass-soft: #12301f; --fail: #f07a70; --fail-soft: #3a1714;
+  --nothing: #e0ac45; --nothing-soft: #33260b; --unclass: #b496ea; --unclass-soft: #2a1d40;
+  --usage: #a4b0bb; --usage-soft: #1e2933;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 72px; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 400 var(--s0)/1.68 var(--body); -webkit-font-smoothing: antialiased; }
+a { color: var(--accent); text-underline-offset: 3px; }
+a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+code { font-family: var(--mono); font-size: 0.86em; background: var(--accent-soft); padding: 0.06em 0.34em; border-radius: 4px; overflow-wrap: anywhere; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; }
+
+.wrap { max-width: var(--wide); margin: 0 auto; padding-left: max(20px, env(safe-area-inset-left, 0px)); padding-right: max(20px, env(safe-area-inset-right, 0px)); }
+.col { max-width: var(--text); }
+
+/* top bar */
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--paper); }
+.bar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: color-mix(in srgb, var(--paper) 90%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--rule); }
+.bar .wrap { display: flex; align-items: center; gap: 22px; min-height: 54px; flex-wrap: wrap; }
+.logo { font-family: var(--display); font-weight: 800; font-stretch: 112%; font-size: 1.15rem; color: var(--ink); text-decoration: none; display: inline-flex; align-items: center; gap: 9px; }
+.logo svg { width: 22px; height: 22px; }
+.bar nav { display: flex; gap: 18px; flex-wrap: wrap; font-size: var(--s-1); }
+.bar nav a { color: var(--ink-2); text-decoration: none; }
+.bar nav a:hover { color: var(--ink); }
+.bar .out { margin-left: auto; display: flex; gap: 14px; font-size: var(--s-1); }
+
+/* opening */
+header.open { padding-block: clamp(40px, 7vw, 76px) 28px; }
+.eyebrow { font-family: var(--mono); font-size: var(--s-1); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); }
+h1 { font-size: var(--s3); font-weight: 800; font-stretch: 108%; line-height: 1.08; margin-top: 14px; max-width: 18ch; }
+.lede { font-size: var(--s1); line-height: 1.6; margin-top: 20px; color: var(--ink); }
+.byline { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 22px; font-size: var(--s-1); color: var(--ink-2); }
+.byline a { color: var(--ink-2); }
+
+/* sections */
+section { padding-block: 34px; border-top: 1px solid var(--rule); }
+section > .wrap { display: grid; gap: 18px; }
+h2 { font-size: var(--s2); font-weight: 750; font-stretch: 104%; display: flex; gap: 14px; align-items: baseline; }
+h2 .n { font-family: var(--mono); font-size: var(--s-1); font-weight: 500; color: var(--ink-2); }
+p { margin: 0; }
+.col p + p { margin-top: 14px; }
+
+figure { margin: 6px 0 0; display: grid; gap: 12px; }
+figcaption { font-size: 0.92rem; line-height: 1.6; color: var(--ink-2); max-width: var(--text); }
+figcaption b { color: var(--ink); font-weight: 600; }
+.panel { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: clamp(14px, 2.4vw, 24px); }
+.scroll { overflow-x: auto; }
+
+/* seam diagram */
+.seam svg { display: block; width: 100%; min-width: 640px; height: auto; }
+.seam .box { fill: var(--sunk); stroke: var(--rule); }
+.seam .end { fill: var(--accent-soft); stroke: var(--accent); }
+.seam .t { fill: var(--ink); font: 600 13px var(--body); }
+.seam .t2 { fill: var(--ink-2); font: 400 11.5px var(--body); }
+.seam .m { fill: var(--ink-2); font: 500 11px var(--mono); letter-spacing: 0.04em; }
+.seam .ln { stroke: var(--ink-2); stroke-width: 1.4; fill: none; }
+.seam .gap { fill: none; stroke: var(--fail); stroke-width: 1.4; stroke-dasharray: 4 4; }
+.seam .gapt { fill: var(--fail); font: 600 12px var(--body); }
+.seam .arrowhead { fill: var(--ink-2); }
+
+/* tables */
+table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--rule); }
+thead th { font-family: var(--mono); font-size: var(--s-1); font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-2); border-bottom: 1px solid var(--ink-2); }
+tbody tr:last-child td { border-bottom: 0; }
+td.tool { font-weight: 600; white-space: nowrap; }
+.survey td:nth-child(2) { min-width: 30ch; }
+@media (max-width: 640px) {
+  .survey thead { display: none; }
+  .survey, .survey tbody, .survey tr, .survey td { display: block; width: 100%; }
+  .survey tr { padding-block: 12px; border-bottom: 1px solid var(--rule); }
+  .survey tbody tr:last-child { border-bottom: 0; }
+  .survey td { border: 0; padding: 2px 0; min-width: 0; white-space: normal; }
+  .survey td.tool { font-size: 1.02rem; padding-bottom: 6px; }
+  .survey td[data-label]::before { content: attr(data-label); display: block; font: 500 var(--s-1)/1.5 var(--mono); letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-2); margin-top: 6px; }
+  .survey-panel { overflow-x: visible; }
+}
+.num { font-variant-numeric: tabular-nums; }
+
+/* states */
+.states { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.state { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; display: grid; gap: 6px; align-content: start; }
+.pill { justify-self: start; font: 600 var(--s-1)/1 var(--mono); padding: 5px 9px; border-radius: 999px; letter-spacing: 0.03em; }
+.pill.live { color: var(--pass); background: var(--pass-soft); }
+.pill.notlive { color: var(--fail); background: var(--fail-soft); }
+.pill.notproven { color: var(--nothing); background: var(--nothing-soft); }
+.pill.nothing { color: var(--usage); background: var(--usage-soft); }
+.state p { font-size: 0.93rem; line-height: 1.55; color: var(--ink-2); }
+.codes td:first-child { font-family: var(--mono); width: 4.5em; }
+.out-pass { color: var(--pass); font-weight: 600; }
+
+pre.term { margin: 0; background: var(--term); color: var(--term-ink); border-radius: 10px; padding: 16px 18px; font-size: 0.84rem; line-height: 1.55; overflow-x: auto; }
+pre.term .dim { color: var(--term-dim); }
+
+/* review chart */
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart .grid { stroke: var(--rule); stroke-width: 1; }
+.chart .axis { fill: var(--ink-2); font: 400 11.5px var(--mono); }
+.chart .bar-mark { fill: var(--accent); }
+.chart .bar-mark.dim { opacity: 0.38; }
+.chart .hit { fill: transparent; cursor: default; }
+.chart .hit:hover + .bar-mark, .chart .hit:focus + .bar-mark { opacity: 1; }
+.chart .val { fill: var(--ink); font: 600 12px var(--body); }
+.chart .note { fill: var(--ink-2); font: 400 11.5px var(--body); }
+.chart .tick-mark { stroke: var(--ink-2); stroke-width: 1; }
+.tip { position: absolute; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px; font-size: 0.84rem; line-height: 1.45; box-shadow: 0 6px 20px rgb(0 0 0 / 0.12); max-width: 260px; }
+.tip b { font-weight: 600; }
+details { font-size: 0.92rem; }
+summary { cursor: pointer; color: var(--accent); }
+details table { margin-top: 10px; }
+
+.classes { display: grid; gap: 14px; }
+.cls { border-left: 3px solid var(--accent); padding: 2px 0 2px 16px; }
+.cls h3 { font-size: 1.05rem; font-weight: 700; margin-bottom: 6px; }
+
+.dev td:nth-child(2), .dev td:nth-child(3) { font-family: var(--mono); white-space: nowrap; }
+
+footer { border-top: 1px solid var(--rule); padding-block: 30px 46px; font-size: var(--s-1); color: var(--ink-2); }
+footer .wrap { display: grid; gap: 10px; }
+footer a { color: var(--ink-2); }
+.served { font-family: var(--mono); }
+ol.sources { margin: 0; padding-left: 1.4em; display: grid; gap: 4px; font-size: 0.88rem; color: var(--ink-2); }
+ol.sources a { overflow-wrap: anywhere; }
+
+@media (max-width: 640px) {
+  .bar .out { margin-left: 0; }
+  h2 { flex-direction: column; gap: 2px; }
+}
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <div class="wrap">
+    <a class="logo" href="#top" aria-label="seamkit research, top of page">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="5" fill="var(--accent)"/><path d="M7 12.5l3.2 3.2L17 8.8" stroke="var(--surface)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      seamkit
+    </a>
+    <nav aria-label="Sections">
+      <a href="#seam">The seam</a>
+      <a href="#survey">Survey</a>
+      <a href="#method">Method</a>
+      <a href="#review">Review</a>
+      <a href="#limits">Limits</a>
+      <a href="#next">Next</a>
+    </nav>
+    <div class="out">
+      <a href="https://github.com/azank1/seamkit">GitHub</a>
+      <a href="https://www.npmjs.com/package/seamkit">npm</a>
+    </div>
+  </div>
+</div>
+
+<header class="open" id="top">
+  <div class="wrap">
+    <div class="col">
+      <div class="eyebrow">Research note · 2026-10-25</div>
+      <h1>The seam between merge and production</h1>
+      <p class="lede">Coding agents made it fast to write and merge a change. They did not make it any faster to find out
+      what actually shipped. This note reports how existing deploy tools score a check that examined nothing, the
+      read-back method seamkit uses instead, and what 30 rounds of adversarial review found while it was built.</p>
+      <div class="byline">
+        <span>azank</span>
+        <a href="https://github.com/azank1/seamkit">azank1/seamkit</a>
+        <span>Apache-2.0</span>
+        <a href="https://www.npmjs.com/package/seamkit">0.1.0 on npm</a>
+        <a href="https://github.com/azank1/seamkit/pull/6">0.2.0 in review</a>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<section id="seam" aria-labelledby="seam-h">
+  <div class="wrap">
+    <h2 id="seam-h"><span class="n">1</span>The seam</h2>
+    <div class="col">
+      <p>A merge is a claim about the repository, and a successful deploy is a claim about a build. What production
+      serves is the only thing a user ever meets. Between those points sit a build, an artifact, a host's deploy step
+      and usually a cache or an edge network, and each of them can drop a change without any earlier signal turning
+      red. A merge stays green when the deploy meant to carry it is cancelled. A deploy stays successful when it built
+      an older commit. A rollback leaves every merged pull request looking finished.</p>
+      <p>None of this is new. What has changed is the traffic. When agents write and merge most of the code, the number
+      of merges per day rises while the number of people watching each one reach production does not, and the gap
+      between the two ends becomes the place where defects go unseen. This project calls that gap the seam.</p>
+    </div>
+    <figure class="seam">
+      <div class="panel scroll">
+        <svg viewBox="0 0 960 230" role="img" aria-labelledby="seam-t seam-d">
+          <title id="seam-t">The seam between merge and production</title>
+          <desc id="seam-d">Six stages from merge to served page. seamkit reads the first stage, the git history, and the last, what production serves. The four stages between them are the seam, where a change can be lost while every earlier signal stays green.</desc>
+          <defs>
+            <marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path class="arrowhead" d="M0 0 L8 4 L0 8 z"/></marker>
+          </defs>
+          <text class="m" x="24" y="30">SEAMKIT READS</text>
+          <text class="m" x="800" y="30">SEAMKIT READS</text>
+          <rect class="end" x="24" y="44" width="136" height="74" rx="9"/>
+          <text class="t" x="40" y="74">Merge</text>
+          <text class="t2" x="40" y="96">git history,</text>
+          <text class="t2" x="40" y="110">cards in PRs</text>
+          <rect class="box" x="184" y="44" width="136" height="74" rx="9"/>
+          <text class="t" x="200" y="74">CI build</text>
+          <text class="t2" x="200" y="96">stamps the commit</text>
+          <rect class="box" x="344" y="44" width="136" height="74" rx="9"/>
+          <text class="t" x="360" y="74">Artifact</text>
+          <text class="t2" x="360" y="96">the built output</text>
+          <rect class="box" x="504" y="44" width="136" height="74" rx="9"/>
+          <text class="t" x="520" y="74">Deploy</text>
+          <text class="t2" x="520" y="96">the host's step</text>
+          <rect class="box" x="664" y="44" width="112" height="74" rx="9"/>
+          <text class="t" x="680" y="74">Edge</text>
+          <text class="t2" x="680" y="96">cache, CDN</text>
+          <rect class="end" x="800" y="44" width="136" height="74" rx="9"/>
+          <text class="t" x="816" y="74">Served</text>
+          <text class="t2" x="816" y="96">version.json,</text>
+          <text class="t2" x="816" y="110">page and scripts</text>
+          <path class="ln" d="M160 81 H182" marker-end="url(#ah)"/>
+          <path class="ln" d="M320 81 H342" marker-end="url(#ah)"/>
+          <path class="ln" d="M480 81 H502" marker-end="url(#ah)"/>
+          <path class="ln" d="M640 81 H662" marker-end="url(#ah)"/>
+          <path class="ln" d="M776 81 H798" marker-end="url(#ah)"/>
+          <path class="gap" d="M184 140 H776"/>
+          <path class="gap" d="M184 132 V148 M776 132 V148"/>
+          <text class="gapt" x="480" y="170" text-anchor="middle">The seam</text>
+          <text class="t2" x="480" y="190" text-anchor="middle">a cancelled deploy, a build of an older commit, a stale cache or a rollback</text>
+          <text class="t2" x="480" y="206" text-anchor="middle">loses the change here while every earlier signal stays green</text>
+        </svg>
+      </div>
+      <figcaption><b>Figure 1.</b> Six stages from merge to the page a user loads. seamkit reads the two ends: the
+      git history, including any card a pull request carries, and what production serves, including the version
+      document a build stamps. It concludes from those two observations alone and trusts no report from the stages in
+      between.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="survey" aria-labelledby="survey-h">
+  <div class="wrap">
+    <h2 id="survey-h"><span class="n">2</span>How existing tools score a check that examined nothing</h2>
+    <div class="col">
+      <p>The survey covered progressive-delivery controllers, deploy trackers, merge-flow policy tools and the release
+      tools that appeared for agent-written code in 2025 and 2026. It was made from public documentation on 2026-10-14,
+      and every claim in the full write-up carries a source. The question that separated the tools most clearly was
+      what each does when a check looks at nothing: no metric values, no matching data, or a required check that
+      never ran.</p>
+    </div>
+    <figure>
+      <div class="panel scroll survey-panel">
+        <table class="survey">
+          <thead><tr><th scope="col">Tool</th><th scope="col">When nothing was examined</th><th scope="col">Reads what production runs</th></tr></thead>
+          <tbody>
+            <tr><td class="tool">Spinnaker Kayenta</td><td data-label="When nothing was examined">A metric group whose metrics all have no data gets an effective score of 100, the same as a perfect group.</td><td data-label="Reads what production runs">No; it judges canary metrics.</td></tr>
+            <tr><td class="tool">GitHub required checks</td><td data-label="When nothing was examined">A workflow skipped by a path filter stays pending and blocks the merge. A job skipped by an <code>if:</code> condition reports success.</td><td data-label="Reads what production runs">No.</td></tr>
+            <tr><td class="tool">Argo Rollouts</td><td data-label="When nothing was examined">Has an Inconclusive phase, but the template author's expression decides whether empty data passes.</td><td data-label="Reads what production runs">No; it has no notion of a commit.</td></tr>
+            <tr><td class="tool">Flagger</td><td data-label="When nothing was examined">No metric values halts the rollout and counts as a failed check, so missing data looks like a bad metric.</td><td data-label="Reads what production runs">No.</td></tr>
+            <tr><td class="tool">Kargo</td><td data-label="When nothing was examined">Emits separate inconclusive and unknown events. With no verification configured, application health stands in for it.</td><td data-label="Reads what production runs">It records the state it promoted.</td></tr>
+            <tr><td class="tool">Datadog gates</td><td data-label="When nothing was examined">A monitor in <code>NO_DATA</code> fails the gate.</td><td data-label="Reads what production runs">Through traffic and tags in paid APM, with no ancestry check.</td></tr>
+            <tr><td class="tool">Sleuth, LinearB</td><td data-label="When nothing was examined">Not a gate. They compute metrics from deploys that CI registers.</td><td data-label="Reads what production runs">No; they trust the commit CI reports. LinearB applies git ancestry to it.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <figcaption><b>Table 1.</b> Behaviour on empty evidence, as documented by each tool, and whether the tool observes
+      production itself. Sources for every row are listed in <a href="https://github.com/azank1/seamkit/blob/main/docs/prior-art.md">docs/prior-art.md</a>.</figcaption>
+    </figure>
+    <div class="col">
+      <p>Three results stand out. A mature canary judge documents an all-empty group as a perfect score, which is
+      exactly the failure seamkit exists to prevent. GitHub alone gives two opposite answers to the same absence of
+      evidence, a permanent block in one configuration and a silent pass in another. And most tools trust the commit
+      that CI says it deployed rather than asking production which commit it runs.</p>
+      <p>The most telling result was indirect. Many repositories in 2026 carry a hand-written check that compares a
+      version endpoint with the expected commit, which suggests that reading production back is a recognised need
+      without a packaged tool. Each element of seamkit has precedent somewhere; the combination of a separate
+      examined-nothing outcome, a read-back of production by commit ancestry, and a surface that agents can call
+      without Kubernetes or a hosted service was not found in any one tool.</p>
+    </div>
+  </div>
+</section>
+
+<section id="method" aria-labelledby="method-h">
+  <div class="wrap">
+    <h2 id="method-h"><span class="n">3</span>Method</h2>
+    <div class="col">
+      <p>seamkit reads production read-only and compares it with the repository's own history. Production names the
+      commit it was built from in a small version document, which <code>seamkit stamp</code> writes at build time and
+      which refuses to vouch for a build made from uncommitted changes. For every change merged into the default
+      branch, readback asks whether the running commit contains it, by git ancestry. A change can also carry a card
+      in its pull request description that names text the built output must contain, and readback then searches the
+      served page and the scripts it loads for that text.</p>
+      <p>Runs are recorded on a branch of the repository itself. That ledger is what lets a later run tell a change
+      that left production, which was seen live before and is absent now, from one that never arrived. No model runs
+      inside the tool. The same inputs give the same verdicts, and <code>seamkit replay</code> re-runs every recorded
+      run against its recorded inputs and checks that the verdicts match byte for byte.</p>
+    </div>
+    <div class="states">
+      <div class="state"><span class="pill live">live</span><p>Production's commit contains the change, and every marker its card names was found in what production serves.</p></div>
+      <div class="state"><span class="pill notlive">not live</span><p>The change was seen live by an earlier run and is absent now, as after a rollback.</p></div>
+      <div class="state"><span class="pill notproven">not proven</span><p>The change is absent and was never seen live, or its evidence could not be read.</p></div>
+      <div class="state"><span class="pill nothing">nothing to prove</span><p>The change's card declares that nothing deployed changes, and says why.</p></div>
+    </div>
+    <figure>
+      <div class="panel scroll">
+        <table class="codes">
+          <thead><tr><th scope="col">Exit</th><th scope="col">Outcome</th></tr></thead>
+          <tbody>
+            <tr><td>0</td><td><span class="out-pass">pass</span>, the only outcome that is ever reported as success</td></tr>
+            <tr><td>1</td><td>fail</td></tr>
+            <tr><td>2</td><td>usage or configuration error, so no verdict was produced</td></tr>
+            <tr><td>3</td><td>examined nothing, so nothing is claimed</td></tr>
+            <tr><td>4</td><td>unclassified, which stops for a human</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <figcaption><b>Table 2.</b> The five outcomes and their exit codes. A script or an agent cannot mistake one for
+      another, and looking at nothing is never reported as a pass.</figcaption>
+    </figure>
+<pre class="term"><span class="dim">$</span> npx seamkit audit --url https://your.app
+NOT LIVE  1 of 3  (1 fail)
+  commit:5da1b19d6870  feat: third page
+                       production runs 704857be812c, which does not contain this change;
+                       it was seen live at 2026-10-25T16:29:08.574Z (event 6b6aa311cb41)
+LIVE  2 of 3  (2 pass)
+  ...
+FAIL  readback  origin/main
+  proven live 2 of 3 changes
+  not live 1: seen live earlier, absent now
+<span class="dim">exit 1</span></pre>
+  </div>
+</section>
+
+<section id="review" aria-labelledby="review-h">
+  <div class="wrap">
+    <h2 id="review-h"><span class="n">4</span>What adversarial review found</h2>
+    <div class="col">
+      <p>The 0.2.0 GitHub Action, which reads production back after every deploy and posts the verdict as a check run,
+      was built under a loop of adversarial review. Each round ran six reviewing agents with distinct lenses, such as how
+      a deploy is scoped, how the wait for production behaves, security, whether the documentation is true, the
+      ledger's lifecycle, and whether the tests prove what they claim; rounds 26 to 30 turned two of them to the version
+      stamp and the packaged artifacts. Every finding was then given to two independent skeptics
+      instructed to refute it, and a completeness critic closed the round by looking for what the lenses had not run.
+      Each fix was afterwards broken on purpose in the compiled code to confirm that a test fails.</p>
+    </div>
+    <figure>
+      <div class="panel chart" id="chart">
+        <svg id="chart-svg" viewBox="0 0 900 300" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="chart-t chart-d">
+          <title id="chart-t">Findings reported per review round, rounds 3 to 30</title>
+          <desc id="chart-d">Bar chart. Round 3 reported 21 findings. Counts fell to between 2 and 9 from round 7 to round 25; round 23 reported 2 and round 25 reported 7. Round 26, whose lenses read code no earlier round had, reported 21, round 27 reported 13, round 28 reported 22, round 29 reported 13 and round 30 reported 15. The full data is in the table below the chart.</desc>
+        </svg>
+        <div class="tip" id="tip" hidden></div>
+      </div>
+      <figcaption><b>Figure 2.</b> Findings reported in each review round, counting those confirmed by both skeptics,
+      those confirmed by one, and the completeness critic's. Rounds 1 and 2 used a different setup and are not shown.
+      Counts fell from 21 in round 3 to 2 in round 23, then rose to 9 in round 24, when five reviewers found the same
+      gap. Round 26 reported 21 after its lenses were turned to code no round had read before: the version stamp, the
+      packaged npm module and Action as users receive them, and the ledger over a full run of jobs. Round 27 reported 13 on the same lenses, three of them medium, and round 28 reported 22, most of them in a check that round 27 had added and that compared file contents by hand instead of asking git; round 29 reported 13, all but two low, and round 30 reported 15, all of them low once the skeptics had rated them. Round 12 was the last round with a finding confirmed as high severity, and no round has yet come back with no
+      findings. The setup guide's changelog also counts an earlier pass by a single reviewer, so its round numbers run
+      one ahead of these.</figcaption>
+      <details>
+        <summary>Show the data</summary>
+        <div class="scroll">
+          <table id="rounds">
+            <thead><tr><th scope="col">Round</th><th scope="col" class="num">Findings</th><th scope="col">Note</th></tr></thead>
+            <tbody>
+              <tr><td>3</td><td class="num">21</td><td>first workflow round</td></tr>
+              <tr><td>4</td><td class="num">14</td><td></td></tr>
+              <tr><td>5</td><td class="num">15</td><td></td></tr>
+              <tr><td>6</td><td class="num">14</td><td></td></tr>
+              <tr><td>7</td><td class="num">5</td><td>all low but one</td></tr>
+              <tr><td>8</td><td class="num">7</td><td></td></tr>
+              <tr><td>9</td><td class="num">8</td><td></td></tr>
+              <tr><td>10</td><td class="num">7</td><td></td></tr>
+              <tr><td>11</td><td class="num">4</td><td>one medium; git trace output first seen in a check run</td></tr>
+              <tr><td>12</td><td class="num">9</td><td>two high, the last confirmed as high</td></tr>
+              <tr><td>13</td><td class="num">3</td><td></td></tr>
+              <tr><td>14</td><td class="num">5</td><td>all low</td></tr>
+              <tr><td>15</td><td class="num">5</td><td>none high</td></tr>
+              <tr><td>16</td><td class="num">4</td><td>2 distinct</td></tr>
+              <tr><td>17</td><td class="num">3</td><td>one medium, from the critic</td></tr>
+              <tr><td>18</td><td class="num">5</td><td>1 distinct regression</td></tr>
+              <tr><td>19</td><td class="num">4</td><td>all low</td></tr>
+              <tr><td>20</td><td class="num">4</td><td>all low</td></tr>
+              <tr><td>21</td><td class="num">7</td><td>all low</td></tr>
+              <tr><td>22</td><td class="num">4</td><td>2 distinct, none high</td></tr>
+              <tr><td>23</td><td class="num">2</td><td>one medium</td></tr>
+              <tr><td>24</td><td class="num">9</td><td>5 distinct; 5 reports of one gap</td></tr>
+              <tr><td>25</td><td class="num">7</td><td>all low; credentials leaked outside the URL itself</td></tr>
+              <tr><td>26</td><td class="num">21</td><td>all low; new lenses; the critic did not run</td></tr>
+              <tr><td>27</td><td class="num">13</td><td>three medium; a credential helper's text, and changes git status does not show</td></tr>
+              <tr><td>28</td><td class="num">22</td><td>four medium; most in round 27's own new check</td></tr>
+              <tr><td>29</td><td class="num">13</td><td>two medium, both in round 28's replacement</td></tr>
+              <tr><td>30</td><td class="num">15</td><td>all low; stamp's git environment and submodule shapes</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </figure>
+    <div class="col">
+      <p>Read by class, the findings say more than the totals. Three classes account for most of the late rounds, and
+      each carries a lesson that applies beyond this tool.</p>
+    </div>
+    <div class="classes col">
+      <div class="cls">
+        <h3>Credentials leaking through git's own error text</h3>
+        <p>Fourteen rounds (11, 12, 14 and 20 to 30) found a way for a credential git can use to reach a public check
+        run, which GitHub does not mask: at first a token in a git remote URL, and from round 25 also one in a proxy, a
+        credential helper or an extra header. The routes were trace output, a curl verbosity variable that turns tracing
+        on whatever its value (introduced by the fix for round 11), trace settings read from git config, and passwords
+        holding an unencoded @, quote, slash or line break that ended the scrub early. The defence has two layers:
+        tracing is removed from git's environment at the source, and whatever git still writes is scrubbed with a rule
+        that errs toward removing too much. Round 24 found that the shapes combine: a user name or password holding both
+        an unencoded @ and a line break escaped a rule that handled each alone. The scrub now repeats until no URL in the
+        text is followed by an @, and git's refusal of a URL holding a line break, which prints the URL whole, is
+        replaced by the reason. Rounds 25 and 26 found routes outside the URL that git prints: the host curl names
+        after splitting a URL differently from git, a remote git reads as a local path and quotes whole, a proxy that
+        git cuts short, and remotes written in git's transport form. Each was one more wording a pattern had to know,
+        so a third layer was added that knows none: the credentials git can see, in its configuration and the proxy
+        variables, are hidden wherever they appear in what it writes. Round 27 found that a credential helper is one
+        more source: git quotes a line it could not use from a helper's output, and the shell echoes a failing helper
+        whole, token included. Those lines are no longer shown, and what a helper holds is hidden like the rest. Rounds 28 and 29 found the
+        same class again in the shapes a shell gives a helper's words when it traces them (quoted values, joined quotes,
+        a printf argument), and a GIT_CONFIG variable that pointed the lookup at a different file from the one git read,
+        so the helper is now split into words the way the shell splits it. Round 30 found a literal inside a helper's
+        own shell expansion, such as a default value, and a credential holding a // that the scrub read as the start of
+        an address. A traced helper's credential lines are now hidden by their keys, whatever the secret was computed
+        from.</p>
+      </div>
+      <div class="cls">
+        <h3>Precedence rules that trade a bug for its mirror</h3>
+        <p>Rounds 16 to 19 kept finding the same sentence of the report wrong in opposite ways: the note that explains a
+        commit production runs but the checkout lacks. Each fix was a precedence rule over the outcomes of branch fetches,
+        and each rule had a counter-case. The oscillation stopped in round 19, when the rules were replaced by a model of
+        the order of events, the log of fetches made since production first reported the commit. Round 20 fixed the one
+        remaining fallback in that model.</p>
+      </div>
+      <div class="cls">
+        <h3>Names that git resolves before commits</h3>
+        <p>git looks a name up as a ref before it treats it as an abbreviated commit id, so a tag or branch named like a
+        short commit id moved a passing verdict onto a different commit. Rounds 13 to 17 closed the variants: a tag, a
+        branch, both at once, an annotated tag's own id, and every ref namespace git tries. Round 23 added the converse
+        test, that a ref of that name pointing at the deployed commit itself shadows nothing.</p>
+      </div>
+    </div>
+    <div class="col">
+      <p>From round 11 on, 185 fixes were broken on purpose across 20 rounds by editing the compiled code and rerunning
+      the tests. Every break is caught by the current tests. Two more are not counted: one, in round 28, changed
+      nothing, because the git in use already does what that fix does, and one, in round 30, broke a check that git's
+      own report already makes, so the check was removed. Several survived at first, and each of those exposed a
+      missing test that was then written, which is the main reason for doing it.</p>
+    </div>
+  </div>
+</section>
+
+<section id="localhost" aria-labelledby="local-h">
+  <div class="wrap">
+    <h2 id="local-h"><span class="n">5</span>A first run on localhost</h2>
+    <div class="col">
+      <p>To check that the tool works for someone who has never seen it, a throwaway repository was served from
+      localhost with <code>python3 -m http.server</code> and audited with the published 0.1.0 and with the packed
+      0.2.0 candidate. Both versions gave the same outcome at every step.</p>
+    </div>
+    <figure>
+      <div class="panel scroll">
+        <table class="dev">
+          <thead><tr><th scope="col">Step</th><th scope="col">Outcome</th><th scope="col">Exit</th></tr></thead>
+          <tbody>
+            <tr><td>Production serves no version document</td><td>examined nothing</td><td>3</td></tr>
+            <tr><td>The build stamps <code>version.json</code> and head is deployed</td><td>pass</td><td>0</td></tr>
+            <tr><td>A third change merges but is not deployed</td><td>fail, not proven</td><td>1</td></tr>
+            <tr><td>The ledger starts and the third change deploys</td><td>pass, recorded</td><td>0</td></tr>
+            <tr><td>Production rolls back to the second change</td><td>fail, not live</td><td>1</td></tr>
+            <tr><td><code>seamkit replay</code> over the ledger</td><td>pass</td><td>0</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <figcaption><b>Table 3.</b> One new-developer session on 2026-10-25, Linux, Node 20. On 0.2.0, a card's marker
+      was also found in the served page, and a change merged after the deployed commit was left for the next deploy to
+      prove rather than failed.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="limits" aria-labelledby="limits-h">
+  <div class="wrap">
+    <h2 id="limits-h"><span class="n">6</span>What it does not prove</h2>
+    <div class="col">
+      <p>Readback proves that what production serves contains a change. It does not prove that the change behaves
+      correctly, which remains the job of tests and monitoring. It cannot examine a database change, for which there is
+      no adapter yet, so such a marker is reported as not examined rather than guessed. It needs to reach production
+      over HTTP, and it trusts the version document the build stamped. A build made from uncommitted changes is stamped
+      dirty and never counts as proof, but a build with no git history, such as an upload from the Vercel CLI, takes its
+      commit from the host and cannot tell whether the files it was given were committed.</p>
+      <p>The 0.2.0 Action has run on GitHub-hosted runners against real Vercel deployments of a sample site. It passed
+      the deploys that went live, failed a rollback as not live, and failed a deploy that Vercel built and GitHub listed
+      as a successful production deployment while the rollback kept the address on the old build. Vercel is the only
+      host it has met, it has run on Linux runners only, and Windows and macOS runners are untested.</p>
+    </div>
+  </div>
+</section>
+
+<section id="next" aria-labelledby="next-h">
+  <div class="wrap">
+    <h2 id="next-h"><span class="n">7</span>Next</h2>
+    <div class="col">
+      <p>seamkit today observes the two ends of the seam. The next step is to record evidence at the stages in between,
+      the build's stamp, the host's deploy event and what the edge serves, so that a change reported as not live also
+      says at which stage it was lost. That turns a verdict into the first answer of a debugging session.</p>
+      <p>After that, in order, come an MCP server so that a coding agent can ask whether its change shipped without a
+      human running the command, carry, which lists the merged changes a deploy will ship before it runs, and a gate
+      that evaluates each open pull request the way the deploy step will. The plan and its done-when conditions are in
+      <a href="https://github.com/azank1/seamkit/blob/main/docs/architecture.md">docs/architecture.md</a>.</p>
+    </div>
+  </div>
+</section>
+
+<section id="sources" aria-labelledby="sources-h">
+  <div class="wrap">
+    <h2 id="sources-h"><span class="n">8</span>Sources</h2>
+    <ol class="sources col">
+      <li><a href="https://github.com/azank1/seamkit/blob/main/docs/prior-art.md">seamkit prior-art survey</a>, every claim in section 2 with its source</li>
+      <li><a href="https://spinnaker.io/docs/guides/user/canary/judge/">Spinnaker canary judge</a></li>
+      <li><a href="https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks">GitHub, troubleshooting required status checks</a></li>
+      <li><a href="https://argo-rollouts.readthedocs.io/en/stable/features/analysis/">Argo Rollouts analysis</a></li>
+      <li><a href="https://github.com/fluxcd/flagger/issues/1090">Flagger issue 1090</a></li>
+      <li><a href="https://docs.kargo.io/user-guide/how-to-guides/verification">Kargo verification</a></li>
+      <li><a href="https://docs.datadoghq.com/deployment_gates/setup/preconfigured/">Datadog deployment gates</a></li>
+      <li><a href="https://linearb.helpdocs.io/article/5h6n4re0t9-api-deployment">LinearB deployment API</a></li>
+      <li><a href="https://help.sleuth.io/sleuth-dora/sleuth-api/deploy-registration">Sleuth deploy registration</a></li>
+      <li><a href="https://github.com/azank1/seamkit/pull/6">seamkit 0.2.0, the GitHub Action, in review</a></li>
+    </ol>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>seamkit is open source under Apache-2.0. Written by azank. <a href="https://github.com/azank1/seamkit">github.com/azank1/seamkit</a></span>
+    <span class="served" id="served">This page serves the commit it was built from at <a href="/version.json">/version.json</a>, so seamkit can check it.</span>
+  </div>
+</footer>
+
+<script>
+// Figure 2 reads its data from the table under it, so the chart and the table cannot disagree. It is drawn at its
+// container's own width, so its text stays at its set size on a phone.
+(function () {
+  const rows = [...document.querySelectorAll('#rounds tbody tr')].map((tr) => {
+    const [r, n, note] = [...tr.children].map((td) => td.textContent.trim());
+    return { round: Number(r), n: Number(n), note };
+  });
+  const svg = document.getElementById('chart-svg');
+  const host = svg.parentElement;
+  const tip = document.getElementById('tip');
+  const NS = 'http://www.w3.org/2000/svg';
+  const max = 25, ticks = [0, 5, 10, 15, 20, 25];
+  let drawn = 0;
+  function draw() {
+    const W = Math.round(Math.max(300, Math.min(900, host.clientWidth - 2)));
+    if (W === drawn) return;
+    drawn = W;
+    const H = W < 520 ? 240 : 300, L = 34, R = 10, T = 22, B = 40;
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    [...svg.querySelectorAll(':scope > :not(title):not(desc)')].forEach((n) => n.remove());
+    const y = (v) => T + (H - T - B) * (1 - v / max);
+    const band = (W - L - R) / rows.length;
+    const bw = Math.min(24, band * 0.62);
+    const every = band < 22 ? 2 : 1;
+    const el = (name, attrs, text) => {
+      const e = document.createElementNS(NS, name);
+      for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+      if (text !== undefined) e.textContent = text;
+      svg.appendChild(e);
+      return e;
+    };
+    for (const t of ticks) {
+      el('line', { class: 'grid', x1: L, x2: W - R, y1: y(t), y2: y(t) });
+      el('text', { class: 'axis', x: L - 8, y: y(t) + 4, 'text-anchor': 'end' }, String(t));
+    }
+    rows.forEach((d, i) => {
+      const cx = L + band * i + band / 2;
+      const x = cx - bw / 2, top = y(d.n), h = y(0) - top, r = Math.min(4, h);
+      const path = `M${x} ${y(0)} V${top + r} Q${x} ${top} ${x + r} ${top} H${x + bw - r} Q${x + bw} ${top} ${x + bw} ${top + r} V${y(0)} Z`;
+      const hit = el('rect', { class: 'hit', x: cx - band / 2, y: T, width: band, height: H - T - B, tabindex: 0, 'aria-label': `Round ${d.round}: ${d.n} findings${d.note ? ', ' + d.note : ''}` });
+      el('path', { class: 'bar-mark', d: path });
+      if (i % every === 0 || i === rows.length - 1) el('text', { class: 'axis', x: cx, y: H - B + 18, 'text-anchor': 'middle' }, String(d.round));
+      if (i === 0 || i === rows.length - 1 || d.round === 12) el('text', { class: 'val', x: cx, y: top - 7, 'text-anchor': 'middle' }, String(d.n));
+      const show = () => {
+        tip.innerHTML = `<b>Round ${d.round}</b><br>${d.n} findings${d.note ? '<br>' + d.note : ''}`;
+        tip.hidden = false;
+        const box = svg.getBoundingClientRect(), hb = host.getBoundingClientRect();
+        const px = (cx / W) * box.width + (box.left - hb.left), py = (top / H) * box.height + (box.top - hb.top);
+        tip.style.left = `${Math.min(Math.max(8, px - 70), hb.width - 200)}px`;
+        tip.style.top = `${Math.max(8, py - 76)}px`;
+      };
+      hit.addEventListener('mouseenter', show);
+      hit.addEventListener('focus', show);
+      hit.addEventListener('mouseleave', () => { tip.hidden = true; });
+      hit.addEventListener('blur', () => { tip.hidden = true; });
+    });
+    el('text', { class: 'axis', x: L + (W - L - R) / 2, y: H - 4, 'text-anchor': 'middle' }, 'review round');
+    const r12 = rows.findIndex((d) => d.round === 12);
+    if (r12 >= 0) {
+      const cx = L + band * r12 + band / 2;
+      el('text', { class: 'note', x: cx + 12, y: y(rows[r12].n) - 7 }, W < 520 ? 'last high' : 'last high-severity finding');
+    }
+  }
+  draw();
+  let pending = 0;
+  addEventListener('resize', () => { cancelAnimationFrame(pending); pending = requestAnimationFrame(draw); });
+})();
+
+// The footer names the commit this deployment was built from, read from the page's own version document.
+fetch('/version.json', { cache: 'no-store' })
+  .then((r) => (r.ok ? r.json() : null))
+  .then((v) => {
+    if (!v || typeof v.commit !== 'string') return;
+    const c = v.commit.slice(0, 12);
+    const out = document.getElementById('served');
+    out.innerHTML = `Built from commit <a href="https://github.com/azank1/seamkit/commit/${v.commit}">${c}</a>, served at <a href="/version.json">/version.json</a> so that seamkit can check this page is live.`;
+  })
+  .catch(() => {});
+</script>
+</body>
+</html>
