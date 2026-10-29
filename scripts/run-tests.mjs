@@ -22,5 +22,10 @@ if (files.length === 0) {
   console.error('run-tests: no compiled test files found under packages/*/dist; run "npm run build" first');
   process.exit(1);
 }
-const result = spawnSync(process.execPath, ['--test', ...process.argv.slice(2), ...files], { stdio: 'inherit' });
+// A test that hangs fails rather than holding the run open. From Node 24 the limit applies to each
+// test, so two minutes is ample; Node 20 and 22 apply it to each test file as a whole, so there it
+// is ten minutes, far above the slowest file. Flags given here come after, so they can change it.
+const major = Number(process.versions.node.split('.')[0]);
+const timeout = major >= 24 ? 120000 : 600000;
+const result = spawnSync(process.execPath, ['--test', `--test-timeout=${timeout}`, ...process.argv.slice(2), ...files], { stdio: 'inherit' });
 process.exit(result.status ?? 1);

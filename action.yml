@@ -1,0 +1,89 @@
+name: seamkit readback
+description: Proves each merged change is live in production after a deploy, and reports the verdict as a check run.
+author: azank1
+branding:
+  icon: check-circle
+  color: blue
+
+# Runs on GitHub-hosted runners, and on self-hosted runners that support the node24 runtime.
+inputs:
+  url:
+    description: >-
+      The production address to read back, such as https://your.app. Its version document is looked for at
+      /version.json, /api/version and /version.
+    required: true
+  last:
+    description: >-
+      How many of the latest changes on the default branch to judge. After a deploy, once the ledger holds a run at this
+      address, changes merged after the deployed commit that were never seen live there, nor in a build production was
+      seen running there, are listed as not examined, left to the next deploy, and not counted. Once production there
+      was seen running a commit this repository does not have, every change is judged.
+    default: '20'
+  pr:
+    description: Read back one merged pull request by number instead of the latest changes.
+    default: ''
+  branch:
+    description: >-
+      The branch changes are merged into. Defaults to the repository's default branch, as the event names it. A branch
+      name such as production, also written refs/heads/production or origin/production, means the remote's branch,
+      which the Action fetches before reading; origin/HEAD means the default branch. When the input is not a branch
+      name, such as HEAD, or the branch cannot be fetched, there is no verdict. It does not change which commit counts
+      as deployed. On a schedule the check still goes on the job's commit, the default branch's tip, so a watch that
+      reads another branch should have its own check-name.
+    default: ''
+  version-url:
+    description: Where production's version document is, when it is not at one of the usual paths.
+    default: ''
+  wait:
+    description: >-
+      After a deploy, seconds (0 to 1800) to keep reading production until its version document reports the deployed
+      commit. Reading stops as soon as it does, and nothing is recorded while waiting. When production reports no
+      commit and no earlier read in this run named one, a pass also stops it. Without a deployed commit, as on a
+      schedule, there is nothing to wait for.
+    default: '60'
+  ledger:
+    description: >-
+      auto records the verdict when a seamkit/state branch exists here or on the remote; true creates one when there
+      is none; false neither reads nor records it, so a rollback reads not proven rather than not live and changes merged
+      during the build are judged. Recording pushes with the checkout's credentials, so it needs contents write and
+      actions/checkout's default persist-credentials.
+    default: auto
+  check-name:
+    description: >-
+      The check run's name. Defaults to "seamkit readback (<host><path>)" from the url input, so each production address
+      gets one check. The deploy readback and its watch of the default branch share it, and the later verdict on a
+      commit replaces the earlier one; a job that reads the same url for another branch, a pull request (pr) or
+      another version-url needs a name of its own.
+    default: ''
+  sha:
+    description: >-
+      The deployed commit, full or abbreviated (an abbreviation that a tag or branch pointing at another commit is also
+      named after, or an annotated tag's own id, gives no verdict; give the full id). The check run goes on it, and once the ledger holds a run at this
+      address, a change merged after it is left to the next deploy unless it was seen live there or in a build
+      production was seen running there, and nothing is left once production there was seen running a commit this
+      repository does not have. Defaults to the deployed commit for
+      deployment and deployment_status, and to the other workflow's commit for workflow_run. For other events nothing
+      counts as deployed, and the check goes on the job's commit, or a pull request's head commit.
+    default: ''
+  token:
+    description: Token for posting the check run, which needs checks write.
+    default: ${{ github.token }}
+
+outputs:
+  outcome:
+    description: >-
+      pass, fail, examined_nothing, unclassified, error (no verdict was produced) or skipped (the event is not a
+      finished production deploy: it did not succeed, or it ran for a pull request).
+  exit-code:
+    description: >-
+      The step's exit code, seamkit's own: 0 pass or skipped, 1 fail, 2 no verdict, 3 examined nothing, 4
+      unclassified. After a deploy, a pass while production runs a commit that does not contain the deployed one is
+      reported as 1.
+  title:
+    description: 'The one-line result, such as "PASS: 20 live of 20".'
+  check-run-url:
+    description: The posted check run, when GitHub accepted it.
+
+runs:
+  using: node24
+  main: packages/action/bundle/index.js

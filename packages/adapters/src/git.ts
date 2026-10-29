@@ -9,6 +9,16 @@ export interface GitCommit {
 
 const HEX = /^[0-9a-f]{4,64}$/;
 
+/**
+ * Whether git accepts `name` as a branch name, exactly as written: never HEAD, an option, or an
+ * @{-N} that git would expand. Anything git accepts is safe as one argument of a refspec.
+ */
+export async function isBranchName(cwd: string, name: string): Promise<boolean> {
+  if (name === '' || name.startsWith('-')) return false;
+  const r = await runGit(['check-ref-format', '--branch', name], { cwd });
+  return r.code === 0 && r.stdout.toString('utf8').trim() === name;
+}
+
 /** Read-only questions to the local repository: history, ancestry and commit ids. */
 export class GitRepo {
   private constructor(readonly cwd: string) {}
@@ -31,7 +41,15 @@ export class GitRepo {
    */
   async resolveBranch(name?: string): Promise<{ name: string; head: string }> {
     if (name !== undefined) {
-      const head = name.startsWith('-') ? undefined : await this.rev(name);
+      if (name.startsWith('-')) throw new Error(`there is no branch or commit called ${name}`);
+      // A branch name means the remote's branch: a CI checkout often has it only as
+      // origin/<name>, and its local branch of that name sits at the commit the job was given.
+      // That holds for a branch whose name starts with refs/ too. HEAD, a commit or any other
+      // revision, such as refs/heads/<name> when the remote has no branch of that name, means
+      // what git says it means.
+      const remote = (await isBranchName(this.cwd, name)) ? await this.rev(`refs/remotes/origin/${name}`) : undefined;
+      if (remote !== undefined) return { name, head: remote };
+      const head = await this.rev(name);
       if (head === undefined) throw new Error(`there is no branch or commit called ${name}`);
       return { name, head };
     }
@@ -65,9 +83,48 @@ export class GitRepo {
     return full === undefined ? undefined : (await this.read([full]))[0];
   }
 
-  /** The full id of an abbreviated commit, or undefined when it is missing or ambiguous. */
+  /** How many commits on the first-parent line of `head` are not reachable from `exclude`. */
+  async countFirstParent(head: string, exclude: string): Promise<number> {
+    return Number(await git(['rev-list', '--first-parent', '--count', head, `^${exclude}`], { cwd: this.cwd }));
+  }
+
+  /**
+   * The full ids of many abbreviated commits in one git process, in order: undefined for one that
+   * is missing, ambiguous or not a commit. With `peelTags`, an id that names an annotated tag
+   * gives the commit the tag points at.
+   */
+  async resolveAll(abbrevs: readonly string[], options: { peelTags?: boolean } = {}): Promise<(string | undefined)[]> {
+    const asked = abbrevs.filter((a) => HEX.test(a));
+    if (asked.length === 0) return abbrevs.map(() => undefined);
+    const input = asked.map((a) => `${a}\n${a}^{commit}\n`).join('');
+    const r = await runGit(['cat-file', `--batch-check=%(objectname) %(objecttype)`], { cwd: this.cwd, input });
+    if (r.code !== 0) throw new GitError(['cat-file', '--batch-check'], r);
+    const answers = r.stdout.toString('utf8').split('\n');
+    const found = new Map<string, string>();
+    asked.forEach((a, i) => {
+      const [named, kind] = (answers[2 * i] ?? '').split(' ');
+      const [id, type] = (answers[2 * i + 1] ?? '').split(' ');
+      // git prefers a ref named like the abbreviation, which is not the object asked for, and
+      // peels a tag to its commit, which is that commit only when tags are asked to be peeled. An
+      // abbreviation that a blob or tree also matches is ambiguous on its own; asked as a commit,
+      // git settles it as resolve() does, and the answer still has to start with it.
+      const asks =
+        named !== undefined &&
+        ((named.startsWith(a) && (kind === 'commit' || (kind === 'tag' && options.peelTags === true))) ||
+          (kind === 'ambiguous' && id !== undefined && id.startsWith(a)));
+      if (asks && type === 'commit' && id !== undefined && /^[0-9a-f]{40,64}$/.test(id)) found.set(a, id);
+    });
+    return abbrevs.map((a) => found.get(a));
+  }
+
+  /**
+   * The full id of an abbreviated commit, or undefined when it is missing, ambiguous, or names
+   * something else: a tag, which git would peel to its commit, or a ref named like the abbreviation.
+   */
   async resolve(abbrev: string): Promise<string | undefined> {
-    return HEX.test(abbrev) ? this.rev(abbrev) : undefined;
+    if (!HEX.test(abbrev)) return undefined;
+    const full = await this.rev(abbrev);
+    return full !== undefined && full.startsWith(abbrev) ? full : undefined;
   }
 
   /** Whether `running` contains `change`; null, with git's reason, when git cannot tell. */
@@ -76,6 +133,14 @@ export class GitRepo {
     if (r.code === 0) return { contains: true };
     if (r.code === 1) return { contains: false };
     return { contains: null, reason: `git could not compare the commits: ${r.stderr.trim().split('\n')[0] ?? `exit ${r.code}`}` };
+  }
+
+  /** The commits reachable from any of `tips`, full ids, and not from `exclude`. */
+  async reachableFrom(tips: readonly string[], exclude: string): Promise<Set<string>> {
+    if (tips.length === 0) return new Set();
+    const r = await runGit(['rev-list', '--stdin'], { cwd: this.cwd, input: `${[...tips, `^${exclude}`].join('\n')}\n` });
+    if (r.code !== 0) throw new GitError(['rev-list', '--stdin'], r);
+    return new Set(r.stdout.toString('utf8').split('\n').filter((l) => l.length > 0));
   }
 
   async isShallow(): Promise<boolean> {

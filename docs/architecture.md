@@ -175,7 +175,8 @@ risk: ship_alone
 
 The parser is strict. It reads YAML 1.2 with the core schema, refuses aliases and custom tags, and rejects unknown
 fields. It reports every problem in one pass, each naming the field and the fix, so that an agent can repair the card
-with one edit. A description holds at most one card, and a card larger than 16 KiB is refused.
+with one edit. A description holds at most one card, a card larger than 16 KiB is refused, and a card lists at most 20
+markers, as many as readback judges for one change.
 
 Readback finds cards in the history rather than through GitHub's API, so a card counts once its merge commit carries it.
 GitHub's first line for a merged pull request is either "Merge pull request #N from branch", with the title on the third
@@ -278,7 +279,21 @@ Problems are described without quoting the response.
 `seamkit stamp` writes the document at build time. It prefers git, which alone can tell a clean working tree from a
 dirty one, and leaves its own output file out of that check. Where the build has no history, it falls back to the
 commit that the CI system provides, such as `VERCEL_GIT_COMMIT_SHA` or `GITHUB_SHA`, records which variable it used,
-and leaves `dirty` out because it cannot know. `--require-clean` refuses to stamp a dirty tree.
+and leaves `dirty` out because it cannot know. Only git's own "not a git repository" means there is no history: a
+repository git refuses to read, such as one owned by another user or written by a newer git, and a checkout on a
+machine without git, end with no stamp, since only git could have checked the tree. A file renamed counts at the path
+it left, and a change counts inside a submodule, named by its path there, whatever its `ignore` setting, and in a file
+marked skip-worktree or assume-unchanged, which `git status` leaves out: status then runs on a copy of the index,
+outside the repository, holding those entries unmarked and without their file data, so git reads each one (in a sparse
+checkout, a skip-worktree file absent from the work tree keeps its mark). Status runs with `--no-optional-locks`, so stamp never rewrites the index.
+`--require-clean` refuses to stamp a dirty tree, and refuses a stamp that cannot say whether the tree is clean: one
+from a CI variable, outside a repository, or with `--commit` naming anything but HEAD. Vercel's build checks
+the commit out with its history and then writes `vercel.json` into the checkout, the committed settings on one line or
+`{}` when none is committed, so before 0.2.0 every Vercel build stamped as dirty and its version was never taken as
+proof. On Vercel's build of HEAD, where `VERCEL` is `1` and `VERCEL_GIT_COMMIT_SHA` names HEAD, a `vercel.json` whose
+JSON is exactly the committed settings, or `{}` when none is committed, is not counted, and stamp says so; any other
+content, any other file and any other build still count. Vercel's checkout is on a branch named `master` whatever
+branch it builds, so there the document's `ref` comes from `VERCEL_GIT_COMMIT_REF`.
 
 `seamkit audit --url <production>` is readback over the last 20 changes with no configuration. After the verdicts it
 gives advice for each gap it found, such as serving a version document, fetching an unknown commit, deepening a shallow
@@ -462,7 +477,8 @@ interface Observed<T> { value: T; at: string; source: string; raw?: string }  //
 
 Adapters are read-only by construction. They take credentials from the environment, document the narrowest token scope
 that suffices, and never write the credential or a response payload into an event. A production URL that carries
-credentials or a query string is refused, because URLs are recorded. Each observation is recorded with its source and
+credentials or a query string is refused, and its fragment dropped, because URLs are recorded; a card's URL that
+carries credentials, a query string or a fragment is refused. Each observation is recorded with its source and
 time so that the verdict built on it can be replayed. GitHub follows in M6, and Vercel, Supabase and Postgres in the
 milestones that need them.
 
@@ -470,9 +486,9 @@ milestones that need them.
 
 | Surface | Commands or tools | Notes |
 |---|---|---|
-| CLI | built: `seamkit readback [--pr N \| --commit C] [--last N]`, `seamkit audit`, `seamkit stamp [--out F] [--require-clean]`, `seamkit check`, `seamkit checks`, `seamkit replay [<event>]`, `seamkit state init\|list\|verify\|sync`; planned: `seamkit init`, `seamkit gate [--pr N]`, `seamkit carry <target>`, `seamkit parity`, `seamkit radius [<range>]`, `seamkit rule`, `seamkit approve <action>`, `seamkit console` | exit codes per 5.3; `seamkit approve` opens the channel itself and never reads the answer from its arguments |
+| CLI | built: `seamkit readback [--pr N \| --commit C] [--last N] [--deployed C]`, `seamkit audit`, `seamkit stamp [--out F] [--require-clean]`, `seamkit check`, `seamkit checks`, `seamkit replay [<event>]`, `seamkit state init\|list\|verify\|sync`; planned: `seamkit init`, `seamkit gate [--pr N]`, `seamkit carry <target>`, `seamkit parity`, `seamkit radius [<range>]`, `seamkit rule`, `seamkit approve <action>`, `seamkit console` | exit codes per 5.3; `seamkit approve` opens the channel itself and never reads the answer from its arguments |
 | MCP server | tools mirroring the read-only commands, plus `request_ruling` and `request_approval`, which take the question and the action but never the answer | human answers arrive only through the channel the server opens; the result of `request_approval` is a link or a level, never a yes the agent supplied |
-| GitHub Action | runs `gate` on pull requests and `readback` after merges or deploys | posts one check run per pull request; read-only token scopes are documented |
+| GitHub Action | built: `readback` after a deploy (`deployment_status`, or `workflow_run` of a deploy workflow) and on a schedule; planned: `gate` on pull requests (M6) | one check run per production address on the deployed commit; `checks: write` to post it, `contents: write` only when a ledger is kept |
 | Hooks | copy-in examples for Claude Code and Cursor that refuse a deploy command unless `gate` and `carry` pass for the exact head | shipped as examples, not installed silently |
 | Console | a static HTML page generated from the policy and the events | no server, no model, no network at view time |
 
@@ -526,7 +542,7 @@ usable by strangers ahead of the remaining checks: the npm package and the GitHu
 |---|---|---|---|
 | M1 | repository scaffold, `core` verdict algebra, event writer for the state branch, CLI skeleton with exit codes, replay | unit tests cover every outcome, including zero rows as `examined_nothing`, and a replay test reproduces every verdict | done, accepted |
 | M2 | `readback` with the version-endpoint and bundle-marker adapters, version ancestry, the fake production, `seamkit audit` with zero configuration, `seamkit stamp` | the demo history sorts into live, not proven, not live and nothing to prove, and the audit runs against commit.city | done, accepted |
-| M3 | the `seamkit` npm package; a GitHub Action that reads back after deploys and reports a check run | `npx seamkit audit` works on a clean machine, and the Action posts a check run on a sample repository | in progress, proposed |
+| M3 | the `seamkit` npm package; a GitHub Action that reads back after deploys and reports a check run | `npx seamkit audit` works on a clean machine, and the Action posts a check run on a sample repository | done-when met 2026-10-26 on a sample deployed to Vercel; the merge and the 0.2.0 release are pending |
 | M4 | MCP server with read-only tools mirroring the CLI, Claude Code plugin packaging | an MCP client runs an audit and receives the verdicts and the outcome | proposed |
 | M5 | `carry` and the split rule | given a production version behind main, carry lists the riding pull requests by title, and a hand deploy blocks | proposed |
 | M6 | `card` and `gate` with the GitHub adapter | `seamkit gate` lists each open pull request with its verdict and the exact missing items | proposed |
@@ -536,8 +552,118 @@ usable by strangers ahead of the remaining checks: the npm package and the GitHu
 ### Changes made while building
 
 M1 moved the event writer into its own `state` package, limited RFC 8785 to seamkit's own events and input digests, gave
-state commits a fixed tool identity (section 7.3), and made `--json` print one document per invocation (section 5.3).
-M2 made four further changes. Sightings come from recorded readback runs rather than from `marker_seen` events (section
+state commits a fixed tool identity (section 7.3), and made `--json` print one document per invocation (section 5.3). M2
+made four further changes. Sightings come from recorded readback runs rather than from `marker_seen` events (section
 6.4). Adapters report observations, and the core judges them (section 8). A card marker's `url` became optional and may
 be a path, so a card does not name one environment (section 6.1). And cards are read from merge commit messages, which
-makes the repository's merge setting part of the setup (section 6.1).
+makes the repository's merge setting part of the setup (section 6.1). M3 put the GitHub Action's metadata at the
+repository root, so it is used as `azank1/seamkit@<tag>`, with its code in `packages/action` and one committed bundle
+that CI rebuilds and compares. The Action posts examined nothing as a failed check, not a neutral one, because GitHub
+counts a neutral check as passing for required checks, and unclassified as action required. Readback gained
+`--deployed`, the commit a deploy put out. Once the ledger holds a recorded run that read this address's version
+document, a change merged after it is scoped out, folded into one not-examined gap and left to the next deploy, when it
+was never seen live there and is in no build production was seen running there, by any recorded run whatever it judged,
+or by this one. A merge landing during a build then does not fail a healthy deploy, and a deploy that drops any other
+change fails. Without such a run, whether there is no ledger, a ledger just started, or one kept for another address,
+and once production there has been seen running a commit the repository does not have, nothing is scoped out, because a
+change on its way cannot be told from one a rollback removed, and the gap says so. `--last` counts the changes judged. This is scoping in
+the shell, like `--last`; the check and its version are unchanged, and a contradicted marker on a scoped-out change
+shows on the next run that judges it, such as the scheduled watch. `readback --json` reports production's own version
+document as `production`, and the Action waits on that document alone: a read is final once it reports the deployed
+commit, and once a read has named a commit, a read that names none is a failed read rather than an answer. A pass while
+production runs a commit that does not contain the deployed one is reported as a fail, because the deploy is not live at
+that address. Before reading, the Action fetches the branch it reads, because `actions/checkout` points
+`origin/<branch>` at the job's commit when the branch has moved on, and a `--branch` that git accepts as a branch name
+(`git check-ref-format --branch`) now prefers `origin/<name>` over a local branch of that name, while `HEAD` and other
+revisions mean what git says. The Action reads `refs/heads/<name>`, `heads/<name>`, `origin/<name>`,
+`remotes/origin/<name>` and `refs/remotes/origin/<name>` as `<name>`, and `origin/HEAD` as the default branch. When its
+branch is not a branch name or cannot be fetched, it gives no verdict, since the checkout's own branch could hide a
+rollback. While it waits, a commit production reports that the clone lacks makes it fetch the branch once more. It points `origin/HEAD` at the event's default branch, which
+`actions/checkout` leaves unset, and for a schedule, whose payload names none, at the branch the schedule runs on. When
+it records, it fetches the ledger again after the wait, so the run that counts sees what other runs pushed meanwhile.
+In a GitHub Actions step the CLI's output cannot run a workflow command: a zero-width space goes before a line that would
+start one and inside `##[`, and JSON output writes `[` after `##` as `\u005b`. `--version-url` is checked as `--url` is,
+and the Action's tables escape a change's words as Markdown and HTML, though GitHub still links a bare URL, which shows
+its own address. Text output turns every control character in a change's words into a space, line breaks, terminal
+escapes, backspaces and direction overrides alike, so they cannot draw or hide lines of the report. A build seen
+running at any of the version document paths at an address counts, so moving the document from `/api/version` to
+`/version.json` does not hide a rollback, and for a change whose version marker is production's own document, a
+sighting at one of those paths counts at the others, so that rollback reads as not live. `--deployed` reads as many
+commits as were merged after the deployed one before applying `--last`. Readback reads the ledger before production, so
+no connection to production sits idle while a large ledger is parsed, and it sends a GET once more when a kept-alive
+connection turns out closed. A card string holding half a character, which YAML's `\uD800` escape gives and no event can
+record, is a card problem rather than a run with no verdict. A ledger push that loses a race is tried again for about a
+minute, after a random wait that doubles each time, and one that fails while the remote stands still is given up after
+three tries. While the Action waits, a read that names a commit the checkout lacks is kept before the branch is fetched
+again, and at most one read follows each fetch before the next poll. A sighting at another discovery path is counted at
+production's own document only for a change whose card names no such path itself, and `seamkit state list` folds
+control characters in ledger file names and fields as reports do. Readback follows redirects as a browser does, so an
+address that redirects to another origin, such as `http://` to `https://` or the bare domain to `www`, is judged by what
+it redirects to; only production's operator can make it redirect. A `--version-url` at one of the discovery paths
+counts the others as discovery does, and a run that read any of them counts as a run at this address, so moving the
+document does not stop a change on its way from being left to the next deploy. A second production on the same origin
+whose version document is at one of those paths shares their history: its sightings count here, and its runs count as
+runs at this address. Serving its document at another path keeps the two apart, and the Action names each check after its url's host and
+path, so two productions on one host keep their own checks. A ledger push that the remote refuses
+while no other writer pushes ends with its own error, and the Action's advice names the change to make for a refusal,
+a missing permission or a lost race. The Action rewrites only absolute URLs, and values that could carry a credential,
+in the errors it reports, so a path such as `/version.json` in advice stays as written. Every CLI error prints on one
+line, and `seamkit state list` shows a well-formed event that has no time as `(no time)`. A card that the check would
+refuse is treated as a broken card, so it is proven by version alone and never leaves its window without a verdict, and
+one run reads at most 100 version documents, 100 pages and 1000 marker texts on a page: the newest changes spend that
+first, and an older card whose markers do not fit is proven by version alone, which its gap says. A branch whose name
+starts with `refs/` is read as the remote has it, as any other branch name is, while a full ref such as
+`refs/heads/<name>` that the remote has no branch for means what git says. A commit a version document names is
+resolved only to a commit whose id starts with it, so a tag, which git would peel to its commit, or a ref named like the
+abbreviation reads as a commit the clone does not have. The Action's job summary writes its heading as text, and a
+report cut to fit is cut inside its code block, which still closes, with a run of 64 or more backticks shown as its
+count so the fence stays short. For scoping only, a build seen running whose document named an annotated tag counts as
+the commit the tag points at; the commit production runs now must still be named as a commit. The check is given only
+the sightings it looks up, one per marker of each change judged, so a ledger kept for many addresses does not grow its
+input. While the Action waits, fetching the branch for a commit the clone lacks is tried again on later polls until it
+succeeds, and the note says whether it was fetched again or the fetch failed; the reading a verdict falls back to is
+resolved again after the fetch that follows the wait. seamkit runs git with its tracing off and removes a URL's user
+name and password from anything git writes, because git's errors can reach a check run that anyone who can read the
+repository can read. Tracing is turned off by removing every `GIT_TRACE*` variable and `GIT_CURL_VERBOSE` from git's
+environment, not by setting them to 0: git traces curl whenever `GIT_CURL_VERBOSE` is set, whatever its value, and
+`GIT_TRACE_REDACT` is kept on. trace2 can also be turned on in git config, so its three targets are set to 0 in the
+environment, which overrides config. A commit abbreviation that a blob or tree also matches still resolves to the commit when
+scoping, as it does everywhere else. A misconfigured step's check run goes on the full commit when the sha input is
+abbreviated. Both paths expand an abbreviated deployed commit by one rule: git looks a name up as a ref first, so text
+that looks like an abbreviation and gives a commit that does not start with it is a tag or branch named like it, and a
+run given such a deployed commit ends with no verdict rather than judge the ref's commit; the full id always works.
+An annotated tag's own id gives no verdict too, saying it names a tag; text is taken as a ref when any ref has one of the
+names git tries for it, even when several do and git calls the name ambiguous. The ledger is pushed with `--no-verify`: it is seamkit's
+own data, so a project's pre-push hook, which may refuse branch names or run its tests, does not run for it. The
+unknown-commit note goes by the fetches of the branch made since production first reported the commit, whichever
+commit each was made for: after one that succeeded the commit is on no branch fetched, and if every one failed, that
+is why. With none made since, the last fetch made says what this repository holds. A URL's user name and password are removed up to the last @ on the
+line, since a password can hold an unencoded @, slash, quote or space, and up to the next @ when a line break in
+them puts it on a later line; the removal repeats until no URL is followed by an @. A // with a mistyped scheme or
+none starts a URL too, and quoted text loses what is left up to its last @, because git reads such a remote as a local
+path and quotes it whole. git and curl end the authority at its first / ? or # and split it at its first @, so the
+host curl names in an error, or ssh names for a URL missing its scheme, can be part of a password, and is hidden, as is
+the proxy curl quotes when git cut a proxy's password short. The :: of a remote given as `<transport>::<address>`, and
+git's words before an address it prints with no // (`url has no scheme`, `unable to look up`), start a URL too, and
+quoted text loses everything from its first quote to its last @, so a quote in a credential does not stop it. Since no
+list of wordings can be complete, the credentials git can see are also hidden wherever they appear: the user names,
+passwords and their pieces in the URLs and addresses its config holds, in its http extra headers, in the credential
+helpers it runs (whole, as the shell echoes a failing one, each name=value in them, quoted or not, and each literal
+between the shell's expansion syntax, as in `${X:-token}`) and in the proxy variables, looked up only when git wrote an
+error. A // that follows no scheme is read both as the start of an address and as part of a credential, and a decoded
+credential is cut again where git would cut it. A line git quotes from a helper's output (`invalid credential line`, and a
+helper's url= with no scheme) is not shown at all, and neither is the value of a credential-protocol key such as
+`password=` on any line, which is how a traced helper prints a secret it computed. The removal runs only on text up to the last @, which keeps it
+linear on long text. The Action fetches and merges the ledger without pushing until its final push, so a refused push
+is reported once, with advice.
+git refuses a URL holding a line break and prints it whole, so its words about one are replaced by the reason, which
+names no one URL, since git words a proxy's or a helper's the same way as the remote's. stamp runs git from the top of
+the work tree, so it first makes the caller's GIT_DIR, GIT_WORK_TREE and the other path variables absolute, as git read
+them where stamp started; a gitlink that is not the directory of its checkout (a file, a link to another clone, or an
+uninitialised submodule's directory with anything in it) counts as changed; and a `state sync --no-push` that finds
+the ledger ahead says it holds commits origin lacks, which a merge alone can make. `ledger: false` neither reads nor
+records the ledger, even one the checkout already holds: the Action passes `--no-ledger`, which judges as if there
+were no ledger and records nothing, and the docs and the push advice say what that costs. `--no-record` notes that it kept the run out of
+the ledger, not that the ledger is missing. A change whose card the run cannot read for lack of room, or cannot check, is still kept in `--deployed`
+scope by a sighting under one of its card's markers. The test runner's time limit is per test from Node 24 and per file
+before it, so it is set well above the slowest file there.

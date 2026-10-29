@@ -11,6 +11,7 @@ import {
   defaultRegistry,
   digest,
   exitCodeFor,
+  oneLine,
   parseEventFile,
   readbackCheck,
   renderReadback,
@@ -27,7 +28,7 @@ import {
 } from '@seamkit/core';
 import { GitStateStore, NotAGitRepository, STATE_BRANCH, type StoredFile } from '@seamkit/state';
 import { auditAdvice, gatherReadback, type ReadbackRequest } from './readback.js';
-import { StampError, makeStamp, writeStamp } from './stamp.js';
+import { makeStamp, writeStamp } from './stamp.js';
 
 export interface Io {
   out(text: string): void;
@@ -49,7 +50,8 @@ const HELP = `seamkit ${VERSION}: deterministic production checks.
 Usage:
   seamkit audit --url <production-url> [--last <n>] [--branch <ref>] [--json]
   seamkit readback --url <production-url> [--pr <n> | --commit <rev>] [--last <n>]
-                   [--branch <ref>] [--version-url <url>] [--record|--no-record] [--json]
+                   [--branch <ref>] [--deployed <rev>] [--version-url <url>]
+                   [--record|--no-record|--no-ledger] [--json]
   seamkit stamp [--out <file>] [--commit <rev>] [--require-clean]
   seamkit check <name> [--input <file>|-] [--record|--no-record] [--json]
   seamkit checks
@@ -57,20 +59,29 @@ Usage:
   seamkit state init
   seamkit state list [--json]
   seamkit state verify [--json]
-  seamkit state sync [--remote <name>]
+  seamkit state sync [--remote <name>] [--no-push]
   seamkit version
 
 readback proves whether production holds each merged change: by the commit production says it
 runs (a version document, which "seamkit stamp" writes at build time), and by the markers in a
 change's seamkit-card. audit is readback over the last changes with advice for every gap. The
-production URL can also come from SEAMKIT_URL.
+production URL can also come from SEAMKIT_URL. After a deploy, --deployed names the commit just
+deployed. When the ledger holds a run that read this address, a change merged after it that was
+never seen live here, nor in any build production was seen running here, is left to the next
+deploy; any other is still judged, so a rollback fails. Without such a run, or once production here
+was seen running a commit this repository does not have, every change is judged. --last counts
+the changes judged. --no-ledger judges without reading the ledger, as if there were none, and
+records nothing.
 
 Every command that produces a verdict exits with its outcome:
   0 pass   1 fail   3 examined nothing   4 unclassified (stops for a human)
   2 usage or configuration error (no verdict was produced)
 
 Verdicts are recorded on the ${STATE_BRANCH} branch when it exists (create it with
-"seamkit state init"), or always with --record. Nothing else in the repository is touched.
+"seamkit state init"), or always with --record. Recording touches nothing else in the
+repository; "seamkit stamp --out" writes only the file it names there. "seamkit stamp
+--require-clean" refuses a dirty tree, and a stamp that cannot say whether the tree is
+clean. "seamkit state sync --no-push" merges the remote's ledger here without pushing.
 `;
 
 class UsageError extends Error {
@@ -82,6 +93,8 @@ type Flags = {
   json?: boolean;
   record?: boolean;
   'no-record'?: boolean;
+  'no-push'?: boolean;
+  'no-ledger'?: boolean;
   remote?: string;
   cwd?: string;
   help?: boolean;
@@ -92,6 +105,7 @@ type Flags = {
   last?: string;
   branch?: string;
   'version-url'?: string;
+  deployed?: string;
   out?: string;
   'require-clean'?: boolean;
 };
@@ -109,6 +123,8 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         json: { type: 'boolean' },
         record: { type: 'boolean' },
         'no-record': { type: 'boolean' },
+        'no-push': { type: 'boolean' },
+        'no-ledger': { type: 'boolean' },
         remote: { type: 'string' },
         cwd: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
@@ -119,12 +135,13 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         last: { type: 'string' },
         branch: { type: 'string' },
         'version-url': { type: 'string' },
+        deployed: { type: 'string' },
         out: { type: 'string' },
         'require-clean': { type: 'boolean' },
       },
     }) as { values: Flags; positionals: string[] });
   } catch (err) {
-    io.err(`seamkit: ${(err as Error).message}\n\n${HELP}`);
+    io.err(`seamkit: ${oneLine((err as Error).message)}\n\n${HELP}`);
     return EXIT_USAGE;
   }
   const cwd = resolve(io.cwd, values.cwd ?? '.');
@@ -157,10 +174,11 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         throw new UsageError(`unknown command: ${command}`);
     }
   } catch (err) {
-    if (err instanceof UsageError) io.err(`seamkit: ${err.message}\nRun "seamkit help" for usage.\n`);
-    else if (err instanceof InputError) io.err(`seamkit: input error: ${err.message}\n`);
-    else if (err instanceof NotAGitRepository || err instanceof StampError) io.err(`seamkit: ${err.message}\n`);
-    else io.err(`seamkit: ${(err as Error).message}\n`);
+    // A message can quote a ledger path, git's output or an input, so it is shown as one plain line.
+    const message = oneLine((err as Error).message);
+    if (err instanceof UsageError) io.err(`seamkit: ${message}\nRun "seamkit help" for usage.\n`);
+    else if (err instanceof InputError) io.err(`seamkit: input error: ${message}\n`);
+    else io.err(`seamkit: ${message}\n`);
     return EXIT_USAGE;
   }
 }
@@ -201,7 +219,7 @@ async function readInput(flags: Flags, cwd: string, io: Io): Promise<unknown> {
 
 function print(verdicts: readonly Verdict[], outcome: Outcome, io: Io, json: boolean, extra: Record<string, unknown> = {}): void {
   if (json) {
-    io.out(`${JSON.stringify({ outcome, exitCode: exitCodeFor(outcome), verdicts, ...extra })}\n`);
+    io.out(jsonLine({ outcome, exitCode: exitCodeFor(outcome), verdicts, ...extra }));
     return;
   }
   for (const v of verdicts) io.out(`${renderVerdict(v)}\n\n`);
@@ -213,6 +231,7 @@ async function cmdCheck(args: string[], flags: Flags, cwd: string, io: Io): Prom
   if (name === undefined) throw new UsageError('check needs a check name; see "seamkit checks"');
   if (extra.length > 0) throw new UsageError(`unexpected argument: ${extra[0]}`);
   if (flags.record && flags['no-record']) throw new UsageError('--record and --no-record cannot be combined');
+  if (flags['no-ledger']) throw new UsageError('--no-ledger is for readback; use --no-record to keep a check out of the ledger');
   const def = defaultRegistry().get(name);
   if (def === undefined) throw new UsageError(`unknown check: ${name}; see "seamkit checks"`);
   const at = io.now();
@@ -220,14 +239,14 @@ async function cmdCheck(args: string[], flags: Flags, cwd: string, io: Io): Prom
   const outcome = combine(run.verdicts.map((v) => v.outcome));
   const recorded = await recordRun(run, at, flags, cwd, io);
   print(run.verdicts, outcome, io, flags.json === true, recorded ? { recorded } : {});
-  if (!flags.json) noteRecording(recorded, io);
+  if (!flags.json) noteRecording(recorded, flags, io);
   return exitCodeFor(outcome);
 }
 
 /** Records a run when the state branch exists, or always with --record; never with --no-record. */
 async function recordRun(run: CheckRun, at: string, flags: Flags, cwd: string, io: Io): Promise<{ id: string; path: string } | undefined> {
   if (flags.record && flags['no-record']) throw new UsageError('--record and --no-record cannot be combined');
-  if (flags['no-record']) return undefined;
+  if (flags['no-record'] || flags['no-ledger']) return undefined;
   let store: GitStateStore | undefined;
   try {
     store = await GitStateStore.open(cwd);
@@ -240,23 +259,53 @@ async function recordRun(run: CheckRun, at: string, flags: Flags, cwd: string, i
   return { id: r.id, path: r.path };
 }
 
-function noteRecording(recorded: { id: string } | undefined, io: Io): void {
-  io.err(recorded ? `recorded as event ${recorded.id.slice(0, 12)} on ${STATE_BRANCH}\n` : `not recorded (no ${STATE_BRANCH} branch; run "seamkit state init" or pass --record)\n`);
+function noteRecording(recorded: { id: string } | undefined, flags: Flags, io: Io): void {
+  io.err(
+    recorded
+      ? `recorded as event ${recorded.id.slice(0, 12)} on ${STATE_BRANCH}\n`
+      : flags['no-record'] || flags['no-ledger']
+        ? `not recorded (${flags['no-ledger'] ? '--no-ledger' : '--no-record'})\n`
+        : `not recorded (no ${STATE_BRANCH} branch; run "seamkit state init" or pass --record)\n`,
+  );
+}
+
+/**
+ * One JSON value on one line. A merged change's words can hold ##[, which a GitHub Actions runner
+ * reads as a workflow command anywhere on a line; JSON's own escape keeps the value the same.
+ */
+function jsonLine(value: unknown): string {
+  return `${JSON.stringify(value).replace(/##\[/g, '##\\u005b')}\n`;
+}
+
+/**
+ * Output as a GitHub Actions step may print it. The runner reads a line as a workflow command when
+ * it starts with :: once leading whitespace is trimmed, or holds ##[ anywhere, and it ends lines at
+ * a lone CR too. Reports carry merged changes' own words, so a zero-width space goes before such a
+ * line and inside ##[; nothing else changes. Fencing the output instead would add lines to what a
+ * script captures, as in version=$(seamkit version).
+ */
+export function inert(text: string): string {
+  return text.replace(/##\[/g, '##\u200b[').replace(/(^|[\r\n])(?=(?:[^\S\r\n]|\u0085)*::)/g, '$1\u200b');
 }
 
 /** The production URL, refused when it carries anything that must not be recorded. */
 function productionUrl(flags: Flags, env: Io['env']): string {
   const raw = flags.url ?? env['SEAMKIT_URL'];
   if (raw === undefined || raw === '') throw new UsageError('give the production URL with --url, or set SEAMKIT_URL');
+  return recordableUrl(raw, '--url', 'https://your.app');
+}
+
+/** An address the ledger may record. Never echoed: a malformed URL can still hold a token, and these messages reach reports. */
+function recordableUrl(raw: string, flag: string, example: string): string {
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    throw new UsageError(`--url is not an absolute URL: ${raw}`);
+    throw new UsageError(`${flag} is not an absolute URL; give one such as ${example}`);
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new UsageError('--url must be an http or https URL');
-  if (url.username !== '' || url.password !== '') throw new UsageError('--url must not contain a user name or password, because URLs are recorded in the ledger');
-  if (url.search !== '') throw new UsageError('--url must not carry a query string, because URLs are recorded in the ledger');
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new UsageError(`${flag} must be an http or https URL`);
+  if (url.username !== '' || url.password !== '') throw new UsageError(`${flag} must not contain a user name or password, because URLs are recorded in the ledger`);
+  if (url.search !== '') throw new UsageError(`${flag} must not carry a query string, because URLs are recorded in the ledger`);
   url.hash = '';
   return url.href;
 }
@@ -273,15 +322,17 @@ async function cmdReadback(args: string[], flags: Flags, cwd: string, io: Io, au
   if (audit && (flags.pr !== undefined || flags.commit !== undefined)) throw new UsageError('audit covers the last changes; use readback for one pull request or commit');
   if (flags.pr !== undefined && flags.commit !== undefined) throw new UsageError('--pr and --commit cannot be combined');
   if (flags.record && flags['no-record']) throw new UsageError('--record and --no-record cannot be combined');
+  if (flags['no-ledger'] && (audit || flags.record)) throw new UsageError(audit ? 'audit reads the ledger; --no-ledger is for readback' : '--no-ledger records nothing, so it cannot be combined with --record');
   const req: ReadbackRequest = { url: productionUrl(flags, io.env), last: positive(flags.last, '--last', 20, 1000) };
   if (flags.pr !== undefined) req.pr = positive(flags.pr, '--pr', 0, Number.MAX_SAFE_INTEGER);
   if (flags.commit !== undefined) req.commit = flags.commit;
   if (flags.branch !== undefined) req.branch = flags.branch;
-  if (flags['version-url'] !== undefined) {
-    const v = flags['version-url'];
-    if (!/^https?:\/\//.test(v) || /[?@]/.test(v)) throw new UsageError('--version-url must be an http or https URL without a query string or credentials');
-    req.versionUrl = v;
+  if (flags.deployed !== undefined) {
+    if (flags.deployed === '' || flags.deployed.startsWith('-')) throw new UsageError('--deployed needs a commit, such as the one the host reports for this deploy');
+    req.deployed = flags.deployed;
   }
+  if (flags['no-ledger']) req.noLedger = true;
+  if (flags['version-url'] !== undefined) req.versionUrl = recordableUrl(flags['version-url'], '--version-url', 'https://your.app/version.json');
   const { input, context } = await gatherReadback(cwd, req, io.now, { userAgent: `seamkit/${VERSION} (${command})` });
   const at = io.now();
   const run = runCheck(readbackCheck, input, at);
@@ -289,20 +340,24 @@ async function cmdReadback(args: string[], flags: Flags, cwd: string, io: Io, au
   const recorded = await recordRun(run, at, flags, cwd, io);
   const advice = audit ? auditAdvice(context) : [];
   if (flags.json) {
-    io.out(`${JSON.stringify({ outcome, exitCode: exitCodeFor(outcome), verdicts: run.verdicts, ...(audit ? { advice } : {}), ...(recorded ? { recorded } : {}) })}\n`);
+    // What production said it runs, from the version document this run read first: the fact a
+    // caller waiting for a deploy needs, whether or not any change was in scope.
+    const v = context.primaryVersion;
+    const production = { url: v.url, status: v.status, ...(v.commit ? { commit: v.commit } : {}), ...(v.reported ? { reported: v.reported } : {}), ...(v.reason ? { reason: v.reason } : {}) };
+    io.out(jsonLine({ outcome, exitCode: exitCodeFor(outcome), verdicts: run.verdicts, production, ...(audit ? { advice } : {}), ...(recorded ? { recorded } : {}) }));
     return exitCodeFor(outcome);
   }
   io.out(`${renderReadback(run.verdicts)}\n`);
   if (advice.length > 0) io.out(`\nTo examine more:\n${advice.map((a) => `  - ${a}`).join('\n')}\n`);
-  noteRecording(recorded, io);
+  noteRecording(recorded, flags, io);
   return exitCodeFor(outcome);
 }
 
 async function cmdStamp(args: string[], flags: Flags, cwd: string, io: Io): Promise<number> {
   if (args.length > 0) throw new UsageError(`unexpected argument: ${args[0]}`);
   const req = { requireClean: flags['require-clean'] === true, ...(flags.out ? { out: flags.out } : {}), ...(flags.commit ? { commit: flags.commit } : {}) };
-  const { doc, uncommitted } = await makeStamp(cwd, req, io.env, io.now());
-  const changes = `${uncommitted.length} uncommitted change${uncommitted.length === 1 ? '' : 's'} (such as ${uncommitted[0] ?? ''})`;
+  const { doc, uncommitted, hostWritten } = await makeStamp(cwd, req, io.env, io.now());
+  const changes = `${uncommitted.length} uncommitted change${uncommitted.length === 1 ? '' : 's'} (such as ${oneLine(uncommitted[0] ?? '')})`;
   if (doc.dirty === true && req.requireClean) {
     io.err(`seamkit: refusing to stamp a build with ${changes}\n`);
     return 1;
@@ -310,9 +365,13 @@ async function cmdStamp(args: string[], flags: Flags, cwd: string, io: Io): Prom
   const state = doc.dirty === true ? 'with uncommitted changes' : doc.dirty === false ? 'clean' : 'cleanliness unknown';
   if (flags.out) {
     const path = await writeStamp(cwd, flags.out, doc);
-    io.err(`stamped ${path}: ${doc.commit.slice(0, 12)} from ${doc.source}, ${state}\n`);
+    io.err(`stamped ${oneLine(path)}: ${doc.commit.slice(0, 12)} from ${doc.source}, ${state}\n`);
   } else {
     io.out(versionDocText(doc));
+  }
+  if (hostWritten.length > 0) {
+    const one = hostWritten.length === 1;
+    io.err(`note: ${hostWritten.map(oneLine).join(', ')} ${one ? 'is' : 'are'} not counted as uncommitted: Vercel's build writes ${one ? 'it' : 'them'} into the checkout, holding the settings ${doc.commit.slice(0, 12)} holds\n`);
   }
   if (doc.dirty === true) {
     io.err(`warning: ${changes}, so this build does not match ${doc.commit.slice(0, 12)}, and readback will not treat its version as proof\n`);
@@ -398,14 +457,15 @@ async function cmdState(args: string[], flags: Flags, cwd: string, io: Io): Prom
           outcomes: run ? run.verdicts.map((v) => v.outcome) : undefined,
         };
       });
-      if (flags.json) io.out(`${JSON.stringify(rows)}\n`);
+      if (flags.json) io.out(jsonLine(rows));
       else {
+        // A ledger file's name and fields are anyone's who can push to the branch, so no row can
+        // carry a terminal escape or a line break.
         for (const r of rows) {
-          io.out(
-            r.ok
-              ? `${String(r.at)}  ${(r.id as string).slice(0, 12)}  ${r.kind}  ${r.check ?? ''}  ${outcomesText(r.outcomes ?? [])}\n`
-              : `${r.path}  CORRUPT  ${(r.problems ?? []).join('; ')}\n`,
-          );
+          const row = r.ok
+            ? `${typeof r.at === 'string' ? r.at : '(no time)'}  ${(r.id as string).slice(0, 12)}  ${r.kind}  ${r.check ?? ''}  ${outcomesText(r.outcomes ?? [])}`
+            : `${r.path}  CORRUPT  ${(r.problems ?? []).join('; ')}`;
+          io.out(`${oneLine(row)}\n`);
         }
         io.out(`${rows.length} event${rows.length === 1 ? '' : 's'} on ${STATE_BRANCH}\n`);
       }
@@ -420,16 +480,18 @@ async function cmdState(args: string[], flags: Flags, cwd: string, io: Io): Prom
     }
     case 'sync': {
       const store = await GitStateStore.open(cwd);
-      const r = await store.sync(flags.remote ?? 'origin');
+      const push = flags['no-push'] !== true;
+      const r = await store.sync(flags.remote ?? 'origin', { push });
       const messages: Record<string, string> = {
         up_to_date: `${STATE_BRANCH} is up to date with ${r.remote}`,
         pushed: `pushed ${STATE_BRANCH} to ${r.remote}`,
         pulled: `updated ${STATE_BRANCH} from ${r.remote}`,
-        merged: `merged ${STATE_BRANCH} with ${r.remote} and pushed the result`,
+        merged: push ? `merged ${STATE_BRANCH} with ${r.remote} and pushed the result` : `merged ${STATE_BRANCH} with ${r.remote}, without pushing`,
+        ahead: `${STATE_BRANCH} holds commits ${r.remote} does not have; not pushed`,
         empty: `${STATE_BRANCH} exists neither here nor on ${r.remote}; nothing to do`,
         no_remote: `there is no remote called ${r.remote}`,
       };
-      if (flags.json) io.out(`${JSON.stringify(r)}\n`);
+      if (flags.json) io.out(jsonLine(r));
       else io.out(`${messages[r.status]}\n`);
       return r.status === 'no_remote' ? EXIT_USAGE : 0;
     }

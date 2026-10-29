@@ -54,6 +54,8 @@ export type CardLookup = ({ found: true } & CardParse) | { found: false };
 const FIELDS = ['card', 'intent', 'layers', 'targets', 'markers', 'releaseNote', 'risk'];
 const MAX_CARD_BYTES = 16 * 1024;
 const MIN_MARKER_TEXT = 4;
+/** As many markers as readback judges for one change. */
+const MAX_MARKERS = 20;
 
 /** The contents of every `seamkit-card` fenced block, following CommonMark fence rules. */
 export function extractCardBlocks(text: string): { blocks: string[]; unclosed: boolean } {
@@ -87,12 +89,16 @@ export function readCard(text: string): CardLookup {
   return { found: true, ...parseCard(blocks[0] as string) };
 }
 
+/** A key as a problem names it: as written when it is a plain name, else quoted, so it cannot break the report's lines. */
+const keyName = (k: string): string => (/^[A-Za-z0-9_.-]{1,64}$/.test(k) ? k : JSON.stringify(k));
+
 const describe = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? 'a list' : typeof v === 'object' ? 'a mapping' : JSON.stringify(v));
 
 /** Parses the YAML inside a card block. */
 export function parseCard(yamlText: string): CardParse {
   if (Buffer.byteLength(yamlText, 'utf8') > MAX_CARD_BYTES) return { ok: false, problems: [`the card is larger than ${MAX_CARD_BYTES / 1024} KiB`] };
-  const doc = parseDocument(yamlText, { version: '1.2', schema: 'core', uniqueKeys: true, strict: true });
+  // logLevel error: yaml would otherwise print some warnings, card text included, on stderr.
+  const doc = parseDocument(yamlText, { version: '1.2', schema: 'core', uniqueKeys: true, strict: true, logLevel: 'error' });
   const yamlProblems = [...doc.errors, ...doc.warnings].map((e) => `the card is not valid YAML: ${(e.message.split('\n')[0] as string).replace(/:$/, '')}`);
   if (yamlProblems.length > 0) return { ok: false, problems: yamlProblems };
   let raw: unknown;
@@ -123,8 +129,15 @@ function str(value: unknown, field: string, problems: string[], required: string
     problems.push(`${field} must not be empty: ${required}`);
     return undefined;
   }
+  // YAML's \uD800 escape gives half a character, which no recorded event can hold.
+  if (LONE_SURROGATE.test(value)) {
+    problems.push(`${field} holds half of a character (an escape such as \\uD800 without its pair); write the character itself`);
+    return undefined;
+  }
   return value;
 }
+
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 /** An absolute http or https URL, or a path such as /version.json that readback resolves against the production URL. */
 function url(value: unknown, field: string, problems: string[]): string | undefined {
@@ -134,11 +147,13 @@ function url(value: unknown, field: string, problems: string[]): string | undefi
   if (/^\/(?!\/)[^\s?#]*$/.test(text)) return text;
   try {
     const u = new URL(text);
-    if ((u.protocol === 'http:' || u.protocol === 'https:') && u.username === '' && u.password === '') return text;
+    // URLs are recorded, so one holding credentials, a query string or a fragment is refused. The CLI refuses a
+    // production URL's credentials and query string the same way, and drops its fragment.
+    if ((u.protocol === 'http:' || u.protocol === 'https:') && u.username === '' && u.password === '' && !/[?#]/.test(text)) return text;
   } catch {
     // fall through
   }
-  problems.push(`${field} must be a path such as /version.json, or an absolute http or https URL without a user name or password`);
+  problems.push(`${field} must be a path such as /version.json, or an absolute http or https URL without a user name, password, query string or fragment`);
   return undefined;
 }
 
@@ -172,7 +187,7 @@ function checkMarker(raw: unknown, field: string, problems: string[]): CardMarke
     none: ['kind', 'reason'],
   };
   const extra = Object.keys(m).filter((k) => !(allowed[kind] as string[]).includes(k));
-  if (extra.length > 0) problems.push(`${field} has unknown field(s) for kind ${kind}: ${extra.join(', ')}; allowed: ${(allowed[kind] as string[]).join(', ')}`);
+  if (extra.length > 0) problems.push(`${field} has unknown field(s) for kind ${kind}: ${extra.map(keyName).join(', ')}; allowed: ${(allowed[kind] as string[]).join(', ')}`);
   switch (kind) {
     case 'bundle': {
       const text = str(m['text'], `${field}.text`, problems, 'text the built output contains, not text that exists only in source');
@@ -207,7 +222,7 @@ function checkCard(raw: unknown, problems: string[]): Card | undefined {
   }
   const c = raw as Record<string, unknown>;
   const unknown = Object.keys(c).filter((k) => !FIELDS.includes(k));
-  if (unknown.length > 0) problems.push(`card has unknown field(s): ${unknown.join(', ')}; allowed: ${FIELDS.join(', ')}`);
+  if (unknown.length > 0) problems.push(`card has unknown field(s): ${unknown.map(keyName).join(', ')}; allowed: ${FIELDS.join(', ')}`);
   if (c['card'] !== 1) problems.push(`card must be 1, the card format version; got ${describe(c['card'])}`);
   const intent = str(c['intent'], 'intent', problems, 'one sentence saying what the change does and why');
 
@@ -230,6 +245,9 @@ function checkCard(raw: unknown, problems: string[]): Card | undefined {
   const rawMarkers = list(c['markers'], 'markers', problems, 'how readback proves the change live; use - kind: none with a reason when there is nothing to prove');
   if (rawMarkers !== undefined && rawMarkers.length === 0) {
     problems.push('markers must list at least one marker; use - kind: none with a reason when there is nothing to prove');
+  }
+  if (rawMarkers !== undefined && rawMarkers.length > MAX_MARKERS) {
+    problems.push(`markers lists ${rawMarkers.length} markers; a card holds at most ${MAX_MARKERS}, so keep the few that prove the change`);
   }
   rawMarkers?.forEach((m, i) => {
     const marker = checkMarker(m, `markers[${i}]`, problems);

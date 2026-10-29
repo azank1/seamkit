@@ -1,5 +1,8 @@
 import {
+  markerKey,
   parseEventFile,
+  parseReadbackChange,
+  READBACK_LIMITS,
   readbackCheck,
   readbackSightings,
   type AncestryFact,
@@ -11,7 +14,7 @@ import {
   type Sighting,
   type VersionObservation,
 } from '@seamkit/core';
-import { discoverVersion, GitRepo, observeBundle, observeVersion, type GitCommit, type HttpOptions } from '@seamkit/adapters';
+import { discoverVersion, GitRepo, observeBundle, observeVersion, VERSION_PATHS, type GitCommit, type HttpOptions } from '@seamkit/adapters';
 import { parseChangeMessage, readCard } from '@seamkit/formats';
 import { GitStateStore, NotAGitRepository } from '@seamkit/state';
 
@@ -23,6 +26,17 @@ export interface ReadbackRequest {
   last: number;
   branch?: string;
   versionUrl?: string;
+  /**
+   * The commit just deployed. When the ledger holds a run that read this address, a change merged
+   * after it that was never seen live here, nor in any build production was seen running here
+   * (now included), is left to the next deploy and listed as not examined. Any other is judged, so
+   * a deploy that drops it fails. Without such a run, or once production here was seen running a
+   * commit this repository does not have, every change is judged.
+   * `last` counts the changes judged, so changes left to the next deploy do not crowd the window.
+   */
+  deployed?: string;
+  /** Judge as if there were no ledger: it is not read, so nothing in it scopes or proves a change. */
+  noLedger?: boolean;
 }
 
 /** Everything the shell learned while gathering, beyond the check input, for the audit's advice. */
@@ -36,24 +50,74 @@ export interface ReadbackContext {
 
 const PR_SEARCH_DEPTH = 200;
 const short = (commit: string): string => commit.slice(0, 12);
+const COMMIT_ID = /^[0-9a-f]{4,64}$/;
 
 function subjectOf(c: GitCommit, pr: number | undefined): string {
   return pr === undefined ? `commit:${short(c.commit)}` : `pr#${pr}`;
 }
 
-/** Turns a commit into a change, with its card's markers or, failing that, the implicit version marker. */
-function toChange(c: GitCommit, pageUrl: string, primary: VersionObservation, subjects: Set<string>): ReadbackChange & { cardFound: boolean } {
+/**
+ * What one run's input may still hold: core's limits on version documents, pages and texts per
+ * page, spent by the newest changes first.
+ */
+interface Budget {
+  versions: Set<string>;
+  texts: Map<string, Set<string>>;
+}
+
+function newBudget(primary: VersionObservation): Budget {
+  return { versions: new Set([primary.url]), texts: new Map() };
+}
+
+/** Spends the budget on `markers` and returns true, or spends nothing and returns false when they do not fit. */
+function spend(budget: Budget, markers: readonly Marker[]): boolean {
+  const versions = new Set(budget.versions);
+  const texts = new Map([...budget.texts].map(([url, set]) => [url, new Set(set)]));
+  for (const m of markers) {
+    if (m.kind === 'version') versions.add(m.url);
+    if (m.kind === 'bundle') texts.set(m.url, (texts.get(m.url) ?? new Set()).add(m.text));
+  }
+  const fits =
+    versions.size <= READBACK_LIMITS.versions && texts.size <= READBACK_LIMITS.bundles && [...texts.values()].every((set) => set.size <= READBACK_LIMITS.searched);
+  if (fits) Object.assign(budget, { versions, texts });
+  return fits;
+}
+
+/**
+ * A change as read from git. `seenAs` holds the card's markers when the change is judged by
+ * version alone instead, so a sighting under one still keeps the change in --deployed scope.
+ */
+type Draft = ReadbackChange & { cardFound: boolean; seenAs: readonly Marker[] };
+
+/**
+ * Turns a commit into a change, with its card's markers or, failing that, the implicit version
+ * marker. `defaulted` collects the changes whose version marker is production's own document
+ * because nothing named another. A card the check would refuse, or one whose markers no longer
+ * fit in this run's input, is treated as a broken card, so that one card can never leave a whole
+ * window without a verdict.
+ */
+function toChange(
+  c: GitCommit,
+  pageUrl: string,
+  primary: VersionObservation,
+  subjects: Set<string>,
+  defaulted: Set<string>,
+  budget: Budget,
+): Draft {
   const message = parseChangeMessage(c.message, c.parents.length);
   // The same pull request number can appear twice (a revert, say); later ones fall back to the commit.
   let subject = subjectOf(c, message.pr);
   if (subjects.has(subject)) subject = `commit:${short(c.commit)}`;
   subjects.add(subject);
-  const implicit: Marker[] = [{ kind: 'version', url: primary.url }];
   const card = readCard(c.message);
-  if (!card.found) return { subject, commit: c.commit, title: message.title, markerSource: 'implicit', markers: implicit, cardFound: false };
-  if (!card.ok) {
-    return { subject, commit: c.commit, title: message.title, markerSource: 'implicit', markers: implicit, cardProblems: card.problems.slice(0, 20), cardFound: true };
-  }
+  const implicit = (problems?: string[], seenAs: Marker[] = []): Draft => {
+    defaulted.add(c.commit);
+    const change = { subject, commit: c.commit, title: message.title, markerSource: 'implicit' as const, markers: [{ kind: 'version' as const, url: primary.url }] };
+    return problems === undefined ? { ...change, cardFound: false, seenAs } : { ...change, cardProblems: problems.slice(0, 20), cardFound: true, seenAs };
+  };
+  if (!card.found) return implicit();
+  if (!card.ok) return implicit(card.problems);
+  if (card.card.markers.some((m) => m.kind === 'version' && m.url === undefined)) defaulted.add(c.commit);
   const at = (u: string | undefined, fallback: string): string => (u === undefined ? fallback : new URL(u, pageUrl).href);
   const markers: Marker[] = card.card.markers.map((m) => {
     switch (m.kind) {
@@ -67,11 +131,34 @@ function toChange(c: GitCommit, pageUrl: string, primary: VersionObservation, su
   });
   // A card may list the same marker twice once defaults are filled in; keep the first.
   const unique = markers.filter((m, i) => markers.findIndex((o) => JSON.stringify(o) === JSON.stringify(m)) === i);
-  return { subject, commit: c.commit, title: message.title, markerSource: 'card', markers: unique, cardFound: true };
+  const change: ReadbackChange = { subject, commit: c.commit, title: message.title, markerSource: 'card', markers: unique };
+  try {
+    parseReadbackChange(change);
+  } catch (err) {
+    return implicit([`the card cannot be checked: ${(err as Error).message}`], unique);
+  }
+  if (!spend(budget, unique)) {
+    return implicit([
+      `one run reads at most ${READBACK_LIMITS.versions} version documents, ${READBACK_LIMITS.bundles} pages and ${READBACK_LIMITS.searched} marker texts on a page, and newer changes in the window use them up, so this change is proven by version alone`,
+    ], unique);
+  }
+  return { ...change, cardFound: true, seenAs: [] };
 }
 
-/** Sightings of these changes in earlier recorded readback runs, or null when there is no ledger. */
-async function loadHistory(cwd: string, commits: ReadonlySet<string>): Promise<Sighting[] | null> {
+/** What the ledger holds for readback. */
+interface Ledger {
+  /** Every sighting of the changes asked about, in every recorded run. */
+  sightings: Sighting[];
+  /** For each version document a recorded run read first and could read, the commits it named. */
+  readAt: Map<string, Set<string>>;
+}
+
+/**
+ * The recorded readback runs, or null when there is no ledger. It is read before production is,
+ * so that no connection to production sits idle while a large ledger is parsed, and the version
+ * document and the pages are read close together.
+ */
+async function readLedger(cwd: string, commits: ReadonlySet<string>): Promise<Ledger | null> {
   let store: GitStateStore;
   try {
     store = await GitStateStore.open(cwd);
@@ -80,7 +167,8 @@ async function loadHistory(cwd: string, commits: ReadonlySet<string>): Promise<S
     throw err;
   }
   if (!(await store.exists())) return null;
-  const latest = new Map<string, Sighting>();
+  const sightings: Sighting[] = [];
+  const readAt = new Map<string, Set<string>>();
   for (const file of await store.list()) {
     const parsed = parseEventFile(file.path, file.content);
     if (!parsed.ok || parsed.kind !== 'verdict') continue;
@@ -92,14 +180,55 @@ async function loadHistory(cwd: string, commits: ReadonlySet<string>): Promise<S
     } catch {
       continue; // `seamkit state verify` and `seamkit replay` report broken events; history skips them.
     }
-    for (const s of readbackSightings(input, parsed.id)) {
-      if (!commits.has(s.change)) continue;
-      const key = `${s.change} ${s.marker}`;
-      const prev = latest.get(key);
-      if (prev === undefined || s.at > prev.at || (s.at === prev.at && s.event > prev.event)) latest.set(key, s);
+    const first = input.versions[0];
+    if (first !== undefined && first.status === 'ok') {
+      const named = readAt.get(first.url) ?? new Set<string>();
+      const commit = first.commit ?? first.reported;
+      if (commit !== undefined && COMMIT_ID.test(commit)) named.add(commit);
+      readAt.set(first.url, named);
     }
+    for (const s of readbackSightings(input, parsed.id)) if (commits.has(s.change)) sightings.push(s);
   }
-  return [...latest.values()].sort((a, b) => (a.change + a.marker < b.change + b.marker ? -1 : 1));
+  return { sightings, readAt };
+}
+
+/**
+ * What the ledger says about this address. `readHere` says whether any recorded run read one of
+ * `addresses`, and `observed` holds every commit that production's own document named in a
+ * recorded run, whatever changes the run judged: together they let a change that has
+ * no sighting and was never in a build seen here be left to the next deploy. `addresses` are
+ * where production's own document may have been read: every discovery path on the origin when the
+ * document is discovered, since a build can move it from one to another. For the same reason a
+ * change whose version marker is production's own document (`defaulted`) counts a sighting at any
+ * of them as one at this run's document, so a rollback across such a move reads as not live.
+ */
+function historyAt(
+  ledger: Ledger,
+  primaryUrl: string,
+  addresses: ReadonlySet<string>,
+  defaulted: ReadonlySet<string>,
+  own: ReadonlyMap<string, ReadonlySet<string>>,
+): { sightings: Sighting[]; readHere: boolean; observed: string[] } {
+  const here = markerKey({ kind: 'version', url: primaryUrl });
+  const elsewhere = new Set([...addresses].filter((a) => a !== primaryUrl).map((url) => markerKey({ kind: 'version', url })));
+  const latest = new Map<string, Sighting>();
+  const keep = (s: Sighting): void => {
+    const key = `${s.change} ${s.marker}`;
+    const prev = latest.get(key);
+    if (prev === undefined || s.at > prev.at || (s.at === prev.at && s.event > prev.event)) latest.set(key, s);
+  };
+  for (const seen of ledger.sightings) {
+    keep(seen);
+    // Counted at this run's document too, unless the change's card names that other path itself,
+    // in which case the sighting belongs to that marker alone.
+    if (defaulted.has(seen.change) && elsewhere.has(seen.marker) && !own.get(seen.change)?.has(seen.marker)) keep({ ...seen, marker: here });
+  }
+  const observed = new Set([...addresses].flatMap((a) => [...(ledger.readAt.get(a) ?? [])]));
+  return {
+    sightings: [...latest.values()].sort((a, b) => (a.change + a.marker < b.change + b.marker ? -1 : 1)),
+    readHere: [...addresses].some((a) => ledger.readAt.has(a)),
+    observed: [...observed].sort(),
+  };
 }
 
 /**
@@ -117,26 +246,34 @@ export async function gatherReadback(
   const branch = await repo.resolveBranch(req.branch);
   const resolve = (reported: string) => repo.resolve(reported);
   const origin = new URL(req.url).origin;
-  const primary =
-    req.versionUrl !== undefined
-      ? await observeVersion(req.versionUrl, now(), resolve, http)
-      : await discoverVersion(origin, now(), resolve, http);
 
   const runGaps: { item: string; reason: string }[] = [];
+  let deployed: string | undefined;
+  if (req.deployed !== undefined) {
+    const d = await repo.commit(req.deployed);
+    if (d === undefined) throw new Error(`there is no commit called ${req.deployed} in this repository; fetch it, or check the --deployed value`);
+    deployed = d.commit;
+  }
   let commits: GitCommit[];
   let subject: string;
+  // The latest changes are cut to --last after scoping; `more` says the branch goes on past those read.
+  let window: { more: boolean } | undefined;
   if (req.commit !== undefined) {
     const c = await repo.commit(req.commit);
     if (c === undefined) throw new Error(`there is no commit called ${req.commit} in this repository`);
     commits = [c];
     subject = `commit:${short(c.commit)}`;
   } else {
-    const depth = req.pr === undefined ? req.last : Math.max(req.last, PR_SEARCH_DEPTH);
-    const history = await repo.firstParent(branch.head, depth);
+    // After a deploy, changes left to the next one do not count toward --last, so every change
+    // after the deployed commit is read as well as the window.
+    const after = deployed !== undefined && req.pr === undefined ? await repo.countFirstParent(branch.head, deployed) : 0;
+    const depth = req.pr !== undefined ? Math.max(req.last, PR_SEARCH_DEPTH) : req.last + after;
+    // One more than the window is read, so that a gap for older changes is reported only when there are some.
+    const history = await repo.firstParent(branch.head, req.pr === undefined ? depth + 1 : depth);
     if (req.pr === undefined) {
-      commits = history;
+      commits = history.slice(0, depth);
       subject = branch.name;
-      if (history.length === depth) runGaps.push({ item: `changes before the last ${depth} on ${branch.name}`, reason: 'outside --last' });
+      window = { more: history.length > depth };
     } else {
       commits = history.filter((c) => parseChangeMessage(c.message, c.parents.length).pr === req.pr).slice(0, 1);
       subject = `pr#${req.pr}`;
@@ -150,10 +287,88 @@ export async function gatherReadback(
   }
   const shallow = await repo.isShallow();
   if (shallow) runGaps.push({ item: 'history beyond the shallow clone', reason: 'the clone is shallow; run git fetch --unshallow to examine older changes' });
+  const ledger = req.noLedger === true ? null : await readLedger(cwd, new Set(commits.map((c) => c.commit)));
 
+  const primary =
+    req.versionUrl !== undefined
+      ? await observeVersion(req.versionUrl, now(), resolve, http)
+      : await discoverVersion(origin, now(), resolve, http);
   const subjects = new Set<string>();
-  const drafts = commits.map((c) => toChange(c, req.url, primary, subjects));
-  const changes: ReadbackChange[] = drafts.map(({ cardFound: _, ...change }) => change);
+  const defaulted = new Set<string>();
+  const budget = newBudget(primary);
+  let drafts = commits.map((c) => toChange(c, req.url, primary, subjects, defaulted, budget));
+  // Production's own document may be read at any usual path of its origin, as a build can move it,
+  // whether discovered or named at one of them; a document named elsewhere counts only itself.
+  const usual = VERSION_PATHS.map((p) => new URL(p, new URL(primary.url).origin).href);
+  const addresses = new Set(req.versionUrl === undefined || usual.includes(primary.url) ? usual : [primary.url]);
+  const own = new Map(drafts.map((d) => [d.commit, new Set(d.markers.map(markerKey))]));
+  const loaded = ledger === null ? null : historyAt(ledger, primary.url, addresses, defaulted, own);
+  const history = loaded === null ? null : loaded.sightings;
+
+  if (deployed !== undefined) {
+    // Every commit production was seen running at this address, by recorded runs and by this one.
+    // A dirty build counts too: this only widens what stays in scope.
+    const ran: string[] = [];
+    const missing: string[] = [];
+    if (loaded !== null && loaded.readHere) {
+      const now = primary.status === 'ok' ? (primary.commit ?? primary.reported) : undefined;
+      const named = [...new Set([...loaded.observed, ...(now !== undefined && COMMIT_ID.test(now) ? [now] : [])])];
+      // A build seen here whose document named a tag ran the commit the tag points at.
+      const full = await repo.resolveAll(named, { peelTags: true });
+      named.forEach((n, i) => {
+        const id = full[i];
+        if (id === undefined) missing.push(n);
+        else ran.push(id);
+      });
+    }
+    if (loaded === null || !loaded.readHere || missing.length > 0) {
+      // Without a run that read this address, a change still on its way looks exactly like one a
+      // rollback removed, so nothing is scoped out: a false fail can be retried, a false pass hides
+      // a rollback. A ledger just started, or one kept for another address, is in the same place,
+      // and so is one that saw production run a commit this repository cannot place.
+      const because =
+        loaded === null
+          ? req.noLedger === true
+            ? 'the ledger was not read (--no-ledger), so'
+            : 'no ledger was read, so'
+          : !loaded.readHere
+            ? 'the ledger holds no earlier run that read this address, so'
+            : `production at this address was seen running ${missing.map(short).join(', ')}, which this repository does not have (fetch the branch it came from), so`;
+      runGaps.push({
+        item: 'whether changes merged after the deployed commit are still on their way',
+        reason: `${because} one still on its way cannot be told from one a rollback removed; every change is judged${loaded === null && req.noLedger !== true ? ' (keep a ledger with seamkit state init)' : ''}`,
+      });
+    } else {
+      // Scoping, not judging: which changes this deploy is answerable for. A change seen live at
+      // this address before stays in, by the same marker match the check uses, and so does one
+      // in any build production was seen running here, so a deploy that drops either fails. The
+      // check judges every change that stays.
+      const seen = new Set(loaded.sightings.map((s) => `${s.change} ${s.marker}`));
+      const wasRunning = await repo.reachableFrom(ran, deployed);
+      const afterDeploy = await repo.reachableFrom([branch.head], deployed);
+      const kept: typeof drafts = [];
+      const later: string[] = [];
+      for (const d of drafts) {
+        const seenHere = [...d.markers, ...d.seenAs].some((m) => seen.has(`${d.commit} ${markerKey(m)}`));
+        if (!afterDeploy.has(d.commit) || seenHere || wasRunning.has(d.commit)) kept.push(d);
+        else later.push(d.subject);
+      }
+      if (later.length > 0) {
+        const listed = later.length > 20 ? `${later.slice(0, 20).join(', ')} and ${later.length - 20} more` : later.join(', ');
+        const them = later.length === 1 ? 'it' : 'them';
+        runGaps.push({
+          item: `${later.length} change${later.length === 1 ? '' : 's'} merged after the deployed commit ${short(deployed)}`,
+          reason: `production at this address was never seen running ${them}, so the next deploy proves ${them}: ${listed}`,
+        });
+      }
+      drafts = kept;
+    }
+  }
+  if (window !== undefined) {
+    if (drafts.length > req.last || window.more) runGaps.push({ item: `changes before the last ${req.last} on ${branch.name}`, reason: 'outside --last' });
+    drafts = drafts.slice(0, req.last);
+  }
+  const changes: ReadbackChange[] = drafts.map(({ cardFound: _, seenAs: __, ...change }) => change);
 
   const versions: VersionObservation[] = [primary];
   const markerUrls = new Set(changes.flatMap((c) => c.markers.flatMap((m) => (m.kind === 'version' ? [m.url] : []))));
@@ -187,8 +402,10 @@ export async function gatherReadback(
     }
   }
 
-  const history = await loadHistory(cwd, new Set(changes.map((c) => c.commit)));
-  const input: ReadbackInput = { subject, changes, versions, ancestry, bundles, history };
+  // Only the sightings the check looks up: one per marker of each change judged, however many
+  // addresses the ledger has recorded.
+  const wanted = new Set(changes.flatMap((c) => c.markers.map((m) => `${c.commit} ${markerKey(m)}`)));
+  const input: ReadbackInput = { subject, changes, versions, ancestry, bundles, history: history === null ? null : history.filter((s) => wanted.has(`${s.change} ${s.marker}`)) };
   if (runGaps.length > 0) input.notExamined = runGaps;
   return {
     input,
@@ -211,7 +428,9 @@ export function auditAdvice(context: ReadbackContext): string[] {
       `Production does not say which version it runs (${v.reason ?? 'unreadable'}). Serve a version document: run "seamkit stamp --out <your public directory>/version.json" before the build, or answer /api/version with {"commit": "<full commit id>"}.`,
     );
   } else if (v.commit === undefined) {
-    out.push(`Production reports ${v.reported ?? '?'}, which this clone does not have. Run git fetch; if it is still missing, the build was made from a commit that was never pushed.`);
+    out.push(
+      `Production reports ${v.reported ?? '?'}, which this clone does not have as a commit. Run git fetch; if it is still missing, the build was made from a commit that was never pushed, or its version document names a tag rather than the commit.`,
+    );
   } else if (v.dirty === true) {
     out.push(`Production's build of ${short(v.commit)} was made with uncommitted changes, so its version proves nothing. Deploy from a clean commit.`);
   }

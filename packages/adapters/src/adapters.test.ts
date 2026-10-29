@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,6 +35,33 @@ describe('bounded HTTP', () => {
     const url = gone.url;
     await gone.close();
     assert.match((await fetchLimited(url) as { reason: string }).reason, /^could not connect/);
+  });
+
+  it('sends a GET once more when a kept-alive connection turns out closed, and only once', async () => {
+    prod.deploy({ 'a.txt': 'hello' });
+    const closing = (times: number, code: string): { calls: number; fetch: typeof fetch } => {
+      const counted = {
+        calls: 0,
+        fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+          if (++counted.calls <= times) throw Object.assign(new TypeError('fetch failed'), { cause: { code } });
+          return fetch(input, init);
+        }) as typeof fetch,
+      };
+      return counted;
+    };
+    const once = closing(1, 'UND_ERR_SOCKET');
+    const read = await fetchLimited(`${prod.url}a.txt`, { fetch: once.fetch });
+    assert.ok(read.ok && read.body.toString() === 'hello');
+    assert.equal(once.calls, 2);
+    const twice = closing(2, 'ECONNRESET');
+    assert.deepEqual(await fetchLimited(`${prod.url}a.txt`, { fetch: twice.fetch }), { ok: false, reason: 'could not connect (ECONNRESET)' });
+    assert.equal(twice.calls, 2);
+    const broken = closing(1, 'EPIPE');
+    assert.ok((await fetchLimited(`${prod.url}a.txt`, { fetch: broken.fetch })).ok);
+    assert.equal(broken.calls, 2);
+    const refused = closing(1, 'ECONNREFUSED');
+    assert.deepEqual(await fetchLimited(`${prod.url}a.txt`, { fetch: refused.fetch }), { ok: false, reason: 'could not connect (ECONNREFUSED)' });
+    assert.equal(refused.calls, 1);
   });
 });
 
@@ -183,5 +211,53 @@ describe('the repository', () => {
     assert.equal(await repo.resolve('--all'), undefined);
     assert.equal(await repo.isShallow(), false);
     await assert.rejects(repo.resolveBranch('no-such-branch'), /no branch or commit called no-such-branch/);
+  });
+
+  it('resolves only the commit asked for, never a tag or a ref named like it', async () => {
+    const copy = join(root, 'tagged');
+    await git(['clone', '-q', dir, copy], { cwd: root });
+    await git(['-c', 'user.name=dev', '-c', 'user.email=dev@example.invalid', 'tag', '-a', '-m', 'release', 'v1', commits[0] as string], { cwd: copy });
+    const tag = await git(['rev-parse', 'v1'], { cwd: copy });
+    // A branch named like an abbreviation of one commit, pointing at another.
+    const shadow = (commits[1] as string).slice(0, 7);
+    await git(['branch', shadow, commits[0] as string], { cwd: copy });
+    const repo = await GitRepo.open(copy);
+    assert.equal(await repo.resolve(tag), undefined);
+    assert.equal(await repo.resolve(tag.slice(0, 7)), undefined);
+    assert.equal(await repo.resolve(shadow), undefined);
+    assert.equal(await repo.resolve(commits[0] as string), commits[0]);
+    assert.deepEqual(await repo.resolveAll([tag, shadow, commits[2] as string]), [undefined, undefined, commits[2]]);
+    // Asked to, a tag gives the commit it points at; a ref named like an abbreviation never does.
+    assert.deepEqual(await repo.resolveAll([tag, tag.slice(0, 7), shadow], { peelTags: true }), [commits[0], commits[0], undefined]);
+  });
+
+  it('resolves a commit whose abbreviation a blob also matches, as resolve does', async () => {
+    const copy = join(root, 'blob-shares-prefix');
+    await git(['clone', '-q', dir, copy], { cwd: root });
+    const prefix = (commits[1] as string).slice(0, 4);
+    let content = '';
+    for (let i = 0; ; i++) {
+      content = `blob ${i}\n`;
+      const id = createHash('sha1').update(`blob ${Buffer.byteLength(content)}\0${content}`).digest('hex');
+      if (id.startsWith(prefix)) break;
+    }
+    const blob = await git(['hash-object', '-w', '--stdin'], { cwd: copy, input: content });
+    assert.ok(blob.startsWith(prefix));
+    const repo = await GitRepo.open(copy);
+    assert.equal(await repo.resolve(prefix), commits[1]);
+    assert.deepEqual(await repo.resolveAll([prefix]), [commits[1]]);
+    assert.deepEqual(await repo.resolveAll([prefix], { peelTags: true }), [commits[1]]);
+    // A tag and a blob sharing a prefix that no commit has: asked as a commit, git peels the tag,
+    // which gives a commit the abbreviation does not name.
+    await git(['-c', 'user.name=dev', '-c', 'user.email=dev@example.invalid', 'tag', '-a', '-m', 'release', 'v1', commits[0] as string], { cwd: copy });
+    const tag = await git(['rev-parse', 'v1'], { cwd: copy });
+    const tagPrefix = tag.slice(0, 4);
+    for (let i = 0; ; i++) {
+      content = `tag blob ${i}\n`;
+      if (createHash('sha1').update(`blob ${Buffer.byteLength(content)}\0${content}`).digest('hex').startsWith(tagPrefix)) break;
+    }
+    await git(['hash-object', '-w', '--stdin'], { cwd: copy, input: content });
+    assert.equal(await repo.resolve(tagPrefix), undefined);
+    assert.deepEqual(await repo.resolveAll([tagPrefix]), [undefined]);
   });
 });
