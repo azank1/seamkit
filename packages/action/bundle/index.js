@@ -10239,7 +10239,7 @@ async function uncommitted(top, outPath, scope) {
       continue;
     }
     const xy = listed.get(link.path) ?? "  ";
-    if (!found.isDirectory() || xy[0] !== " " || xy[1] === "T")
+    if (xy[0] !== " " || xy[1] === "T")
       continue;
     const inner = resolve(top, link.path);
     const head = await gitText(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], inner, { unset: LOCAL_REPO_ENV });

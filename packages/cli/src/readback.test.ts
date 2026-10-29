@@ -982,6 +982,10 @@ describe('seamkit stamp', () => {
   it('counts the changes in an ignored submodule, and inside any submodule by their own path', async () => {
     const { dir } = await repo();
     const lib = (await repo()).dir;
+    // A history of its own, so no commit in the submodule is also one of the superproject's.
+    await writeFile(join(lib, 'lib.txt'), 'lib\n');
+    await git(['add', 'lib.txt'], { cwd: lib });
+    await git([...ID, 'commit', '-q', '-m', 'lib'], { cwd: lib });
     await git(['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'lib'], { cwd: dir });
     await git(['config', '-f', '.gitmodules', 'submodule.lib.ignore', 'all'], { cwd: dir });
     await git(['add', '.gitmodules', 'lib'], { cwd: dir });
@@ -1178,6 +1182,16 @@ describe('seamkit stamp', () => {
     }
     assert.deepEqual(await readdir(scratch), []);
     assert.deepEqual(await readdir(join(dir, 'tmp')), []);
+    // A relative TMPDIR is read from where stamp starts, and git, run from the top, is told the same directory.
+    await mkdir(join(dir, 'apps', 'tmp'), { recursive: true });
+    await git(['update-index', '--skip-worktree', '--', 'README.md'], { cwd: dir });
+    const nested = await new Promise<{ code: number | null; err: string }>((done) => {
+      const child = execFile(process.execPath, [MAIN, 'stamp', '--require-clean'], { cwd: join(dir, 'apps'), env: { ...process.env, TMPDIR: 'tmp' } }, (_e, _out, err) => done({ code: child.exitCode, err }));
+    });
+    assert.equal(nested.code, 0, nested.err);
+    assert.deepEqual(await readdir(join(dir, 'apps', 'tmp')), []);
+    await unmarkReadme();
+    await rm(join(dir, 'apps'), { recursive: true });
     await rm(join(dir, 'tmp'), { recursive: true });
     await git(['update-index', '--skip-worktree', '--', 'README.md'], { cwd: dir });
     // A marked file needs a temporary directory to be checked; nothing marked needs none.

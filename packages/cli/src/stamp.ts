@@ -199,10 +199,10 @@ async function uncommitted(top: string, outPath: string | undefined, scope: GitS
       continue;
     }
     // A checked-out submodule on the commit the index records is judged by what is inside it, so a
-    // marked file there counts, and stamp's own output there does not. One that is no longer a
-    // directory, such as a link to another clone, keeps the change git reports for it.
+    // marked file there counts, and stamp's own output there does not. git reports a typechange for
+    // one that is no longer a directory, such as a link to another clone, and that change stands.
     const xy = listed.get(link.path) ?? '  ';
-    if (!found.isDirectory() || xy[0] !== ' ' || xy[1] === 'T') continue;
+    if (xy[0] !== ' ' || xy[1] === 'T') continue;
     const inner = resolve(top, link.path);
     const head = await gitText(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], inner, { unset: LOCAL_REPO_ENV });
     if (head !== link.blob) continue;
