@@ -1,0 +1,17 @@
+# Licence and copyright for every file, in the REUSE format (https://reuse.software), checked in CI
+# by `reuse lint`. seamkit is Apache-2.0; the Action's committed bundle also carries yaml (ISC).
+version = 1
+SPDX-PackageName = "seamkit"
+SPDX-PackageDownloadLocation = "https://github.com/azank1/seamkit"
+
+[[annotations]]
+path = "**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 seamkit contributors"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = ["packages/action/bundle/index.js", "packages/action/bundle/THIRD_PARTY_NOTICES"]
+precedence = "override"
+SPDX-FileCopyrightText = ["2026 seamkit contributors", "Eemeli Aro <eemeli@gmail.com>"]
+SPDX-License-Identifier = "Apache-2.0 AND ISC"

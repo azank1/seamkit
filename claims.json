@@ -1,0 +1,20 @@
+{
+  "schema": "seamkit.claims/1",
+  "claims": [
+    {
+      "id": "C-P0",
+      "text": "For every merged change, seamkit reads production back for the deployable units you declared and gives a verdict that lists what it did not examine and never passes when it examined nothing. The judgement replays byte for byte from the observations recorded in your own git.",
+      "firstRelease": "0.2.0",
+      "phase": "P0",
+      "provenBy": [
+        "packages/core/src/core.test.ts#refuses a pass that examined nothing (zero rows is never a pass)",
+        "packages/core/src/core.test.ts#combines nothing into examined_nothing, unlike the vacuous truth of [].every",
+        "packages/core/src/core.test.ts#keeps every gap and reason, prefixed by the part that produced it",
+        "packages/core/src/readback.test.ts#is examined nothing over no changes, never a pass",
+        "packages/core/src/readback.test.ts#examines nothing when production does not say what it runs",
+        "packages/core/src/readback.test.ts#is registered, and a recorded run replays byte for byte"
+      ],
+      "strengthenedBy": []
+    }
+  ]
+}

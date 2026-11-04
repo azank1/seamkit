@@ -1,0 +1,16 @@
+# Dependency updates wait two weeks after a release before they are proposed, so a compromised
+# release is usually caught and pulled before it reaches seamkit (FR12).
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
