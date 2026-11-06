@@ -543,7 +543,7 @@ usable by strangers ahead of the remaining checks: the npm package and the GitHu
 | M1 | repository scaffold, `core` verdict algebra, event writer for the state branch, CLI skeleton with exit codes, replay | unit tests cover every outcome, including zero rows as `examined_nothing`, and a replay test reproduces every verdict | done, accepted |
 | M2 | `readback` with the version-endpoint and bundle-marker adapters, version ancestry, the fake production, `seamkit audit` with zero configuration, `seamkit stamp` | the demo history sorts into live, not proven, not live and nothing to prove, and the audit runs against commit.city | done, accepted |
 | M3 | the `seamkit` npm package; a GitHub Action that reads back after deploys and reports a check run | `npx seamkit audit` works on a clean machine, and the Action posts a check run on a sample repository | done-when met 2026-10-26 on a sample deployed to Vercel; the merge and the 0.2.0 release are pending |
-| M4 | MCP server with read-only tools mirroring the CLI, Claude Code plugin packaging | an MCP client runs an audit and receives the verdicts and the outcome | proposed |
+| M4 | MCP server with read-only tools mirroring the CLI, Claude Code plugin packaging | an MCP client runs an audit and receives the verdicts and the outcome | done-when met 2026-11-06 on a branch, with Claude Code as the client; the release is pending |
 | M5 | `carry` and the split rule | given a production version behind main, carry lists the riding pull requests by title, and a hand deploy blocks | proposed |
 | M6 | `card` and `gate` with the GitHub adapter | `seamkit gate` lists each open pull request with its verdict and the exact missing items | proposed |
 | M7 | elicitation for policy and rulings, approvals at levels 1 and 3, the init interview, the static console | an MCP client completes init and a ruling round trip, an approval passed as an argument is refused, and the console renders from policy and state alone | proposed |
@@ -667,3 +667,14 @@ were no ledger and records nothing, and the docs and the push advice say what th
 the ledger, not that the ledger is missing. A change whose card the run cannot read for lack of room, or cannot check, is still kept in `--deployed`
 scope by a sighting under one of its card's markers. The test runner's time limit is per test from Node 24 and per file
 before it, so it is set well above the slowest file there.
+
+M4 wrote the MCP server into the CLI as `seamkit mcp` instead of using the MCP SDK named in section 3. The server
+speaks stdio only and offers four read-only tools, so the protocol it needs is a few JSON-RPC methods, and writing them
+keeps the shipped dependencies at one (`yaml`), which the supply-chain gate holds. It serves the 2026-07-28 revision,
+which has no handshake and names the revision on each request, beside the four earlier revisions, which open with
+`initialize`. Each tool call runs the CLI's own command with `--json`, and `audit` and `readback` always with
+`--no-record`, so an answer is the CLI's bytes and the ledger is never written from an agent's session. The production
+addresses are fixed when the server starts, from `--url` or `SEAMKIT_URL`, and a call may only choose among them: this
+is the M4 form of the rule that MCP and hook modes accept only targets named by policy, until policy exists. Every
+argument is checked against the tool's definition before anything runs, commit ids as hex and branches as plain names,
+so no argument becomes a command-line option. `request_ruling` and `request_approval` stay in M7.

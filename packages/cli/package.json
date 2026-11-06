@@ -9,6 +9,14 @@
     ".": {
       "types": "./dist/cli.d.ts",
       "default": "./dist/cli.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp.d.ts",
+      "default": "./dist/mcp.js"
+    },
+    "./tools": {
+      "types": "./dist/tools.d.ts",
+      "default": "./dist/tools.js"
     }
   },
   "files": [

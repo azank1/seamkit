@@ -9,7 +9,7 @@
 [![licence](https://img.shields.io/badge/licence-Apache--2.0-2752c9)](LICENSE)
 [![node](https://img.shields.io/badge/node-20%20%7C%2022%20%7C%2024-2752c9)](#development)
 <br>
-[![tests](https://img.shields.io/badge/tests-288%20passing-1d7a4b)](#development)
+[![tests](https://img.shields.io/badge/tests-306%20passing-1d7a4b)](#development)
 [![mutation-tested fixes](https://img.shields.io/badge/fixes%20broken%20on%20purpose-185-1d7a4b)](https://seamkit.vercel.app)
 [![model calls](https://img.shields.io/badge/model%20calls%20in%20a%20verdict-0-111d29)](#how-it-works)
 [![runtime dependencies](https://img.shields.io/badge/runtime%20dependencies-1-111d29)](CONTRIBUTING.md)
@@ -136,6 +136,19 @@ was proven: production or a marker could not be read, the card says there is not
 request was not found. Report the reasons; never call a change done on any other exit code.
 ```
 
+Agents that speak MCP can ask through tools instead. `seamkit mcp --url https://your.app` serves `audit`,
+`readback`, `replay` and `ledger_verify` as read-only tools whose answers are the CLI's JSON, byte for byte; it reads
+only the addresses it was started with and records nothing. In Claude Code, the plugin sets it up:
+
+```text
+/plugin marketplace add azank1/seamkit
+/plugin install seamkit@seamkit
+```
+
+The MCP server and the plugin are built and tested, and ship with the next release after 0.2.0; neither is on npm yet.
+[Use seamkit from an MCP client](docs/mcp.md) covers other clients and `seamkit tools --format openai|anthropic|gemini`
+for model APIs called directly.
+
 ### In CI
 
 The seamkit Action reads production back once a deploy succeeds and posts the verdict as a check run on the deployed
@@ -200,13 +213,14 @@ that.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/roadmap-dark.svg">
-  <img src="docs/assets/roadmap-light.svg" width="920" alt="Level map. Level 1, the CLI: shipped, npm 0.1.0 on 2026-10-19. Level 2, the Action: release candidate 0.2.0, proven on real Vercel deploys. Locked: level 3, an MCP server and a Claude Code plugin; level 4, carry, what a deploy will also ship, and a block on hand deploys; level 5, the gate, cards and a gate on every open pull request; level 6, approvals an agent cannot forge; level 7, blast radius, sandbox parity and hook packs for coding agents.">
+  <img src="docs/assets/roadmap-light.svg" width="920" alt="Level map. Level 1, the CLI: shipped, npm 0.1.0 on 2026-10-19. Level 2, the Action: release candidate 0.2.0, proven on real Vercel deploys. Level 3, an MCP server and a Claude Code plugin: built on a branch, not yet released. Locked: level 4, carry, what a deploy will also ship, and a block on hand deploys; level 5, the gate, cards and a gate on every open pull request; level 6, approvals an agent cannot forge; level 7, blast radius, sandbox parity and hook packs for coding agents.">
 </picture>
 
 seamkit 0.1 is the command line tool: `audit`, `readback`, `stamp`, `replay` and `state`. 0.2 adds the GitHub Action,
 which reads back after every deploy and reports a check run, and `readback --deployed`, which judges a deploy by the
-commit it shipped. Both are tested on Node 20, 22 and 24 on Linux. The locked levels are the roadmap, in order, and none
-of them is built. The design is in [`docs/architecture.md`](docs/architecture.md), and the survey of existing tools,
+commit it shipped. Both are tested on Node 20, 22 and 24 on Linux. Level 3, `seamkit mcp` and the Claude Code plugin, is
+built and tested on a branch: Claude Code, as an MCP client, has run an audit through it and received the verdicts and
+the outcome. It is not released yet. The locked levels are the rest of the roadmap, in order, and none of them is built. The design is in [`docs/architecture.md`](docs/architecture.md), and the survey of existing tools,
 with what each one does and does not cover, is in [`docs/prior-art.md`](docs/prior-art.md).
 
 ## Break the referee
@@ -231,6 +245,7 @@ Good places to start are the readback check in `packages/core/src/checks`, the c
 | [Use seamkit in CI](docs/ci.md) | the Action, the scheduled watch, every input, and other CI systems |
 | [Readback states and scope cards](docs/cards.md) | how each change is judged, and how a card names evidence |
 | [The ledger](docs/ledger.md) | the `seamkit/state` branch, replay, and what is recorded |
+| [Use seamkit from an MCP client](docs/mcp.md) | the MCP server, the Claude Code plugin, and tool definitions for model APIs |
 | [Architecture](docs/architecture.md) | the design, the threat model and the milestones |
 | [Prior art](docs/prior-art.md) | where existing tools stop |
 | [Research](https://seamkit.vercel.app) | the review rounds, the figures and the real deploys |
@@ -243,7 +258,7 @@ Good places to start are the readback check in `packages/core/src/checks`, the c
 
 ```sh
 npm ci
-npm test             # 288 tests, using temporary repositories and a local fake production
+npm test             # 306 tests, using temporary repositories and a local fake production
 npm run demo         # add -- --keep to keep the demo repository
 npm run pack:cli     # builds the npm package into release/seamkit
 npm run smoke:pack   # installs that package into an empty project and runs it
