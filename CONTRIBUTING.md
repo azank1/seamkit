@@ -32,6 +32,13 @@ Every behaviour change comes with a test that fails without the change. For a ch
 mutation by hand: put the defect back, confirm that the suite turns red, and restore the file. Pull requests that say
 which mutation they tried are easier to review.
 
+## Field reports and surviving mutants
+
+Two kinds of report need no code. A field report is a real readback against your own production, with what seamkit
+could and could not examine; it shows where the tool falls short on hosts and setups we have not tried. A surviving
+mutant is a change to seamkit's code that makes a verdict wrong while every test still passes; it is a real gap in the
+tests. Both have issue templates, and confirmed ones go in the [Hall of fame](HALL_OF_FAME.md).
+
 ## Pull requests
 
 Describe what you examined and what you did not, in the same spirit as a verdict. Commit messages follow

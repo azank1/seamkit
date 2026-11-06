@@ -1,0 +1,34 @@
+name: Feature request
+description: A problem seamkit could help with. Describe the problem first.
+title: "Feature: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        seamkit is small on purpose, and two limits hold for every feature. It stays **read-only** towards production, and **no model runs in the verdict path**, so every verdict replays byte for byte from what was recorded. A request that needs either limit to change is out of scope, though the problem behind it may still be one seamkit can help with.
+
+        Some larger pieces are planned and not built yet, such as an MCP server and a gate on open pull requests. The roadmap in the README lists them.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What happened, or what you could not find out. Who runs into it, and how often.
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today
+      description: How you work around it now, if at all.
+  - type: textarea
+    id: idea
+    attributes:
+      label: An idea (optional)
+      description: If you have one. What would seamkit read, and what would the verdict say?
+  - type: checkboxes
+    id: limits
+    attributes:
+      label: Limits
+      options:
+        - label: What I am asking for keeps seamkit read-only towards production, with no model in the verdict path.
+          required: true

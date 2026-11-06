@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="508" viewBox="0 0 920 508" role="img" aria-labelledby="t d"><title id="t">How a rollback shows up</title><desc id="d">A time axis from npm run demo with four steps. 1: production serves the build of pr#17; readback finds pr#17, pr#16 and pr#15 LIVE and records event 384696d17d25 on the seamkit/state ledger. 2: production is rolled back to the build of pr#14. 3: readback again finds pr#17, pr#16 and pr#15 NOT LIVE, seen live earlier (event 384696d17d25) and absent now, and records event ec8c456b0792; without the ledger they would only be NOT PROVEN. 4: replay recomputes every recorded verdict from the ledger: 2 verdicts, 2 pass replayed.</desc><style>.s{font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif}.m{font-family:ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace}</style><defs><marker id="ah-ink2" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" fill="#4a5a69"/></marker><marker id="ah-accent" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" fill="#2752c9"/></marker></defs>
+<text x="24" y="38" font-size="21"><tspan class="s" fill="#111d29" font-weight="700">How a rollback shows up</tspan></text>
+<text x="24" y="61" font-size="13.5"><tspan class="s" fill="#4a5a69">From </tspan><tspan class="m" fill="#111d29">npm run demo</tspan><tspan class="s" fill="#4a5a69">: a local stand-in for production is deployed, rolled back, read back again, then replayed.</tspan></text>
+<path d="M24,102 H893" fill="none" stroke="#4a5a69" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah-ink2)"/>
+<text x="896" y="92" font-size="12.6" text-anchor="end"><tspan class="s" fill="#4a5a69">time</tspan></text>
+<rect x="24" y="126" width="200" height="238" rx="8" fill="#ffffff" stroke="#d3dbe3" stroke-width="1.5"/>
+<path d="M124.0,113 V126" fill="none" stroke="#d3dbe3" stroke-width="1.5" stroke-linejoin="round"/>
+<circle cx="124.0" cy="102" r="11" fill="#ffffff" stroke="#4a5a69" stroke-width="1.5"/>
+<text x="124.0" y="106.3" font-size="12.6" text-anchor="middle"><tspan class="s" fill="#111d29" font-weight="700">1</tspan></text>
+<rect x="236" y="126" width="194" height="238" rx="8" fill="#ffffff" stroke="#d3dbe3" stroke-width="1.5"/>
+<path d="M333.0,113 V126" fill="none" stroke="#d3dbe3" stroke-width="1.5" stroke-linejoin="round"/>
+<circle cx="333.0" cy="102" r="11" fill="#ffffff" stroke="#4a5a69" stroke-width="1.5"/>
+<text x="333.0" y="106.3" font-size="12.6" text-anchor="middle"><tspan class="s" fill="#111d29" font-weight="700">2</tspan></text>
+<rect x="442" y="126" width="280" height="238" rx="8" fill="#ffffff" stroke="#d3dbe3" stroke-width="1.5"/>
+<path d="M582.0,113 V126" fill="none" stroke="#d3dbe3" stroke-width="1.5" stroke-linejoin="round"/>
+<circle cx="582.0" cy="102" r="11" fill="#ffffff" stroke="#4a5a69" stroke-width="1.5"/>
+<text x="582.0" y="106.3" font-size="12.6" text-anchor="middle"><tspan class="s" fill="#111d29" font-weight="700">3</tspan></text>
+<rect x="734" y="126" width="162" height="238" rx="8" fill="#ffffff" stroke="#d3dbe3" stroke-width="1.5"/>
+<path d="M815.0,113 V126" fill="none" stroke="#d3dbe3" stroke-width="1.5" stroke-linejoin="round"/>
+<circle cx="815.0" cy="102" r="11" fill="#ffffff" stroke="#4a5a69" stroke-width="1.5"/>
+<text x="815.0" y="106.3" font-size="12.6" text-anchor="middle"><tspan class="s" fill="#111d29" font-weight="700">4</tspan></text>
+<text x="38" y="150" font-size="14"><tspan class="s" fill="#111d29" font-weight="700">production serves</tspan></text>
+<text x="38" y="169" font-size="14"><tspan class="s" fill="#111d29" font-weight="700">the build of </tspan><tspan class="m" fill="#111d29" font-weight="700">pr#17</tspan></text>
+<rect x="38" y="184" width="80" height="20" rx="4" fill="#1d7a4b" fill-opacity="0.12" stroke="#1d7a4b" stroke-width="1.2"/>
+<text x="78.0" y="198.3" font-size="12.6" text-anchor="middle"><tspan class="m" fill="#1d7a4b" font-weight="700">LIVE</tspan></text>
+<text x="128" y="198.5" font-size="13"><tspan class="m" fill="#111d29">pr#17</tspan></text>
+<rect x="38" y="210" width="80" height="20" rx="4" fill="#1d7a4b" fill-opacity="0.12" stroke="#1d7a4b" stroke-width="1.2"/>
+<text x="78.0" y="224.3" font-size="12.6" text-anchor="middle"><tspan class="m" fill="#1d7a4b" font-weight="700">LIVE</tspan></text>
+<text x="128" y="224.5" font-size="13"><tspan class="m" fill="#111d29">pr#16</tspan></text>
+<rect x="38" y="236" width="80" height="20" rx="4" fill="#1d7a4b" fill-opacity="0.12" stroke="#1d7a4b" stroke-width="1.2"/>
+<text x="78.0" y="250.3" font-size="12.6" text-anchor="middle"><tspan class="m" fill="#1d7a4b" font-weight="700">LIVE</tspan></text>
+<text x="128" y="250.5" font-size="13"><tspan class="m" fill="#111d29">pr#15</tspan></text>
+<text x="38" y="278" font-size="12.6"><tspan class="s" fill="#4a5a69">production runs</tspan></text>
+<text x="38" y="296" font-size="12.6"><tspan class="m" fill="#4a5a69">e576567da7e3 (pr#17)</tspan></text>
+<text x="250" y="150" font-size="14"><tspan class="s" fill="#111d29" font-weight="700">rolled back to</tspan></text>
+<text x="250" y="169" font-size="14"><tspan class="s" fill="#111d29" font-weight="700">the build of </tspan><tspan class="m" fill="#111d29" font-weight="700">pr#14</tspan></text>
+<text x="250" y="196" font-size="12.6"><tspan class="m" fill="#111d29">pr#15, pr#16, pr#17</tspan></text>
+<text x="250" y="215" font-size="12.6"><tspan class="s" fill="#4a5a69">are no longer served</tspan></text>
+<text x="250" y="278" font-size="12.6"><tspan class="s" fill="#4a5a69">production now runs</tspan></text>
+<text x="250" y="296" font-size="12.6"><tspan class="m" fill="#4a5a69">e48d7758f6ec (pr#14)</tspan></text>
+<text x="456" y="150" font-size="14"><tspan class="s" fill="#111d29" font-weight="700">readback again</tspan></text>
+<text x="456" y="169" font-size="13"><tspan class="s" fill="#4a5a69">the same 20 changes</tspan></text>
+<rect x="456" y="184" width="80" height="20" rx="4" fill="#bf3a30" fill-opacity="0.12" stroke="#bf3a30" stroke-width="1.2"/>
+<text x="496.0" y="198.3" font-size="12.6" text-anchor="middle"><tspan class="m" fill="#bf3a30" font-weight="700">NOT LIVE</tspan></text>
+<text x="546" y="198.5" font-size="13"><tspan class="m" fill="#111d29">pr#17</tspan></text>
+<rect x="456" y="210" width="80" height="20" rx="4" fill="#bf3a30" fill-opacity="0.12" stroke="#bf3a30" stroke-width="1.2"/>
+<text x="496.0" y="224.3" font-size="12.6" text-anchor="middle"><tspan class="m" fill="#bf3a30" font-weight="700">NOT LIVE</tspan></text>
+<text x="546" y="224.5" font-size="13"><tspan class="m" fill="#111d29">pr#16</tspan></text>
+<rect x="456" y="236" width="80" height="20" rx="4" fill="#bf3a30" fill-opacity="0.12" stroke="#bf3a30" stroke-width="1.2"/>
+<text x="496.0" y="250.3" font-size="12.6" text-anchor="middle"><tspan class="m" fill="#bf3a30" font-weight="700">NOT LIVE</tspan></text>
+<text x="546" y="250.5" font-size="13"><tspan class="m" fill="#111d29">pr#15</tspan></text>
+<text x="456" y="278" font-size="12.6"><tspan class="s" fill="#111d29">seen live earlier, absent now</tspan></text>
+<text x="456" y="296" font-size="12.6"><tspan class="s" fill="#111d29">(event </tspan><tspan class="m" fill="#2752c9" font-weight="700">384696d17d25</tspan><tspan class="s" fill="#111d29">)</tspan></text>
+<path d="M456,311 H708" fill="none" stroke="#d3dbe3" stroke-width="1.2" stroke-linejoin="round"/>
+<text x="456" y="331" font-size="12.6"><tspan class="s" fill="#4a5a69">without the ledger they would only be</tspan></text>
+<text x="456" y="349" font-size="12.6"><tspan class="m" fill="#4a5a69" font-weight="700">NOT PROVEN</tspan><tspan class="s" fill="#4a5a69"> (never seen)</tspan></text>
+<text x="748" y="150" font-size="14"><tspan class="s" fill="#111d29" font-weight="700">replay</tspan></text>
+<text x="748" y="169" font-size="13"><tspan class="s" fill="#4a5a69">from the ledger</tspan></text>
+<rect x="748" y="184" width="80" height="20" rx="4" fill="#1d7a4b" fill-opacity="0.12" stroke="#1d7a4b" stroke-width="1.2"/>
+<text x="788.0" y="198.3" font-size="12.6" text-anchor="middle"><tspan class="m" fill="#1d7a4b" font-weight="700">PASS</tspan></text>
+<text x="748" y="230" font-size="12.6"><tspan class="m" fill="#111d29">2 verdicts:</tspan></text>
+<text x="748" y="248" font-size="12.6"><tspan class="m" fill="#111d29">2 pass replayed</tspan></text>
+<text x="748" y="278" font-size="12.6"><tspan class="s" fill="#4a5a69">each verdict</tspan></text>
+<text x="748" y="296" font-size="12.6"><tspan class="s" fill="#4a5a69">recomputed byte</tspan></text>
+<text x="748" y="314" font-size="12.6"><tspan class="s" fill="#4a5a69">for byte</tspan></text>
+<rect x="24" y="420" width="872" height="52" rx="8" fill="#e8edf2" stroke="#d3dbe3" stroke-width="1.5"/>
+<text x="882" y="451" font-size="12.6" text-anchor="end"><tspan class="s" fill="#4a5a69">ledger: </tspan><tspan class="m" fill="#111d29">seamkit/state</tspan></text>
+<rect x="40.5" y="434" width="167" height="24" rx="12" fill="#ffffff" stroke="#2752c9" stroke-width="1.2"/>
+<text x="124.0" y="450.5" font-size="12.6" text-anchor="middle"><tspan class="s" fill="#4a5a69">event </tspan><tspan class="m" fill="#2752c9" font-weight="700">384696d17d25</tspan></text>
+<rect x="536.5" y="434" width="167" height="24" rx="12" fill="#ffffff" stroke="#2752c9" stroke-width="1.2"/>
+<text x="620" y="450.5" font-size="12.6" text-anchor="middle"><tspan class="s" fill="#4a5a69">event </tspan><tspan class="m" fill="#2752c9" font-weight="700">ec8c456b0792</tspan></text>
+<path d="M124.0,364 V433" fill="none" stroke="#4a5a69" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah-ink2)"/>
+<text x="132.0" y="399" font-size="12.6"><tspan class="s" fill="#4a5a69">readback records</tspan></text>
+<path d="M620,364 V433" fill="none" stroke="#4a5a69" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah-ink2)"/>
+<text x="628" y="399" font-size="12.6"><tspan class="s" fill="#4a5a69">readback records</tspan></text>
+<path d="M207.5,446 H480 V365" fill="none" stroke="#4a5a69" stroke-width="1.5" stroke-linejoin="round" stroke-dasharray="5 4" marker-end="url(#ah-ink2)"/>
+<text x="488" y="399" font-size="12.6"><tspan class="s" fill="#4a5a69">read back</tspan></text>
+<path d="M815.0,420 V365" fill="none" stroke="#4a5a69" stroke-width="1.5" stroke-linejoin="round" stroke-dasharray="5 4" marker-end="url(#ah-ink2)"/>
+<text x="823.0" y="399" font-size="12.6"><tspan class="s" fill="#4a5a69">reads all</tspan></text>
+<text x="24" y="498" font-size="12.6"><tspan class="s" fill="#4a5a69">Captured from </tspan><tspan class="m" fill="#4a5a69">npm run demo</tspan><tspan class="s" fill="#4a5a69">. An event id is the first 12 hex digits of the event's SHA-256.</tspan></text>
+</svg>

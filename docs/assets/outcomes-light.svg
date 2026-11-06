@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="520" viewBox="0 0 920 520" role="img" aria-labelledby="t d"><title id="t">Exit codes</title><desc id="d">Five exit codes. 0 pass: every change read back is live (contained in production's version, markers found). 1 fail: a change is not live (seen live earlier, absent now) or not proven (never seen, or contradicted). 2 usage or configuration error: no verdict. 3 examined nothing, never a pass: a marker could not be read, or a card declares nothing to prove, which a human must accept. 4 unclassified, stops for a human: reserved for the planned blast-radius classification; no built check returns it yet.</desc><style>.s{font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif}.m{font-family:ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace}</style><defs><marker id="ah-ink2" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" fill="#4a5a69"/></marker><marker id="ah-accent" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" fill="#2752c9"/></marker></defs>
+<text x="24" y="38" font-size="21"><tspan class="s" fill="#111d29" font-weight="700">Exit codes</tspan></text>
+<text x="24" y="61" font-size="13.5"><tspan class="s" fill="#4a5a69">The exit code is the contract, so an agent, a script or CI cannot mistake one outcome for another.</tspan></text>
+<rect x="24" y="80" width="872" height="382" rx="8" fill="#ffffff" stroke="#d3dbe3" stroke-width="1.5"/>
+<text x="40" y="101" font-size="12.6" letter-spacing="0.06em"><tspan class="s" fill="#4a5a69" font-weight="600">EXIT</tspan></text>
+<text x="104" y="101" font-size="12.6" letter-spacing="0.06em"><tspan class="s" fill="#4a5a69" font-weight="600">OUTCOME AND MEANING</tspan></text>
+<text x="456" y="101" font-size="12.6" letter-spacing="0.06em"><tspan class="s" fill="#4a5a69" font-weight="600">REACHED FROM</tspan></text>
+<path d="M24,112 H896" fill="none" stroke="#d3dbe3" stroke-width="1.2" stroke-linejoin="round"/>
+<rect x="40" y="127" width="40" height="40" rx="8" fill="#1d7a4b"/>
+<text x="60" y="154" font-size="21" text-anchor="middle"><tspan class="m" fill="#ffffff" font-weight="700">0</tspan></text>
+<text x="104" y="142" font-size="15"><tspan class="s" fill="#111d29" font-weight="700">pass</tspan></text>
+<text x="104" y="164" font-size="13"><tspan class="s" fill="#4a5a69">every change read back is live in production</tspan></text>
+<circle cx="461" cy="137.5" r="5" fill="#1d7a4b"/>
+<text x="472" y="142" font-size="12.6"><tspan class="m" fill="#111d29" font-weight="700">live</tspan></text>
+<text x="622" y="142" font-size="12.6"><tspan class="s" fill="#4a5a69">in production's version, markers found</tspan></text>
+<path d="M24,182 H896" fill="none" stroke="#d3dbe3" stroke-width="1.2" stroke-linejoin="round"/>
+<rect x="40" y="197" width="40" height="40" rx="8" fill="#bf3a30"/>
+<text x="60" y="224" font-size="21" text-anchor="middle"><tspan class="m" fill="#ffffff" font-weight="700">1</tspan></text>
+<text x="104" y="212" font-size="15"><tspan class="s" fill="#111d29" font-weight="700">fail</tspan></text>
+<text x="104" y="234" font-size="13"><tspan class="s" fill="#4a5a69">at least one change is absent or contradicted</tspan></text>
+<circle cx="461" cy="207.5" r="5" fill="#bf3a30"/>
+<text x="472" y="212" font-size="12.6"><tspan class="m" fill="#111d29" font-weight="700">not live</tspan></text>
+<text x="622" y="212" font-size="12.6"><tspan class="s" fill="#4a5a69">seen live earlier, absent now</tspan></text>
+<circle cx="461" cy="229.5" r="5" fill="#bf3a30"/>
+<text x="472" y="234" font-size="12.6"><tspan class="m" fill="#111d29" font-weight="700">not proven</tspan></text>
+<text x="622" y="234" font-size="12.6"><tspan class="s" fill="#4a5a69">never seen, or contradicted</tspan></text>
+<path d="M24,252 H896" fill="none" stroke="#d3dbe3" stroke-width="1.2" stroke-linejoin="round"/>
+<rect x="40" y="267" width="40" height="40" rx="8" fill="#56636f"/>
+<text x="60" y="294" font-size="21" text-anchor="middle"><tspan class="m" fill="#ffffff" font-weight="700">2</tspan></text>
+<text x="104" y="282" font-size="15"><tspan class="s" fill="#111d29" font-weight="700">usage or configuration error</tspan></text>
+<text x="104" y="304" font-size="13"><tspan class="s" fill="#4a5a69">no verdict was produced; seamkit says why</tspan></text>
+<text x="456" y="282" font-size="12.6"><tspan class="s" fill="#4a5a69">none: no change was judged</tspan></text>
+<path d="M24,322 H896" fill="none" stroke="#d3dbe3" stroke-width="1.2" stroke-linejoin="round"/>
+<rect x="40" y="337" width="40" height="40" rx="8" fill="#9a6a0c"/>
+<text x="60" y="364" font-size="21" text-anchor="middle"><tspan class="m" fill="#ffffff" font-weight="700">3</tspan></text>
+<text x="104" y="352" font-size="15"><tspan class="s" fill="#111d29" font-weight="700">examined nothing</tspan></text>
+<rect x="332" y="337" width="100" height="20" rx="10" fill="#9a6a0c" fill-opacity="0.12" stroke="#9a6a0c" stroke-width="1.2"/>
+<text x="382.0" y="351.3" font-size="12.6" text-anchor="middle"><tspan class="s" fill="#9a6a0c" font-weight="600">never a pass</tspan></text>
+<text x="104" y="374" font-size="13"><tspan class="s" fill="#4a5a69">seamkit could not look, so it claims nothing</tspan></text>
+<circle cx="461" cy="347.5" r="5" fill="#9a6a0c"/>
+<text x="472" y="352" font-size="12.6"><tspan class="m" fill="#111d29" font-weight="700">not proven</tspan></text>
+<text x="622" y="352" font-size="12.6"><tspan class="s" fill="#4a5a69">a marker could not be read</tspan></text>
+<circle cx="461" cy="369.5" r="5" fill="#9a6a0c"/>
+<text x="472" y="374" font-size="12.6"><tspan class="m" fill="#111d29" font-weight="700">nothing to prove</tspan></text>
+<text x="622" y="374" font-size="12.6"><tspan class="s" fill="#4a5a69">the card's claim; a human must accept</tspan></text>
+<path d="M24,392 H896" fill="none" stroke="#d3dbe3" stroke-width="1.2" stroke-linejoin="round"/>
+<rect x="40" y="407" width="40" height="40" rx="8" fill="#6d47a8"/>
+<text x="60" y="434" font-size="21" text-anchor="middle"><tspan class="m" fill="#ffffff" font-weight="700">4</tspan></text>
+<text x="104" y="422" font-size="15"><tspan class="s" fill="#111d29" font-weight="700">unclassified</tspan></text>
+<rect x="298" y="407" width="134" height="20" rx="10" fill="#6d47a8" fill-opacity="0.12" stroke="#6d47a8" stroke-width="1.2"/>
+<text x="365.0" y="421.3" font-size="12.6" text-anchor="middle"><tspan class="s" fill="#6d47a8" font-weight="600">stops for a human</tspan></text>
+<text x="104" y="444" font-size="13"><tspan class="s" fill="#4a5a69">neither policy nor a ruling covers the case</tspan></text>
+<rect x="456" y="407.5" width="76" height="20" rx="10" fill="none" stroke="#4a5a69" stroke-width="1.2" stroke-dasharray="3 3"/>
+<text x="494.0" y="422" font-size="12.6" text-anchor="middle"><tspan class="s" fill="#4a5a69" font-weight="600">planned</tspan></text>
+<text x="542" y="422" font-size="12.6"><tspan class="s" fill="#4a5a69">blast-radius classification</tspan></text>
+<text x="456" y="444" font-size="12.6"><tspan class="s" fill="#4a5a69">no built check returns 4 yet</tspan></text>
+<text x="24" y="490" font-size="13"><tspan class="s" fill="#4a5a69">A run takes its most severe result: any fail gives 1, then any unclassified 4, then any examined nothing 3.</tspan></text>
+<text x="24" y="510" font-size="13"><tspan class="s" fill="#4a5a69">Only a run in which every change is live exits 0, and a run over no changes is never a pass.</tspan></text>
+</svg>

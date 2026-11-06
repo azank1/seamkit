@@ -42,7 +42,7 @@ const manifest = {
   name: 'seamkit',
   version: cli.version,
   description: cli.description,
-  keywords: ['deploy', 'production', 'readback', 'verification', 'ci', 'agents', 'ai-agents', 'release'],
+  keywords: ['deploy', 'deployment', 'production', 'readback', 'verification', 'rollback', 'ci', 'cd', 'devops', 'github-actions', 'agents', 'ai-agents', 'release', 'cli'],
   homepage: 'https://github.com/azank1/seamkit#readme',
   bugs: { url: 'https://github.com/azank1/seamkit/issues' },
   repository: { type: 'git', url: 'git+https://github.com/azank1/seamkit.git' },

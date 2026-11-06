@@ -1,0 +1,60 @@
+name: "Surviving mutant: a defect the tests miss"
+description: A change to seamkit's source that makes a verdict wrong while every test still passes.
+title: "Surviving mutant: "
+labels: ["mutant-hunt"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        seamkit's own review breaks each fix on purpose: the defect goes back in, and a test has to turn red. A mutant that survives, a change to the source that makes seamkit wrong while `npm test` stays green, is a real gap in the tests, and earns a place in the [Hall of fame](https://github.com/azank1/seamkit/blob/main/HALL_OF_FAME.md).
+
+        To hunt: change one thing in a non-test file under `packages/*/src` (a `*.test.ts` edit is not a mutant), run `npm test`, and look for a mutation the suite does not notice although seamkit would now give a different verdict, exit code or report.
+
+        If seamkit is wrong with its source unchanged, that is a bug: use "Verdict looks wrong" instead, or report it privately as [SECURITY.md](https://github.com/azank1/seamkit/blob/main/SECURITY.md) describes when it lets a pass through that was not earned.
+  - type: input
+    id: location
+    attributes:
+      label: File and line
+      placeholder: packages/cli/src/readback.ts:120
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: seamkit commit
+      description: The commit you mutated, from `git rev-parse HEAD`, so the line numbers stay meaningful.
+    validations:
+      required: true
+  - type: textarea
+    id: mutation
+    attributes:
+      label: The mutation
+      description: As a diff, from `git diff`, so it applies cleanly.
+      render: diff
+    validations:
+      required: true
+  - type: textarea
+    id: tests-pass
+    attributes:
+      label: The command showing the tests still pass
+      description: The command you ran with the mutant in place, and the end of its output.
+      placeholder: |
+        npm test
+        …
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: why-wrong
+    attributes:
+      label: Why the verdict would be wrong
+      description: An input (a history, a version document, a card, a ledger) on which the mutant gives a different verdict, exit code or report, and what the right one is. A test that would catch it is welcome.
+    validations:
+      required: true
+  - type: checkboxes
+    id: baseline
+    attributes:
+      label: Baseline
+      options:
+        - label: On the same commit without the mutation, `npm test` passes.
+          required: true
