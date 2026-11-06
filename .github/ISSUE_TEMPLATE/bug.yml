@@ -1,0 +1,72 @@
+name: Verdict looks wrong
+description: seamkit gave a verdict, exit code or report that you believe is wrong.
+title: "Verdict looks wrong: "
+labels: ["verdict-wrong"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A wrong verdict is the most serious bug seamkit can have, so thank you for reporting it.
+
+        If the problem lets someone make seamkit report a pass it did not earn, write outside its branch or the refs SECURITY.md names, record content or secrets, or put a credential into a report, please report it privately instead, as [SECURITY.md](https://github.com/azank1/seamkit/blob/main/SECURITY.md) describes.
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The command you ran, or the workflow step if you ran the GitHub Action.
+      placeholder: npx seamkit audit --url https://your.app
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: json
+    attributes:
+      label: --json output
+      description: Run the same command with --json and paste what it prints. Read it first. It holds URLs, commit ids and commit subjects, and should hold no secret.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: The verdict you expected, and why. What production served, and what the history holds.
+    validations:
+      required: true
+  - type: input
+    id: seamkit-version
+    attributes:
+      label: seamkit version
+      description: The output of `npx seamkit --version`, or the Action ref your workflow uses.
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node version
+      description: The output of `node --version`.
+      placeholder: v22.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: host
+    attributes:
+      label: Host
+      description: Where the production you read back runs.
+      options:
+        - Vercel
+        - Netlify
+        - Cloudflare Pages
+        - Render
+        - Fly.io
+        - GitHub Pages
+        - self-hosted
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: How the version document is served, whether changes carry a seamkit-card, whether a ledger exists.

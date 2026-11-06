@@ -1,0 +1,88 @@
+name: "Field report: run seamkit on your production"
+description: Run seamkit against a production you own and tell us what it said. Confirmed reports go in the Hall of fame.
+title: "Field report: "
+labels: ["field-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for running seamkit on a real production. It reads production with HTTP GET requests only, so a run changes nothing there:
+
+        ```sh
+        cd your-repo
+        npx seamkit audit --url https://your.app
+        ```
+
+        Every outcome is worth reporting, an exit 3 (examined nothing) included: it shows where seamkit cannot see yet. Read your output before you paste it. It holds your production URL, commit ids and commit subjects. Never paste a token, or a URL that carries one.
+  - type: dropdown
+    id: host
+    attributes:
+      label: Host
+      description: Where does the production you read back run?
+      options:
+        - Vercel
+        - Netlify
+        - Cloudflare Pages
+        - Render
+        - Fly.io
+        - GitHub Pages
+        - self-hosted
+        - other
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command you ran
+      description: Or the workflow step, if you ran the GitHub Action.
+      placeholder: npx seamkit audit --url https://your.app
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome lines
+      description: The verdict line near the end of the output and the "proven live" line under it.
+      render: text
+      placeholder: |
+        PASS  readback  origin/main
+          proven live 8 of 8 changes
+    validations:
+      required: true
+  - type: dropdown
+    id: exit-code
+    attributes:
+      label: Exit code
+      options:
+        - "0: pass"
+        - "1: fail"
+        - "2: usage or configuration error, no verdict"
+        - "3: examined nothing"
+        - "4: unclassified, stops for a human"
+    validations:
+      required: true
+  - type: textarea
+    id: not-examined
+    attributes:
+      label: What seamkit could not examine
+      description: The "not examined" lines, and the advice under "To examine more", if any.
+      render: text
+  - type: textarea
+    id: surprised
+    attributes:
+      label: What surprised you
+      description: Anything that read wrong, was hard to set up, or that you expected seamkit to see and it did not.
+  - type: textarea
+    id: output
+    attributes:
+      label: Full output (optional)
+      description: The whole report, or the output of the same command with --json.
+      render: text
+  - type: checkboxes
+    id: consent
+    attributes:
+      label: Quoting
+      description: Leave this unticked and the report still helps; it just stays in this issue.
+      options:
+        - label: The output above may be quoted in the README scoreboard and the Hall of fame, with a link to this issue.
+          required: false

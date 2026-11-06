@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 960" width="960" height="960" role="img" aria-labelledby="t d">
+<title id="t">What a deploy gets: a check run</title>
+<desc id="d">Two real check runs the seamkit Action posted for seamkit-sample.vercel.app. On 2026-10-25: failure, EXAMINED NOTHING: 2 not proven of 2, because production's build was made with uncommitted changes. On 2026-11-06: success, PASS: 9 live of 9.</desc>
+<style>
+.hd{font:700 21px -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;fill:#111d29}
+.sub{font:400 14px -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;fill:#4a5a69}
+.name{font:600 15px -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;fill:#111d29}
+.title{font:700 19px -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;fill:#111d29}
+.chip{font:700 13px ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;letter-spacing:.04em}
+.tag{font:500 13px ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;fill:#4a5a69;letter-spacing:.03em}
+.meta{font:400 13px ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;fill:#4a5a69}
+.note{font:400 13.5px -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;fill:#4a5a69}
+.notem{font:500 12.5px ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;fill:#111d29}
+.cap{font:400 13px ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;fill:#4a5a69}
+.t{font:400 13.5px ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;white-space:pre}
+.t .b{font-weight:700}
+.base{fill:#d9e3ec}.dim{fill:#7d8e9e}.key{fill:#9cc0ff}.ok{fill:#4cc488}.warn{fill:#e0ac45}
+</style>
+<rect width="100%" height="100%" rx="14" fill="#f1f4f7"/>
+<text x="20" y="34" class="hd">What a deploy gets: a check run</text>
+<text x="20" y="58" class="sub">After each production deploy, the seamkit GitHub Action reads the address back and posts the verdict as a check run.</text>
+<rect x="660.856" y="17" width="279.144" height="24" rx="12" fill="none" stroke="#4a5a69" stroke-dasharray="4 3"/>
+<text x="800.428" y="33.5" class="tag" text-anchor="middle">Action: 0.2.0 release candidate</text>
+<clipPath id="c-nothing"><rect x="20" y="82" width="920" height="374" rx="12"/></clipPath>
+<rect x="20" y="82" width="920" height="374" rx="12" fill="#ffffff" stroke="#d3dbe3"/>
+<rect x="20" y="82" width="5" height="374" fill="#9a6a0c" clip-path="url(#c-nothing)"/>
+<rect x="42" y="104" width="78.968" height="24" rx="5" fill="#f6ecd6"/>
+<text x="52" y="120.5" class="chip" fill="#9a6a0c">FAILURE</text>
+<text x="132.968" y="121" class="name">seamkit readback (seamkit-sample.vercel.app)</text>
+<text x="918" y="120.5" class="meta" text-anchor="end">2026-10-25</text>
+<rect x="753.216" y="105" width="68.544" height="22" rx="4" fill="none" stroke="#d3dbe3"/>
+<text x="787.488" y="120.5" class="tag" text-anchor="middle">BEFORE</text>
+<text x="42" y="152" class="title"><tspan fill="#9a6a0c">EXAMINED NOTHING</tspan>: 2 not proven of 2</text>
+<rect x="42" y="168" width="876" height="266" rx="8" fill="#0f1922" stroke="#0f1922"/>
+<text class="t" x="60" y="197.5" xml:space="preserve"><tspan class="warn b">NOT PROVEN</tspan><tspan class="base">  2 of 2  (2 examined nothing)</tspan></text>
+<text class="t" x="60" y="217.5" xml:space="preserve"><tspan class="base">  </tspan><tspan class="key">commit:4ee674d6e32d</tspan><tspan class="base">  Say where the sample deploys</tspan></text>
+<text class="t" x="60" y="237.5" xml:space="preserve"><tspan class="base">                       </tspan><tspan class="warn">1 of 1 marker could not be read</tspan></text>
+<text class="t" x="60" y="257.5" xml:space="preserve"><tspan class="base">                       </tspan><tspan class="dim">version document https://seamkit-sample.vercel.app/version.json:</tspan></text>
+<text class="t" x="60" y="277.5" xml:space="preserve"><tspan class="base">                       </tspan><tspan class="base">production's build of 4ee674d6e32d was made with </tspan><tspan class="warn">uncommitted changes,</tspan></text>
+<text class="t" x="60" y="297.5" xml:space="preserve"><tspan class="base">                       so its version does not show what it contains</tspan></text>
+<text class="t" x="60" y="317.5" xml:space="preserve"><tspan class="base">  </tspan><tspan class="key">commit:91a95a30df16</tspan><tspan class="base">  A sample site that the seamkit Action reads back</tspan></text>
+<text class="t" x="60" y="337.5" xml:space="preserve"><tspan class="base">                       </tspan><tspan class="warn">1 of 1 marker could not be read</tspan></text>
+<text class="t" x="60" y="357.5" xml:space="preserve"><tspan class="base">                       </tspan><tspan class="dim">version document https://seamkit-sample.vercel.app/version.json:</tspan></text>
+<text class="t" x="60" y="377.5" xml:space="preserve"><tspan class="base">                       </tspan><tspan class="base">production's build of 4ee674d6e32d was made with </tspan><tspan class="warn">uncommitted changes,</tspan></text>
+<text class="t" x="60" y="397.5" xml:space="preserve"><tspan class="base">                       so its version does not show what it contains</tspan></text>
+<text class="t" x="60" y="417.5" xml:space="preserve"><tspan class="dim">  …</tspan></text>
+<line x1="55" y1="460" x2="55" y2="512" stroke="#2752c9" stroke-width="2" stroke-dasharray="3 4"/>
+<path d="M55 516 l-5 -7 h10 z" fill="#2752c9"/>
+<text x="75" y="492" class="note">The 0.1.0 stamp counted Vercel's <tspan class="notem">vercel.json</tspan> as uncommitted. The 0.2.0 candidate's stamp leaves it out.</text>
+<clipPath id="c-pass"><rect x="20" y="518" width="920" height="394" rx="12"/></clipPath>
+<rect x="20" y="518" width="920" height="394" rx="12" fill="#ffffff" stroke="#d3dbe3"/>
+<rect x="20" y="518" width="5" height="394" fill="#1d7a4b" clip-path="url(#c-pass)"/>
+<rect x="42" y="540" width="78.968" height="24" rx="5" fill="#e0f1e8"/>
+<text x="52" y="556.5" class="chip" fill="#1d7a4b">SUCCESS</text>
+<text x="132.968" y="557" class="name">seamkit readback (seamkit-sample.vercel.app)</text>
+<text x="918" y="556.5" class="meta" text-anchor="end">2026-11-06</text>
+<rect x="761.64" y="541" width="60.12" height="22" rx="4" fill="none" stroke="#d3dbe3"/>
+<text x="791.7" y="556.5" class="tag" text-anchor="middle">AFTER</text>
+<text x="42" y="588" class="title"><tspan fill="#1d7a4b">PASS</tspan>: 9 live of 9</text>
+<rect x="42" y="604" width="876" height="286" rx="8" fill="#0f1922" stroke="#0f1922"/>
+<text class="t" x="60" y="633.5" xml:space="preserve"><tspan class="ok b">LIVE</tspan><tspan class="base">  9 of 9  (9 pass)</tspan></text>
+<text class="t" x="60" y="653.5" xml:space="preserve"><tspan class="base">  9 changes, each for the same reason:</tspan></text>
+<text class="t" x="60" y="673.5" xml:space="preserve"><tspan class="base">      </tspan><tspan class="ok">production's version e3d8a2c4f77b contains this change</tspan></text>
+<text class="t" x="60" y="693.5" xml:space="preserve"><tspan class="base">    </tspan><tspan class="key">commit:e3d8a2c4f77b</tspan><tspan class="base">  make ship: refuse to deploy uncommitted changes</tspan></text>
+<text class="t" x="60" y="713.5" xml:space="preserve"><tspan class="base">    </tspan><tspan class="key">commit:4b40b01fd4f4</tspan><tspan class="base">  wait-live: sync the ledger before reading and after recording</tspan></text>
+<text class="t" x="60" y="733.5" xml:space="preserve"><tspan class="base">    </tspan><tspan class="key">commit:4585ab0f1a3c</tspan><tspan class="base">  Hook: print one fresh verdict when the deploy is not live</tspan></text>
+<text class="t" x="60" y="753.5" xml:space="preserve"><tspan class="dim">    … 6 more</tspan></text>
+<text class="t" x="60" y="773.5" xml:space="preserve"></text>
+<text class="t" x="60" y="793.5" xml:space="preserve"><tspan class="ok b">PASS</tspan><tspan class="dim">  readback  origin/main</tspan></text>
+<text class="t" x="60" y="813.5" xml:space="preserve"><tspan class="base">  proven live 9 of 9 changes</tspan></text>
+<text class="t" x="60" y="833.5" xml:space="preserve"><tspan class="base">  production at https://seamkit-sample.vercel.app/version.json runs e3d8a2c4f77b</tspan></text>
+<text class="t" x="60" y="853.5" xml:space="preserve"><tspan class="base">    (commit:e3d8a2c4f77b)</tspan></text>
+<text class="t" x="60" y="873.5" xml:space="preserve"><tspan class="base">  not examined: none listed</tspan></text>
+<text x="20" y="942" class="cap">Real check runs, rendered from the GitHub API output of azank1/seamkit-sample</text>
+</svg>
