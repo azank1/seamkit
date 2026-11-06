@@ -1075,6 +1075,10 @@ describe('seamkit stamp', () => {
       const dir = await setUp();
       await replace(dir);
       const r = await cli(['stamp', '--require-clean'], dir);
+      // Newer git (2.56 and later) refuses to read a submodule path that is a symbolic link at all; a checkout
+      // git refuses to read gets no stamp (exit 2). Older git reads it, and stamp counts it as a change (exit 1).
+      // Either way the stamp is refused, never written clean.
+      if (r.code === 2 && /git status failed: .*symbolic link/.test(r.err)) continue;
       assert.equal(r.code, 1, `${what}: ${r.err}`);
       assert.match(r.err, /1 uncommitted change \(such as lib\)/, what);
     }
