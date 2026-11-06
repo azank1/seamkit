@@ -182,11 +182,45 @@ function toolCallProblem(params: Record<string, unknown>): string | undefined {
 /** Serves until the input ends, then waits for the calls still running. */
 export async function serve(input: Readable, output: Writable, options: ServerOptions, log: (text: string) => void): Promise<void> {
   const pending = new Set<Promise<void>>();
+  // Ids of requests still running, and those of them the client has cancelled. A cancel for an id
+  // that is not running (unknown, or already answered) is ignored, as the protocol asks, so a later
+  // request that reuses the id is still answered.
+  const inFlight = new Set<Id>();
   const cancelled = new Set<Id>();
-  const send = (response: Record<string, unknown> | undefined): void => {
-    if (response === undefined) return;
-    if (isId(response['id']) && cancelled.delete(response['id'])) return;
-    output.write(`${JSON.stringify(response)}\n`);
+  const idOf = (m: unknown): Id | undefined => {
+    const id = m !== null && typeof m === 'object' && !Array.isArray(m) ? (m as Message).id : undefined;
+    return isId(id) ? id : undefined;
+  };
+  const cancelFrom = (m: unknown): boolean => {
+    if (m === null || typeof m !== 'object' || (m as Message).method !== 'notifications/cancelled') return false;
+    const requestId = ((m as Message).params as { requestId?: unknown } | undefined)?.requestId;
+    if (isId(requestId) && inFlight.has(requestId)) cancelled.add(requestId);
+    return true;
+  };
+  /** Whether a response may go out; it may not once its request was cancelled. */
+  const keep = (response: Record<string, unknown>): boolean => !(isId(response['id']) && cancelled.has(response['id']));
+  const track = (members: unknown[], work: Promise<void>): void => {
+    const ids = members.map(idOf).filter((id): id is Id => id !== undefined);
+    for (const id of ids) inFlight.add(id);
+    const task: Promise<void> = work
+      .catch((err: unknown) => log(`seamkit mcp: ${(err as Error).message}\n`))
+      .finally(() => {
+        for (const id of ids) {
+          inFlight.delete(id);
+          cancelled.delete(id);
+        }
+        pending.delete(task);
+      });
+    pending.add(task);
+  };
+  const write = (body: unknown): void => void output.write(`${JSON.stringify(body)}\n`);
+  const answer = async (m: unknown): Promise<Record<string, unknown> | undefined> => {
+    try {
+      return await handle(m, options);
+    } catch (err) {
+      log(`seamkit mcp: ${(err as Error).message}\n`);
+      return { jsonrpc: '2.0', id: idOf(m) ?? null, error: { code: -32603, message: 'Internal error' } };
+    }
   };
   const lines = createInterface({ input, crlfDelay: Infinity });
   for await (const line of lines) {
@@ -195,37 +229,31 @@ export async function serve(input: Readable, output: Writable, options: ServerOp
     try {
       message = JSON.parse(line);
     } catch {
-      send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } });
+      write({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } });
       continue;
     }
     if (Array.isArray(message)) {
-      // A batch, which the 2025-03-26 revision lets a client send: each member is answered, together.
-      const batch = message;
-      const task = Promise.all(batch.length === 0 ? [handle(message, options)] : batch.map((b) => handle(b, options)))
-        .then((responses) => {
-          const sent = responses.filter((r): r is Record<string, unknown> => r !== undefined);
-          if (sent.length > 0) output.write(`${JSON.stringify(sent)}\n`);
-        })
-        .catch((err: unknown) => log(`seamkit mcp: ${(err as Error).message}\n`))
-        .finally(() => pending.delete(task));
-      pending.add(task);
+      // A batch, which the 2025-03-26 revision lets a client send: each member is answered, and the
+      // answers go back together as one array. An empty batch is one Invalid Request, not an array.
+      if (message.length === 0) {
+        write({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid Request: empty batch' } });
+        continue;
+      }
+      const isCancel = (m: unknown): boolean => m !== null && typeof m === 'object' && (m as Message).method === 'notifications/cancelled';
+      const members = message.filter((m) => !isCancel(m));
+      // The batch's requests are running before its own cancels are applied, so those apply to them.
+      for (const id of members.map(idOf)) if (id !== undefined) inFlight.add(id);
+      for (const m of message) if (isCancel(m)) cancelFrom(m);
+      track(members, Promise.all(members.map(answer)).then((responses) => {
+        const sent = responses.filter((r): r is Record<string, unknown> => r !== undefined && keep(r));
+        if (sent.length > 0) write(sent);
+      }));
       continue;
     }
-    const m = message as Message | null;
-    if (m && typeof m === 'object' && m.method === 'notifications/cancelled') {
-      const requestId = (m.params as { requestId?: unknown } | undefined)?.requestId;
-      if (isId(requestId)) cancelled.add(requestId);
-      continue;
-    }
-    const task = handle(message, options)
-      .then(send)
-      .catch((err: unknown) => {
-        log(`seamkit mcp: ${(err as Error).message}\n`);
-        const id = m && typeof m === 'object' && isId(m.id) ? m.id : null;
-        send({ jsonrpc: '2.0', id, error: { code: -32603, message: 'Internal error' } });
-      })
-      .finally(() => pending.delete(task));
-    pending.add(task);
+    if (cancelFrom(message)) continue;
+    track([message], answer(message).then((response) => {
+      if (response !== undefined && keep(response)) write(response);
+    }));
   }
   await Promise.all(pending);
 }

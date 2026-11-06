@@ -8,7 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeProduction } from '@seamkit/adapters';
 import { run, type Io } from '@seamkit/cli';
-import { callTool } from '@seamkit/cli/mcp';
+import { PassThrough } from 'node:stream';
+import { callTool, serve } from '@seamkit/cli/mcp';
 import { buildAt } from './build.js';
 import { seedDemo } from './seed.js';
 
@@ -32,6 +33,20 @@ async function cli(args: string[]): Promise<{ code: number; out: string }> {
   let out = '';
   const io: Io = { out: (t) => void (out += t), err: () => {}, readStdin: async () => '', stdinIsTTY: true, env: {}, cwd: dir, now: () => AT };
   return { code: await run(args, io), out };
+}
+
+/** One tools/call through the server's real framing, as a client on standard input and output sees it. */
+async function overStdio(name: string, args: Record<string, unknown>, opts: Parameters<typeof callTool>[2]): Promise<Awaited<ReturnType<typeof callTool>>> {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let text = '';
+  output.on('data', (c: Buffer) => void (text += c.toString('utf8')));
+  const done = serve(input, output, opts, () => {});
+  input.end(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } })}\n`);
+  await done;
+  const lines = text.split('\n').filter((l) => l !== '');
+  assert.equal(lines.length, 1);
+  return (JSON.parse(lines[0]!) as { result: Awaited<ReturnType<typeof callTool>> }).result;
 }
 
 describe('CLI and MCP give the same answer', () => {
@@ -58,7 +73,7 @@ describe('CLI and MCP give the same answer', () => {
         deployed = f.deploy;
       }
       const viaCli = await cli(f.argv);
-      const viaMcp = await callTool(f.tool, f.args, opts);
+      const viaMcp = await overStdio(f.tool, f.args, opts);
       assert.equal(viaMcp.isError, false, `${f.tool} ${JSON.stringify(f.args)} at ${f.deploy}: ${viaMcp.content[0]?.text}`);
       assert.equal(viaMcp.content[0]!.text, viaCli.out, `${f.tool} ${JSON.stringify(f.args)} at ${f.deploy}`);
       assert.deepEqual(viaMcp.structuredContent, JSON.parse(viaCli.out));

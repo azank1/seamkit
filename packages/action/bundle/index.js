@@ -10433,7 +10433,8 @@ var TOOLS = [
 ];
 function jsonSchema(tool, constraints = true) {
   const properties = {};
-  for (const p of tool.params) {
+  const params = constraints ? tool.params : modelParams(tool);
+  for (const p of params) {
     properties[p.name] = {
       type: [p.type, "null"],
       description: constraints ? p.description : describe2(p),
@@ -10442,7 +10443,10 @@ function jsonSchema(tool, constraints = true) {
       ...constraints && p.pattern !== void 0 ? { pattern: p.pattern } : {}
     };
   }
-  return { type: "object", properties, required: tool.params.map((p) => p.name), additionalProperties: false };
+  return { type: "object", properties, required: params.map((p) => p.name), additionalProperties: false };
+}
+function modelParams(tool) {
+  return tool.params.filter((p) => p.name !== "url");
 }
 function describe2(p) {
   if (p.minimum !== void 0 && p.maximum !== void 0)
@@ -10466,19 +10470,20 @@ function toolsIn(format) {
     case "anthropic":
       return TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: jsonSchema(t, false) }));
     case "gemini":
-      return [{ functionDeclarations: TOOLS.map((t) => ({ name: t.name, description: t.description, ...t.params.length > 0 ? { parameters: geminiSchema(t) } : {} })) }];
+      return [{ functionDeclarations: TOOLS.map((t) => ({ name: t.name, description: t.description, ...modelParams(t).length > 0 ? { parameters: geminiSchema(t) } : {} })) }];
   }
 }
 function geminiSchema(tool) {
   const properties = {};
-  for (const p of tool.params) {
+  const params = modelParams(tool);
+  for (const p of params) {
     properties[p.name] = {
       type: p.type === "integer" ? "INTEGER" : "STRING",
       description: describe2(p),
       nullable: true
     };
   }
-  return { type: "OBJECT", properties, required: tool.params.map((p) => p.name) };
+  return { type: "OBJECT", properties, required: params.map((p) => p.name) };
 }
 
 // packages/cli/dist/cli.js

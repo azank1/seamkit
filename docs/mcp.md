@@ -8,7 +8,7 @@ server per repository, and answers about the repository it was started in.
 npx seamkit mcp --url https://your.app
 ```
 
-In Claude Code, the plugin in this repository sets it up and asks for the production address once:
+In Claude Code, the plugin in this repository sets it up:
 
 ```text
 /plugin marketplace add azank1/seamkit
@@ -17,6 +17,18 @@ In Claude Code, the plugin in this repository sets it up and asks for the produc
 
 It adds the server, which Claude Code names `plugin:seamkit:seamkit`, and a `shipped` skill that tells the agent to
 treat a change as shipped only on exit code 0. The skill is advice; the verdict comes from seamkit either way.
+
+The server answers about the repository the session is in, so give each repository its own production address, in
+that repository's `.claude/settings.json`:
+
+```json
+{ "env": { "SEAMKIT_URL": "https://your.app" } }
+```
+
+The plugin also offers a `production_url` option, which Claude Code asks for when the plugin is enabled and which
+applies wherever the repository sets no `SEAMKIT_URL`; from a shell or CI, set it with
+`claude plugin install seamkit@seamkit --config production_url=https://your.app`. With neither, the server still
+starts, and its tools refuse, saying that it was started without a production address.
 
 Other clients start the server from a configuration entry, for example:
 
@@ -63,10 +75,12 @@ Every tool is read-only, and the server is built so that this holds whatever an 
 
 - **It records nothing.** `audit` and `readback` always run with `--no-record`, so the `seamkit/state` ledger is read
   but never written. Record from CI, where the run that counts happens.
-- **It reads only the addresses it was started with.** The production addresses come from `--url` (repeat it for
-  several) or `SEAMKIT_URL`, and a tool call can only pick one of them. An address an agent found in a page, an issue or
-  a pull request cannot make seamkit read an internal service. With one address, a call names none; with several, it
-  names one; with none, every tool that reads production refuses.
+- **An agent cannot choose what it reads.** The production addresses come from `--url` (repeat it for several) or
+  `SEAMKIT_URL`, and a tool call can only pick one of them, so an address an agent found in a page, an issue or a pull
+  request cannot make seamkit read an internal service. With one address, a call names none; with several, it names
+  one; with none, every tool that reads production refuses. Beyond the address itself, seamkit reads what the CLI
+  reads: the redirects production answers with, the scripts and styles its page loads, and the absolute URLs that the
+  cards of merged changes name. Those come from production and from your merged history, not from the agent.
 - **It checks every argument before running anything.** Commit ids must be hex, branch names a plain branch name,
   numbers whole and in range, and unknown arguments are refused, so text cannot turn into a command-line option.
 - **It holds no credential** and needs none: it reads production with HTTP `GET` requests, as the CLI does, and reads
@@ -86,8 +100,10 @@ npx seamkit tools --format gemini      # Gemini function declarations
 npx seamkit tools --format mcp         # what tools/list returns
 ```
 
-Every format comes from one definition and uses only strings, integers and their limits. Every field is listed as
-required, and an optional one accepts null, so strict schema modes take the definitions as they are, and none uses
-`oneOf` or `anyOf`. Run each call as the CLI command in the table above.
+Every format comes from one definition and uses only strings and integers. Every field is listed as required, and an
+optional one accepts null, so strict schema modes take the definitions as they are, and none uses `oneOf` or `anyOf`.
+Limits that strict modes do not take, such as the range of `last`, are stated in the descriptions. These formats leave
+out the production address: the loop that runs the model supplies it, so run each call as the CLI command in the
+table above with your own `--url`, and never one the model wrote.
 
 Back to the [README](../README.md).

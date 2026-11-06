@@ -85,6 +85,10 @@ describe('seamkit tools', () => {
       assert.equal(schema.additionalProperties, false);
       for (const p of Object.values(schema.properties)) assert.deepEqual((p.type as string[])[1], 'null');
     }
+    for (const format of ['openai', 'anthropic', 'gemini'] as const) {
+      assert.ok(!JSON.stringify(toolsIn(format)).includes('"url"'), `${format} lets the model choose the address`);
+    }
+    assert.ok(JSON.stringify(toolsIn('mcp')).includes('"url"'));
     const gemini = toolsIn('gemini') as { functionDeclarations: { parameters?: { properties: Record<string, { type: string; nullable: boolean }> } }[] }[];
     for (const d of gemini[0]!.functionDeclarations) for (const p of Object.values(d.parameters?.properties ?? {})) assert.ok(['STRING', 'INTEGER'].includes(p.type) && p.nullable);
   });
@@ -139,22 +143,27 @@ describe('seamkit mcp: tool calls', () => {
   });
 
   it('checks arguments before running anything, so text cannot become an option', async () => {
-    const bad: [string, Record<string, unknown>][] = [
-      ['readback', { commit: '--upload-pack=touch /tmp/x' }],
-      ['readback', { deployed: '-x' }],
-      ['readback', { branch: '--output=/tmp/x' }],
-      ['readback', { pr: 0 }],
-      ['readback', { pr: 1.5 }],
-      ['readback', { pr: '7' }],
-      ['readback', { pr: 1, commit: 'abcdef1' }],
-      ['audit', { last: 1001 }],
-      ['audit', { cwd: '/' }],
-      ['replay', { event: '../x' }],
-      ['audit', 'not an object' as unknown as Record<string, unknown>],
+    // Each must be refused by the server's own check, with its message; some of these the CLI would accept.
+    const bad: [string, Record<string, unknown>, RegExp][] = [
+      ['readback', { commit: '--upload-pack=touch /tmp/x' }, /does not have the form/],
+      ['readback', { deployed: '-x' }, /does not have the form/],
+      ['readback', { branch: '--output=/tmp/x' }, /does not have the form/],
+      ['readback', { branch: 'main~1' }, /does not have the form/],
+      ['readback', { commit: 'HEAD' }, /does not have the form/],
+      ['readback', { pr: 0 }, /must be from 1 to/],
+      ['readback', { pr: 1.5 }, /must be an integer/],
+      ['readback', { pr: '7' }, /must be an integer/],
+      ['readback', { pr: 1, commit: 'abcdef1' }, /cannot be combined/],
+      ['audit', { last: 1001 }, /must be from 1 to 1000/],
+      ['audit', { last: 0 }, /must be from 1 to 1000/],
+      ['audit', { cwd: '/' }, /unknown argument/],
+      ['replay', { event: '../x' }, /does not have the form/],
+      ['audit', 'not an object' as unknown as Record<string, unknown>, /must be an object/],
     ];
-    for (const [name, args] of bad) {
+    for (const [name, args, message] of bad) {
       const r = await callTool(name, args, options());
       assert.equal(r.isError, true, JSON.stringify(args));
+      assert.match(r.content[0]!.text, message, JSON.stringify(args));
       assert.equal(r.structuredContent, undefined);
     }
     assert.equal((await callTool('stamp', {}, options())).isError, true);
@@ -247,6 +256,41 @@ describe('seamkit mcp: the protocol', () => {
     assert.deepEqual(batch.map((m) => m.id), ['c', 'd'], 'a batch is answered as one array, without the notification');
   });
 
+  it('ignores a cancel for a request that is not running, and answers a later request that reuses its id', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const got: { id: unknown; error?: { code: number } }[] = [];
+    let buffer = '';
+    output.on('data', (c: Buffer) => {
+      buffer += c.toString('utf8');
+      for (let i = buffer.indexOf('\n'); i >= 0; i = buffer.indexOf('\n')) {
+        got.push(JSON.parse(buffer.slice(0, i)) as { id: unknown });
+        buffer = buffer.slice(i + 1);
+      }
+    });
+    const done = serve(input, output, options(), () => {});
+    const until = async (n: number): Promise<void> => {
+      for (let i = 0; i < 200 && got.length < n; i++) await new Promise((r) => setTimeout(r, 10));
+    };
+    input.write(`${JSON.stringify(req('ping', undefined, 1))}\n`);
+    await until(1);
+    input.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 1 } })}\n`);
+    input.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 'never-sent' } })}\n`);
+    input.write(`${JSON.stringify(req('ping', undefined, 1))}\n`);
+    input.write(`${JSON.stringify(req('ping', undefined, 'never-sent'))}\n`);
+    input.write('[]\n');
+    input.write(`${JSON.stringify([req('tools/call', { name: 'audit', arguments: {} }, 'x'), { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 'x' } }, req('ping', undefined, 'y')])}\n`);
+    input.end();
+    await done;
+    const flat = got.flatMap((m) => (Array.isArray(m) ? m : [m])) as { id: unknown; error?: { code: number } }[];
+    assert.deepEqual(flat.filter((m) => m.id === 1).length, 2, 'both requests with id 1 are answered');
+    assert.ok(flat.some((m) => m.id === 'never-sent'));
+    const empty = got.find((m) => !Array.isArray(m) && m.id === null) as { error: { code: number } };
+    assert.equal(empty.error.code, -32600, 'an empty batch is one Invalid Request, not an array');
+    const batch = got.find((m) => Array.isArray(m)) as unknown as { id: unknown }[];
+    assert.deepEqual(batch.map((m) => m.id), ['y'], 'a call cancelled in its own batch is not answered');
+  });
+
   it('takes its addresses from --url or SEAMKIT_URL, and refuses one that would be recorded unsafely', () => {
     assert.deepEqual(serverOptions(['--url', 'https://a.example', '--url', 'https://a.example/'], {}, '/', () => AT).urls, ['https://a.example/']);
     assert.deepEqual(serverOptions([], { SEAMKIT_URL: 'https://b.example' }, '/', () => AT).urls, ['https://b.example/']);
@@ -267,6 +311,8 @@ describe('seamkit mcp: a real client session over stdio', () => {
     send({ jsonrpc: '2.0', method: 'notifications/initialized' });
     send({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
     send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'audit', arguments: { url: null, last: null, branch: null } } });
+    // Enough answers queued at once to pass a pipe's buffer: all must arrive after standard input closes.
+    for (let i = 100; i < 160; i++) send({ jsonrpc: '2.0', id: i, method: 'tools/list' });
     child.stdin.end();
     const code = await new Promise<number | null>((resolve) => child.on('close', resolve));
     assert.equal(code, 0);
@@ -278,5 +324,7 @@ describe('seamkit mcp: a real client session over stdio', () => {
     assert.equal(call.structuredContent.outcome, 'pass');
     assert.equal(call.structuredContent.exitCode, 0);
     assert.equal(call.structuredContent.verdicts.length, 4, 'the run and its three changes');
+    for (let i = 100; i < 160; i++) assert.ok(byId.has(i), `answer ${i} arrived`);
+    assert.ok(out.length > 128 * 1024, `${out.length} bytes answered`);
   });
 });

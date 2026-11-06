@@ -93,7 +93,8 @@ export const TOOLS: readonly ToolDef[] = [
  */
 export function jsonSchema(tool: ToolDef, constraints = true): Record<string, unknown> {
   const properties: Record<string, unknown> = {};
-  for (const p of tool.params) {
+  const params = constraints ? tool.params : modelParams(tool);
+  for (const p of params) {
     properties[p.name] = {
       type: [p.type, 'null'],
       description: constraints ? p.description : describe(p),
@@ -102,7 +103,15 @@ export function jsonSchema(tool: ToolDef, constraints = true): Record<string, un
       ...(constraints && p.pattern !== undefined ? { pattern: p.pattern } : {}),
     };
   }
-  return { type: 'object', properties, required: tool.params.map((p) => p.name), additionalProperties: false };
+  return { type: 'object', properties, required: params.map((p) => p.name), additionalProperties: false };
+}
+
+/**
+ * The parameters a model API sees. The production address is left out: whoever runs the loop
+ * supplies it, as the MCP server's operator does with --url, so a model cannot choose what to read.
+ */
+export function modelParams(tool: ToolDef): readonly Param[] {
+  return tool.params.filter((p) => p.name !== 'url');
 }
 
 /** A parameter's description with its limits in words, for formats that carry no limits. */
@@ -154,7 +163,7 @@ export function toolsIn(format: Format): unknown {
     case 'anthropic':
       return TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: jsonSchema(t, false) }));
     case 'gemini':
-      return [{ functionDeclarations: TOOLS.map((t) => ({ name: t.name, description: t.description, ...(t.params.length > 0 ? { parameters: geminiSchema(t) } : {}) })) }];
+      return [{ functionDeclarations: TOOLS.map((t) => ({ name: t.name, description: t.description, ...(modelParams(t).length > 0 ? { parameters: geminiSchema(t) } : {}) })) }];
   }
 }
 
@@ -162,12 +171,13 @@ export function toolsIn(format: Format): unknown {
 // upper case, and nullable instead of a type list, with no additionalProperties.
 function geminiSchema(tool: ToolDef): Record<string, unknown> {
   const properties: Record<string, unknown> = {};
-  for (const p of tool.params) {
+  const params = modelParams(tool);
+  for (const p of params) {
     properties[p.name] = {
       type: p.type === 'integer' ? 'INTEGER' : 'STRING',
       description: describe(p),
       nullable: true,
     };
   }
-  return { type: 'OBJECT', properties, required: tool.params.map((p) => p.name) };
+  return { type: 'OBJECT', properties, required: params.map((p) => p.name) };
 }

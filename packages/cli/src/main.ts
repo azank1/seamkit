@@ -30,9 +30,9 @@ if (argv[0] === 'mcp') {
   }
   if (options.urls.length === 0) process.stderr.write('seamkit mcp: no production address; tools that read production will refuse until the server is started with --url or SEAMKIT_URL\n');
   await serve(process.stdin, process.stdout, options, (text) => process.stderr.write(text));
-  process.exit(0);
-}
-
+  // No process.exit: on a pipe that writes asynchronously it would cut off answers still queued.
+  // With standard input ended and every call answered, the process ends once the output drains.
+} else {
 const code = await run(argv, {
   out: (text) => process.stdout.write(shown(text)),
   err: (text) => process.stderr.write(shown(text)),
@@ -43,3 +43,4 @@ const code = await run(argv, {
   now: () => new Date().toISOString(),
 });
 process.exitCode = code;
+}

@@ -9,7 +9,7 @@
 [![licence](https://img.shields.io/badge/licence-Apache--2.0-2752c9)](LICENSE)
 [![node](https://img.shields.io/badge/node-20%20%7C%2022%20%7C%2024-2752c9)](#development)
 <br>
-[![tests](https://img.shields.io/badge/tests-306%20passing-1d7a4b)](#development)
+[![tests](https://img.shields.io/badge/tests-307%20passing-1d7a4b)](#development)
 [![mutation-tested fixes](https://img.shields.io/badge/fixes%20broken%20on%20purpose-185-1d7a4b)](https://seamkit.vercel.app)
 [![model calls](https://img.shields.io/badge/model%20calls%20in%20a%20verdict-0-111d29)](#how-it-works)
 [![runtime dependencies](https://img.shields.io/badge/runtime%20dependencies-1-111d29)](CONTRIBUTING.md)
@@ -137,8 +137,9 @@ request was not found. Report the reasons; never call a change done on any other
 ```
 
 Agents that speak MCP can ask through tools instead. `seamkit mcp --url https://your.app` serves `audit`,
-`readback`, `replay` and `ledger_verify` as read-only tools whose answers are the CLI's JSON, byte for byte; it reads
-only the addresses it was started with and records nothing. In Claude Code, the plugin sets it up:
+`readback`, `replay` and `ledger_verify` as read-only tools whose answers are the CLI's JSON, byte for byte; an agent
+can only pick among the production addresses it was started with, and it records nothing. In Claude Code, the plugin
+sets it up:
 
 ```text
 /plugin marketplace add azank1/seamkit
@@ -258,7 +259,7 @@ Good places to start are the readback check in `packages/core/src/checks`, the c
 
 ```sh
 npm ci
-npm test             # 306 tests, using temporary repositories and a local fake production
+npm test             # 307 tests, using temporary repositories and a local fake production
 npm run demo         # add -- --keep to keep the demo repository
 npm run pack:cli     # builds the npm package into release/seamkit
 npm run smoke:pack   # installs that package into an empty project and runs it
