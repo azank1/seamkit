@@ -8,8 +8,8 @@
   "engines": { "node": ">=20" },
   "dependencies": {
     "@seamkit/adapters": "0.0.0",
+    "@seamkit/cli": "0.2.0",
     "@seamkit/core": "0.0.0",
-    "@seamkit/state": "0.0.0",
-    "seamkit": "0.1.0"
+    "@seamkit/state": "0.0.0"
   }
 }

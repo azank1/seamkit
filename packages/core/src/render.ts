@@ -1,6 +1,18 @@
 import { OUTCOME_LABELS, OUTCOMES, type Outcome } from './outcome.js';
 import type { Verdict } from './verdict.js';
 
+/**
+ * Each entry is one line of the report. Text from a change (a title, a card's reason) can hold line
+ * breaks, terminal escapes, backspaces or direction overrides, which would let it draw lines that
+ * look like the report's own or hide them, so every control character becomes a space.
+ */
+const CONTROLS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]+/g;
+
+/** Text from a change or a ledger file, as one line of plain text: every control character becomes a space. */
+export const oneLine = (text: string): string => text.replace(CONTROLS, ' ');
+
+const asLines = (lines: readonly string[]): string => lines.map(oneLine).join('\n');
+
 function examinedText(e: Verdict['examined'][number]): string {
   if (e.count === undefined) return e.item;
   return e.of === undefined ? `${e.item} (${e.count})` : `${e.item} (${e.count} of ${e.of})`;
@@ -18,7 +30,7 @@ export function renderVerdict(v: Verdict): string {
   if (v.notExamined.length === 0) lines.push('  not examined: none listed');
   for (const g of v.notExamined) lines.push(`  not examined: ${g.item} (${g.reason})`);
   for (const ev of v.evidence) lines.push(`  evidence: ${ev.label ? `${ev.label} ` : ''}${ev.value}`);
-  return lines.join('\n');
+  return asLines(lines);
 }
 
 /** "3 verdicts: 1 pass, 1 fail, 1 examined nothing", listing every outcome that occurred. */
@@ -90,5 +102,5 @@ export function renderReadback(verdicts: readonly Verdict[]): string {
   const perChange = summary.notExamined.length - runGaps.length;
   if (perChange > 0) lines.push(`  not examined: ${perChange} item${perChange === 1 ? '' : 's'} listed with the changes above`);
   if (summary.notExamined.length === 0) lines.push('  not examined: none listed');
-  return lines.join('\n');
+  return asLines(lines);
 }

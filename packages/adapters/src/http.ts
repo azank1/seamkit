@@ -24,16 +24,24 @@ function networkReason(err: unknown, timeoutMs: number): string {
   return code ? `could not connect (${code})` : 'could not connect';
 }
 
+/**
+ * Errors from a connection kept alive after an earlier read that production has closed since. A
+ * GET changes nothing, so it is sent once more on a new connection.
+ */
+const STALE_CONNECTION = new Set(['UND_ERR_SOCKET', 'ECONNRESET', 'EPIPE']);
+
 export async function fetchLimited(url: string, opts: HttpOptions & { accept?: string } = {}): Promise<Fetched> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxBytes = opts.maxBytes ?? 5 * 1024 * 1024;
-  let res: Response;
-  try {
-    res = await (opts.fetch ?? fetch)(url, {
+  const get = (): Promise<Response> =>
+    (opts.fetch ?? fetch)(url, {
       redirect: 'follow',
       signal: AbortSignal.timeout(timeoutMs),
       headers: { 'user-agent': opts.userAgent ?? 'seamkit', accept: opts.accept ?? '*/*' },
     });
+  let res: Response;
+  try {
+    res = await get().catch((err: unknown) => (STALE_CONNECTION.has((err as { cause?: { code?: string } })?.cause?.code ?? '') ? get() : Promise.reject(err)));
   } catch (err) {
     return { ok: false, reason: networkReason(err, timeoutMs) };
   }

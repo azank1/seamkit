@@ -12,10 +12,11 @@ jobs:
   test:
     name: test (node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 22]
+        node: [20, 22, 24]
     steps:
       # Action SHAs resolved with `gh api repos/<o>/<r>/commits/<tag>` on 2026-10-14.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -36,3 +37,9 @@ jobs:
       # The npm package as a user gets it: bundled, packed, installed into an empty project, and run.
       - run: node scripts/pack-cli.mjs
       - run: node scripts/smoke-pack.mjs
+      # The GitHub Action runs from its committed bundle, so the bundle must be what the source builds.
+      - name: action bundle is up to date
+        run: |
+          node scripts/pack-action.mjs
+          git diff --exit-code -- packages/action/bundle || { echo "::error::packages/action/bundle is stale; run npm run pack:action and commit it"; exit 1; }
+      - run: node scripts/smoke-action.mjs

@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { git, GitStateStore, STATE_REF } from '@seamkit/state';
-import { detectActor, run, VERSION, type Io } from './cli.js';
+import { git, GitStateStore, STATE_BRANCH, STATE_REF } from '@seamkit/state';
+import { detectActor, inert, run, VERSION, type Io } from './cli.js';
 
 const AT = '2026-10-14T09:00:00.000Z';
 const MAIN = fileURLToPath(new URL('./main.js', import.meta.url));
@@ -70,6 +71,13 @@ describe('seamkit cli', () => {
     assert.equal((await cli(['frobnicate'], { cwd })).code, 2);
     assert.equal((await cli(['check', 'invariant', '--no-such-flag'], { cwd })).code, 2);
     assert.equal((await cli(['help'], { cwd })).code, 0);
+    // An argument's words are folded onto one line before the help text.
+    const forged = await cli(['--x\nseamkit: PASS forged\u001b[31m'], { cwd });
+    assert.equal(forged.code, 2);
+    const [first, blank] = forged.err.split('\n');
+    assert.match(first ?? '', /^seamkit: .*--x seamkit: PASS forged/);
+    assert.ok(!/[\u0000-\u001f]/.test(first ?? ''), JSON.stringify(first));
+    assert.equal(blank, '');
   });
 
   it('exits with the outcome of the check: 0 pass, 1 fail, 3 examined nothing', async () => {
@@ -115,9 +123,92 @@ describe('seamkit cli', () => {
     assert.equal((await cli(['state', 'init'], { cwd: dir })).code, 0);
     const recorded = await cli(['check', 'invariant'], { cwd: dir, stdin: HELD, env: { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'sess-1' } });
     assert.match(recorded.err, /recorded as event [0-9a-f]{12} on seamkit\/state/);
+    // Keeping a run out of a ledger that exists says so, not that the ledger is missing.
+    const kept = await cli(['check', 'invariant', '--no-record'], { cwd: dir, stdin: HELD });
+    assert.equal(kept.err, 'not recorded (--no-record)\n');
+    // --no-ledger is readback's: check refuses it rather than drop a --record or skip the ledger.
+    for (const flags of [['--no-ledger'], ['--record', '--no-ledger']]) {
+      const refused = await cli(['check', 'invariant', ...flags], { cwd: dir, stdin: HELD });
+      assert.equal(refused.code, 2, flags.join(' '));
+      assert.match(refused.err, /--no-ledger is for readback/);
+    }
     const listed = JSON.parse((await cli(['state', 'list', '--json'], { cwd: dir })).out);
     assert.equal(listed.length, 1);
     assert.deepEqual(listed[0].outcomes, ['pass']);
+  });
+
+  it('lists a tampered ledger without passing its terminal escapes or line breaks on', async () => {
+    const dir = await repo();
+    assert.equal((await cli(['state', 'init'], { cwd: dir })).code, 0);
+    await cli(['check', 'invariant'], { cwd: dir, stdin: HELD });
+    // Someone who can push to the branch adds a file whose name and fields hold escapes.
+    const index = join(dir, '.git', 'tamper-index');
+    const env = { ...process.env, GIT_INDEX_FILE: index };
+    const sh = (args: string[], input?: string): string => {
+      const r = spawnSync('git', args, { cwd: dir, env, input, encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout.trim();
+    };
+    sh(['read-tree', STATE_REF]);
+    const blob = sh(['hash-object', '-w', '--stdin'], JSON.stringify({ at: '\u001b[8mhidden', kind: '\u001b[2Kx' }));
+    sh(['update-index', '--add', '--cacheinfo', `100644,${blob},events/2026/10/22/\u001b[31mfake\nPASS.json`]);
+    // A well-formed file of a kind seamkit does not know lists as a row, so its kind is folded too.
+    const body = JSON.stringify({ kind: '\u001b[2K\u001b[1A\rPASS  forged\u2028x' });
+    const id = createHash('sha256').update(body).digest('hex');
+    const okBlob = sh(['hash-object', '-w', '--stdin'], `${body}\n`);
+    sh(['update-index', '--add', '--cacheinfo', `100644,${okBlob},events/2026/10/22/20261022T090000Z-${id}.json`]);
+    const tree = sh(['write-tree']);
+    const commit = sh(['-c', 'user.name=x', '-c', 'user.email=x@example.invalid', 'commit-tree', tree, '-p', STATE_REF, '-m', 'tamper']);
+    sh(['update-ref', STATE_REF, commit]);
+    const listed = (await cli(['state', 'list'], { cwd: dir })).out;
+    assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029]/.test(listed), JSON.stringify(listed));
+    assert.ok(listed.split('\n').every((line) => !line.startsWith('PASS')), listed);
+    assert.match(listed, /CORRUPT/);
+    assert.match(listed, new RegExp(`^\\(no time\\) {2}${id.slice(0, 12)} .*PASS {2}forged x *$`, 'm'));
+  });
+
+  it('names a path two copies of the ledger disagree about on one line', async () => {
+    const dir = await repo();
+    assert.equal((await cli(['state', 'init'], { cwd: dir })).code, 0);
+    const remote = join(root, 'disagree.git');
+    assert.equal(spawnSync('git', ['init', '-q', '--bare', remote]).status, 0);
+    assert.equal(spawnSync('git', ['remote', 'add', 'origin', remote], { cwd: dir }).status, 0);
+    const base = (await git(['rev-parse', STATE_REF], { cwd: dir })).trim();
+    const env = { ...process.env, GIT_INDEX_FILE: join(dir, '.git', 'disagree-index') };
+    const sh = (args: string[], input?: string): string => {
+      const r = spawnSync('git', args, { cwd: dir, env, input, encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout.trim();
+    };
+    // The same file name with two contents: one copy on the remote, the other here.
+    const copy = (content: string): string => {
+      sh(['read-tree', base]);
+      const blob = sh(['hash-object', '-w', '--stdin'], content);
+      sh(['update-index', '--add', '--cacheinfo', `100644,${blob},events/2026/10/22/\u009b2K\u2028PASS.json`]);
+      return sh(['-c', 'user.name=x', '-c', 'user.email=x@example.invalid', 'commit-tree', sh(['write-tree']), '-p', base, '-m', 'copy']);
+    };
+    sh(['push', '-q', remote, `${copy('a')}:${STATE_REF}`]);
+    sh(['update-ref', STATE_REF, copy('b')]);
+    const r = await cli(['state', 'sync'], { cwd: dir });
+    assert.notEqual(r.code, 0);
+    assert.match(r.err, /^seamkit: state branches disagree about "events\/2026\/10\/22\/.*PASS\.json"; one copy has been altered/);
+    assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029]/.test(r.err), JSON.stringify(r.err));
+    assert.equal(r.err.split('\n').length, 2, JSON.stringify(r.err));
+  });
+
+  it('merges the ledger here only with state sync --no-push, and says it did not push', async () => {
+    const dir = await repo();
+    assert.equal((await cli(['state', 'init'], { cwd: dir })).code, 0);
+    const remote = join(root, 'nopush.git');
+    assert.equal(spawnSync('git', ['init', '-q', '--bare', remote]).status, 0);
+    assert.equal(spawnSync('git', ['remote', 'add', 'origin', remote], { cwd: dir }).status, 0);
+    const kept = await cli(['state', 'sync', '--no-push'], { cwd: dir });
+    assert.equal(kept.code, 0, kept.err);
+    assert.equal(kept.out, `${STATE_BRANCH} holds commits origin does not have; not pushed\n`);
+    assert.equal(spawnSync('git', ['ls-remote', remote], { encoding: 'utf8' }).stdout, '');
+    assert.equal(JSON.parse((await cli(['state', 'sync', '--no-push', '--json'], { cwd: dir })).out).status, 'ahead');
+    assert.match((await cli(['state', 'sync'], { cwd: dir })).out, /^pushed /);
+    assert.equal((await cli(['state', 'sync', '--no-push'], { cwd: dir })).out, `${STATE_BRANCH} is up to date with origin\n`);
   });
 
   it('verifies and replays a clean ledger, and reports an empty one as examined nothing', async () => {
@@ -172,6 +263,19 @@ describe('seamkit cli', () => {
     assert.deepEqual(detectActor({ GITHUB_ACTIONS: 'true', CI: 'true' }), { kind: 'ci', harness: 'github-actions' });
     assert.deepEqual(detectActor({ SEAMKIT_HANDLE: 'eng-1' }), { kind: 'unknown', handle: 'eng-1' });
     assert.throws(() => detectActor({ SEAMKIT_HANDLE: 'someone@example.com' }), /not an email address/);
+  });
+
+  it('keeps output from reading as a workflow command in a GitHub Actions step', () => {
+    assert.equal(inert('ok\n  ::warning::x\n'), 'ok\n\u200b  ::warning::x\n');
+    assert.equal(inert('::error::y'), '\u200b::error::y');
+    assert.equal(inert('a\r::error::y'), 'a\r\u200b::error::y');
+    assert.equal(inert('a\n\u0085\t::x::'), 'a\n\u200b\u0085\t::x::');
+    assert.equal(inert('Fix ##[warning]x and ##[y'), 'Fix ##\u200b[warning]x and ##\u200b[y');
+    assert.equal(inert('a :: b\nno command here\n'), 'a :: b\nno command here\n');
+    const actions = spawnSync(process.execPath, [MAIN, '##[warning]x'], { encoding: 'utf8', env: { ...process.env, GITHUB_ACTIONS: 'true' } });
+    assert.ok(actions.stderr.includes('##\u200b[warning]x') && !actions.stderr.includes('##[warning]'), actions.stderr);
+    const elsewhere = spawnSync(process.execPath, [MAIN, '##[warning]x'], { encoding: 'utf8', env: { ...process.env, GITHUB_ACTIONS: '' } });
+    assert.ok(elsewhere.stderr.includes('##[warning]x'), elsewhere.stderr);
   });
 
   it('runs as a real process with the documented exit codes', async () => {

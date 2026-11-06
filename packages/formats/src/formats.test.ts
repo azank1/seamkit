@@ -48,6 +48,16 @@ describe('scope card', () => {
     assert.deepEqual(readCard('No card here.\n```yaml\ncard: 1\n```'), { found: false });
   });
 
+  it('refuses half a character from a YAML escape, which no event could record, and keeps a whole one', () => {
+    const half = CARD.replace('text: "data-sync-state"', 'text: "data-sync\\uD800"').replace('intent: Show a saved indicator after a note is synced.', 'intent: "\\uDC00 Show a saved indicator."');
+    assert.deepEqual(problemsOf(half), [
+      'intent holds half of a character (an escape such as \\uD800 without its pair); write the character itself',
+      'markers[0].text holds half of a character (an escape such as \\uD800 without its pair); write the character itself',
+    ]);
+    const whole = parseCard(CARD.replace('text: "data-sync-state"', 'text: "data-sync\\uD83D\\uDE00"'));
+    assert.ok(whole.ok && whole.card.markers[0]?.kind === 'bundle' && whole.card.markers[0].text === 'data-sync\u{1F600}');
+  });
+
   it('refuses two cards and an unclosed one', () => {
     const two = readCard(`${body(CARD)}\n${body(CARD)}`);
     assert.ok(two.found && !two.ok && /2 seamkit-card blocks/.test(two.problems[0] ?? ''));
@@ -67,16 +77,41 @@ describe('scope card', () => {
     ]);
   });
 
+  it('never prints card text as a warning, which a CI log would read as a command', () => {
+    const emitted: unknown[] = [];
+    const original = process.emitWarning;
+    process.emitWarning = ((w: unknown) => void emitted.push(w)) as typeof process.emitWarning;
+    try {
+      parseCard('card: 1\nintent: x\nlayers: []\ntargets: []\nmarkers: []\n? [ "##[error]forged" ]: x');
+    } finally {
+      process.emitWarning = original;
+    }
+    assert.deepEqual(emitted, []);
+  });
+
   it('enforces the marker rules', () => {
     const base = 'card: 1\nintent: x\nlayers: []\ntargets: []\nmarkers:\n';
     assert.match(problemsOf(`${base}  - kind: none\n    reason: tests only\n  - kind: version`).join('\n'), /a none marker must be the only marker/);
     assert.match(problemsOf(`${base}  - kind: bundle\n    text: 2024`).join('\n'), /markers\[0\]\.text must be a string; quote it, for example text: "2024"/);
     assert.match(problemsOf(`${base}  - kind: bundle\n    text: abc`).join('\n'), /at least 4 characters/);
     assert.match(problemsOf(`${base}  - kind: version\n    url: ftp://x.example/v`).join('\n'), /absolute http or https URL/);
+    for (const url of ['https://x.example/v.json?key=SECRET-KEY-123', 'https://x.example/v.json#frag', 'https://x.example/v.json?', '/v.json?key=x', '/v.json#frag']) {
+      const problems = problemsOf(`${base}  - kind: version\n    url: "${url}"`).join('\n');
+      assert.match(problems, /without a user name, password, query string or fragment/, url);
+      assert.ok(!problems.includes('SECRET'), problems);
+    }
     assert.match(problemsOf(`${base}  - kind: version\n    url: //x.example/v`).join('\n'), /must be a path such as \/version\.json/);
     const path = parseCard(`${base}  - kind: version\n    url: /api/notes-sync/version.json`);
     assert.ok(path.ok && path.card.markers[0]?.kind === 'version' && path.card.markers[0].url === '/api/notes-sync/version.json');
     assert.match(problemsOf(`${base}  - kind: version\n    text: oops`).join('\n'), /unknown field\(s\) for kind version: text/);
+    const bundles = (n: number): string => base + Array.from({ length: n }, (_, i) => `  - kind: bundle\n    text: "marker-${i}"\n`).join('');
+    assert.ok(parseCard(bundles(20)).ok);
+    assert.match(problemsOf(bundles(21)).join('\n'), /markers lists 21 markers; a card holds at most 20/);
+    // A key that is not a plain name is quoted, so it cannot start a line of the report.
+    const forged = problemsOf(`"\\n::error::forged": 1\n${base}  - kind: version\n    "##[x\\n::warning::y": 2`).join('\n');
+    assert.ok(forged.includes('card has unknown field(s): "\\n::error::forged";'), forged);
+    assert.ok(forged.includes('for kind version: "##[x\\n::warning::y";'), forged);
+    assert.ok(!forged.split('\n').some((line) => line.startsWith('::')), forged);
     assert.match(problemsOf('card: 1\nintent: x\nlayers: []\ntargets: []\nmarkers: []').join('\n'), /at least one marker/);
     const none = parseCard(`${base}  - kind: none\n    reason: tests only`);
     assert.ok(none.ok && none.card.markers[0]?.kind === 'none');

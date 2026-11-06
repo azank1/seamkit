@@ -1,4 +1,4 @@
-import { run } from './cli.js';
+import { inert, run } from './cli.js';
 
 function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -14,9 +14,12 @@ process.stdout.on('error', (err: NodeJS.ErrnoException) => {
   if (err.code !== 'EPIPE') throw err;
 });
 
+// A GitHub Actions runner reads workflow commands from a step's output; reports must not hold any.
+const shown = process.env['GITHUB_ACTIONS'] === 'true' ? inert : (text: string): string => text;
+
 const code = await run(process.argv.slice(2), {
-  out: (text) => process.stdout.write(text),
-  err: (text) => process.stderr.write(text),
+  out: (text) => process.stdout.write(shown(text)),
+  err: (text) => process.stderr.write(shown(text)),
   readStdin,
   stdinIsTTY: process.stdin.isTTY === true,
   env: process.env,

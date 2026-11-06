@@ -12,7 +12,9 @@ export { invariantCheck, type InvariantInput } from './checks/invariant.js';
 export {
   READBACK_STATES,
   markerKey,
+  parseReadbackChange,
   parseReadbackInput,
+  READBACK_LIMITS,
   readbackCheck,
   readbackSightings,
   type AncestryFact,

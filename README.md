@@ -73,12 +73,126 @@ whose fields name two different commits, and a web page served in place of a doc
 Stamp prefers git, because only git can tell a clean working tree from one with uncommitted changes, and a build made
 from uncommitted changes proves nothing about what it contains. Where the build has no history, stamp falls back to the
 commit the CI system provides (`VERCEL_GIT_COMMIT_SHA`, `GITHUB_SHA`, `CF_PAGES_COMMIT_SHA`, `COMMIT_REF`,
-`RENDER_GIT_COMMIT`, `CI_COMMIT_SHA`, `BITBUCKET_COMMIT` or `SOURCE_VERSION`) and records which one it used.
+`RENDER_GIT_COMMIT`, `CI_COMMIT_SHA`, `BITBUCKET_COMMIT` or `SOURCE_VERSION`) and records which one it used. In a
+checkout it needs git: a checkout that git is missing or refuses to read gets no stamp, rather than one that cannot say
+whether its tree was clean. A change counts even where `git status` would not show it: inside a submodule, whatever
+its `ignore` setting, in the directory of a submodule that is not checked out, or in a file marked skip-worktree or assume-unchanged, which counts as it would unmarked (in a
+sparse checkout, a skip-worktree file left out of the checkout is not a change). Stamp asks git not to refresh its index, so it writes
+nothing to the repository. `--require-clean` refuses a dirty tree, and also refuses any stamp that cannot say whether
+the tree is clean: outside a repository, or with `--commit` naming anything but the commit checked out.
+
+Vercel's build keeps the history and then writes `vercel.json` into the checkout: the committed settings on one line,
+or `{}` when none is committed. On Vercel's build of the commit, stamp does not count a `vercel.json` that holds exactly
+the committed settings, and it records the branch Vercel built from `VERCEL_GIT_COMMIT_REF`. A stamp before 0.2.0
+counts that file, so every Vercel build reads as having uncommitted changes and readback cannot prove it.
 
 ## Use it in CI
 
-A GitHub Action is next on the roadmap. Until it ships, run readback as a step once your deploy is live. It needs the
-full history, because it decides whether production contains a change by commit ancestry:
+The seamkit Action reads production back once a deploy succeeds and posts the verdict as a check run on the deployed
+commit. Hosts that report deployments to GitHub fire `deployment_status`. Vercel does while the project's
+`deployment_status` Events setting (Settings, Git) is on, and names the production environment `Production`. A new
+Vercel project can start with that setting off, and then no readback runs:
+
+```yaml
+# .github/workflows/readback.yml
+name: readback
+on: deployment_status
+permissions:
+  contents: write   # to record verdicts on the seamkit/state branch
+  checks: write     # to post the check run
+jobs:
+  readback:
+    if: github.event.deployment_status.state == 'success' && github.event.deployment.environment == 'Production'
+    concurrency:
+      group: seamkit-readback-${{ github.event.deployment.environment }}   # one readback at a time per address
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # readback decides by commit ancestry, so it needs the history
+      - uses: azank1/seamkit@v0.2.0
+        id: readback
+        with:
+          url: https://your.app
+          ledger: 'true'   # start the ledger on the first run, so a rollback shows as not live
+```
+
+The concurrency group sits on the job, so a deploy to another environment, which the `if` skips, never takes a place
+in it. GitHub runs one job of a group at a time and keeps at most one more waiting; when another arrives it cancels
+the one waiting, and for jobs queued within minutes of each other it does not promise which it keeps. A deploy whose
+readback was cancelled is covered by the next deploy's readback and by the scheduled watch below, which is why the
+watch is part of the setup. When one repository feeds several Vercel projects, each production environment is named
+`Production – <project>`; give each project its own job, with that exact name in its `if` and its own `url`. The
+group is keyed by the environment, so the projects do not cancel each other's readbacks.
+
+The check covers the last 20 changes on the default branch. The Action keeps reading production for up to `wait`
+seconds until production's version document reports the deployed commit, fetching the branch again if production
+reports a commit the checkout does not have yet, then records the run that counts and pushes the ledger. When production still runs another commit at the end of the wait, the summary says which. If that commit
+does not contain the deployed one, the deploy is not live at this address, and a pass is reported as a fail.
+
+Once the ledger holds a run that read this address, a change merged after the deployed commit is listed as not
+examined and left to the next deploy when it was never seen live there and was in no build production was seen running
+there, so a merge landing while this deploy builds does not fail it. Every other change is judged, so a deploy that
+drops one, as a rollback does, fails. Without a ledger, on the first run at an address, and once production there has
+been seen running a commit this repository does not have, seamkit cannot tell a change still on its way from one a
+rollback removed, so it judges every change: a merge landing during the build fails the deploy as not proven until the
+next deploy carries it. A rollback fails too, as not live when the ledger saw the dropped change live, and as not
+proven without a ledger or on the first run. After a deploy, `last` counts the changes judged, not the ones left to the next deploy.
+
+Only a pass posts a success. A change that is not live or not proven fails the check, and an unclassified result is
+marked action required. Examined nothing fails it too, whether production could not be read, a marker could not be
+read, or a change's card says it has nothing to prove (`kind: none`), a claim a human has to accept. Every change in
+the window counts, so such a change fails each deploy until it leaves the window: a merged card cannot be changed, and
+accepting a nothing-to-prove claim is not built yet. Meanwhile, lower `last` or read back one pull request with `pr`,
+and keep `kind: none` for changes you are willing to see fail deploys for a while. The step exits with seamkit's own
+code, so a later step that reads `steps.readback.outputs.outcome` needs `if: always()`.
+
+When you deploy from a workflow of your own, trigger on it finishing, from the default branch:
+
+```yaml
+on:
+  workflow_run:
+    workflows: [deploy]   # your deploy workflow's name; this file must be on the default branch
+    types: [completed]
+    branches: [main]
+```
+
+Drop the job's `if` there, which only a `deployment_status` event can satisfy: the Action itself skips a run that
+failed or ran for a pull request, as it skips any `deployment_status` other than success. The check run goes on the
+commit that workflow ran on.
+
+To catch a rollback or a hand deploy that no workflow saw, add a watch: a workflow of its own with the same
+permissions and steps, triggered on a `schedule` such as hourly with `cron: '17 * * * *'`, with no `if` and no
+concurrency group. The watch reads the default branch with nothing counted as deployed, so it also fails while a merged
+change waits for its deploy. It needs no group, because a ledger push that meets another run's is merged and tried
+again. On a schedule the check goes on the job's commit, the default branch's tip, so a watch that reads another branch
+with `branch` should have its own `check-name`.
+
+On Vercel, a rollback also keeps later deploys away from the address. Instant Rollback turns off the project's
+assignment of its production domains, so each later push still builds, and GitHub records it as a successful
+`Production` deployment, while the address goes on serving the rolled-back build. The readback after each of those
+deploys fails, saying that production runs the rolled-back commit, until a deployment is promoted, for example with
+`vercel promote <deployment URL>`. A promote sends no deployment event, so the watch is what reads it back.
+
+| Input | Default | |
+|---|---|---|
+| `url` | required | the production address |
+| `last` | `20` | how many of the latest changes to examine |
+| `pr` | | read back one merged pull request instead |
+| `wait` | `60` | after a deploy, seconds (up to 1800) to keep reading until production reports the deployed commit; nothing is recorded meanwhile |
+| `ledger` | `auto` | `auto` records when a `seamkit/state` branch exists, `true` starts one, `false` neither reads nor records it, so a rollback reads not proven and changes merged during the build are judged |
+| `check-name` | `seamkit readback (<host><path>)` | one check per production address, shared by the deploy readback and its watch, so the later verdict on a commit replaces the earlier one; a job that reads the same `url` for another `branch`, a `pr` or another `version-url` needs a name of its own |
+| `sha` | the deployed commit | where the check goes, and what counts as deployed |
+| `branch`, `version-url`, `token` | | for unusual layouts; `branch` names the remote's branch, and one that is not a branch gives no verdict |
+
+The Action runs on GitHub-hosted runners, and on self-hosted runners that support the `node24` runtime. Recording
+pushes with the checkout's credentials, so keep `actions/checkout`'s default `persist-credentials`. Before reading, the
+Action fetches the branch it reads from origin: when the branch has moved past the job's commit, `actions/checkout`
+leaves `origin/<branch>` at that commit, which would hide every change merged since. So when the `branch` input is not
+a branch name, or the branch cannot be fetched, the Action gives no verdict (exit 2) and says why.
+
+Anywhere else, run readback as a step of the job that deploys, once the deploy is live, naming the commit it shipped:
 
 ```yaml
 - uses: actions/checkout@v7
@@ -87,11 +201,33 @@ full history, because it decides whether production contains a change by commit 
 - uses: actions/setup-node@v7
   with:
     node-version: 22
-- run: npx --yes seamkit@0.1 readback --url https://your.app --last 20
+# … your deploy steps …
+- run: |
+    : "${BRANCH:?set BRANCH to the default branch}"
+    echo "::remove-matcher owner=tsc::"   # setup-node's problem matchers would read a change's title as an error
+    echo "::remove-matcher owner=eslint-stylish::"
+    echo "::remove-matcher owner=eslint-compact::"
+    git fetch --quiet --no-tags origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"   # the branch as it is now
+    deployed=(--deployed "$DEPLOYED_COMMIT")
+    npx --yes seamkit@0.2 state sync --no-push || deployed=()   # without the ledger as it is now, judge every change
+    status=0
+    npx --yes seamkit@0.2 readback --url https://your.app --last 20 --branch "$BRANCH" "${deployed[@]}" || status=$?
+    npx --yes seamkit@0.2 state sync || echo '::warning::seamkit: the ledger was not pushed'
+    exit $status
+  env:
+    BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}   # a schedule's event names no repository
+    DEPLOYED_COMMIT: ${{ github.sha }}   # the commit this job deployed
 ```
 
-The step fails when a change is not live or not proven, and exits 3 when production could not be read, so a broken
-read never passes silently.
+The step exits with readback's code: it fails when a change is not live or not proven, and exits 3 when nothing could
+be examined, so a broken read never passes silently. The first `state sync` only fetches and merges, so a push
+problem is reported once, by the last. When the first fails, the step leaves out `--deployed`: a ledger copy left on a
+runner that keeps its workspace may lack runs others pushed, and scoping from it could pass a rollback. Readback records the run when the checkout has a ledger
+(`seamkit state init` starts one), and pushing it needs `permissions: contents: write`. In a GitHub Actions step, the
+CLI's output cannot run a workflow command: where a change's own words would read as one, a zero-width space keeps them
+plain text. Problem matchers are different: they read every line of the log, so a matcher an earlier step added, such
+as the ones `actions/setup-node` adds, can turn a change's title into an error annotation. The recipe removes those; do
+the same for any matcher of your own, in this job and in a job that runs the Action.
 
 ## Use it from an agent
 
@@ -99,8 +235,9 @@ The exit code is the contract, so an agent needs one instruction, for example in
 
 ```markdown
 After a deploy, run `npx seamkit readback --url https://your.app --pr <number> --json`.
-The change is shipped only when it exits 0. Exit 1 means it is not live or not proven, and exit 3 means
-production could not be examined. Report the reasons; never call a change done on any other exit code.
+The change is shipped only when it exits 0. Exit 1 means it is not live or not proven. Exit 3 means nothing
+was proven: production or a marker could not be read, the card says there is nothing to prove, or the pull
+request was not found. Report the reasons; never call a change done on any other exit code.
 ```
 
 An MCP server with the same checks as tools is on the roadmap.
@@ -149,8 +286,11 @@ text is not unique to the change. A marker must be text that the built output co
 exists only in source and will never be found, and readback says so when the version shows the change is deployed.
 
 The parser is strict. It rejects unknown fields, YAML aliases and custom tags, and reports every problem in one pass,
-each naming the field and the fix, so an agent can repair a card with one edit. A marker's `url` may be a path, which
-readback resolves against the production URL it is given, so one card serves staging and production alike. A marker of
+each naming the field and the fix, so an agent can repair a card with one edit. A card lists at most 20 markers, and
+one readback reads at most 100 version documents, 100 pages and 1000 marker texts on a page; the newest changes come
+first, and an older card whose markers do not fit is proven by version alone and says so. A marker's `url` may be a path, which
+readback resolves against the production URL it is given, so one card serves staging and production alike. It may
+also be an absolute URL on another host, such as a separate API, which readback reads as given. A marker of
 kind `none` with a reason declares that nothing deployed changes.
 
 Readback finds cards in the history, so a card counts once its merge commit carries it. GitHub writes the pull request
@@ -165,10 +305,17 @@ event named by the SHA-256 of its content. That history is what lets a later run
 production, as after a rollback, rather than merely that it is not proven. The branch is written with git plumbing, so
 it never touches your working tree, index or HEAD. `seamkit state verify` checks every file against its name,
 `seamkit replay` recomputes every recorded verdict from its recorded observations and fails if any comes out
-differently, and `seamkit state sync` merges and pushes the branch without forcing.
+differently, and `seamkit state sync` merges and pushes the branch without forcing (`--no-push` merges here only).
+
+The ledger is a branch, so whatever builds every branch sees each push to it. The Action pushes with the job's token,
+which starts no workflows, but a push from your own machine starts every `on: push` workflow that does not leave the
+branch out with `branches-ignore: [seamkit/state]`. A host that builds every branch also sees each push: on Vercel,
+whose git integration does not build commits by an author outside the team, every ledger commit, written by `seamkit`,
+is blocked and shows on GitHub as a failed `Preview` deployment, with nothing built or served.
 
 seamkit records URLs, commit ids, marker texts and digests of what production served, never the content itself. A
-production URL with credentials or a query string is refused for that reason.
+production URL with credentials or a query string is refused for that reason, and its fragment is dropped before
+anything reads or records it; a card's URL with credentials, a query string or a fragment is refused.
 
 ## Try the demo
 
@@ -187,17 +334,17 @@ machine, and its test pins every state.
 
 ## What works today, and what is next
 
-seamkit 0.1 is the command line tool: `audit`, `readback`, `stamp`, `replay` and `state`. It is tested on Node 20 and
-22 on Linux.
+seamkit 0.1 is the command line tool: `audit`, `readback`, `stamp`, `replay` and `state`. 0.2 adds the GitHub Action,
+which reads back after every deploy and reports a check run, and `readback --deployed`, which judges a deploy by the
+commit it shipped. Both are tested on Node 20, 22 and 24 on Linux.
 
 Next, in order:
 
-1. A GitHub Action that reads back after every deploy and reports a check run.
-2. An MCP server with the same checks as tools, and a Claude Code plugin.
-3. Carry: before a deploy, the merged pull requests it will also ship, and a block on hand deploys.
-4. Cards and a gate that evaluates every open pull request the way the deploy step will.
-5. Approvals that an agent cannot forge, policy and rulings elicited from a human, and a static console.
-6. Blast-radius classification, sandbox parity, and hook packs for coding agents.
+1. An MCP server with the same checks as tools, and a Claude Code plugin.
+2. Carry: before a deploy, the merged pull requests it will also ship, and a block on hand deploys.
+3. Cards and a gate that evaluates every open pull request the way the deploy step will.
+4. Approvals that an agent cannot forge, policy and rulings elicited from a human, and a static console.
+5. Blast-radius classification, sandbox parity, and hook packs for coding agents.
 
 The setup guide, with diagrams, copy-in recipes for agents and CI, and the build tracker, is at
 [azank1.github.io/seamkit](https://azank1.github.io/seamkit/). The design is in
@@ -208,10 +355,11 @@ cover, is in [`docs/prior-art.md`](docs/prior-art.md).
 
 ```sh
 npm ci
-npm test            # 117 tests, using temporary repositories and a local fake production
-npm run demo        # add -- --keep to keep the demo repository
-npm run pack:cli    # builds the npm package into release/seamkit
-npm run smoke:pack  # installs that package into an empty project and runs it
+npm test             # 271 tests, using temporary repositories and a local fake production
+npm run demo         # add -- --keep to keep the demo repository
+npm run pack:cli     # builds the npm package into release/seamkit
+npm run smoke:pack   # installs that package into an empty project and runs it
+npm run pack:action  # rebuilds the Action's committed bundle; commit it with the source that changed it
 ```
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) to contribute and [`SECURITY.md`](SECURITY.md) to report a vulnerability.

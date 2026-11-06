@@ -216,8 +216,8 @@ function parseBundle(raw: unknown, path: string): BundleObservation {
     complete: v.boolean(o['complete'], `${path}.complete`),
     files: v.count(o['files'], `${path}.files`),
     bytes: v.count(o['bytes'], `${path}.bytes`),
-    searched: v.array(o['searched'], `${path}.searched`, v.string, 1000),
-    found: v.array(o['found'], `${path}.found`, v.string, 1000),
+    searched: v.array(o['searched'], `${path}.searched`, v.string, READBACK_LIMITS.searched),
+    found: v.array(o['found'], `${path}.found`, v.string, READBACK_LIMITS.searched),
   };
   if (o['digest'] !== undefined) obs.digest = v.digestHex(o['digest'], `${path}.digest`);
   if (o['versionUrl'] !== undefined) obs.versionUrl = v.httpUrl(o['versionUrl'], `${path}.versionUrl`);
@@ -251,14 +251,22 @@ function parseGap(raw: unknown, path: string): Gap {
   return { item: v.string(o['item'], `${path}.item`), reason: v.string(o['reason'], `${path}.reason`) };
 }
 
+/** One change as the check accepts it; throws InputError naming what it does not accept. */
+export function parseReadbackChange(raw: unknown): ReadbackChange {
+  return parseChange(raw, 'change');
+}
+
+/** How many version documents, pages, and texts searched on one page one run's input may hold. */
+export const READBACK_LIMITS = { versions: 100, bundles: 100, searched: 1000 } as const;
+
 export function parseReadbackInput(raw: unknown): ReadbackInput {
   const o = v.object(raw, 'input', ['subject', 'changes', 'versions', 'ancestry', 'bundles', 'history', 'notExamined']);
   const input: ReadbackInput = {
     subject: v.string(o['subject'], 'subject'),
     changes: v.array(o['changes'], 'changes', parseChange, 1000),
-    versions: v.array(o['versions'], 'versions', parseVersion, 100),
+    versions: v.array(o['versions'], 'versions', parseVersion, READBACK_LIMITS.versions),
     ancestry: v.array(o['ancestry'], 'ancestry', parseAncestry, 100_000),
-    bundles: v.array(o['bundles'], 'bundles', parseBundle, 100),
+    bundles: v.array(o['bundles'], 'bundles', parseBundle, READBACK_LIMITS.bundles),
     history: o['history'] === null ? null : v.array(o['history'], 'history', parseSighting, 100_000),
   };
   if (o['notExamined'] !== undefined) input.notExamined = v.array(o['notExamined'], 'notExamined', parseGap, 100);

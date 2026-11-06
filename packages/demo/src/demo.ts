@@ -1,5 +1,5 @@
 import { FakeProduction } from '@seamkit/adapters';
-import { run, type Io } from 'seamkit';
+import { run, type Io } from '@seamkit/cli';
 import { buildAt } from './build.js';
 import { FIRST_DEPLOY, ROLLBACK_TO } from './history.js';
 import { seedDemo } from './seed.js';

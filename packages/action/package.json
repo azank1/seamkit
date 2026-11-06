@@ -1,0 +1,27 @@
+{
+  "name": "@seamkit/action",
+  "version": "0.2.0",
+  "private": true,
+  "description": "seamkit's GitHub Action: reads production back after a deploy and reports a check run. Its version is seamkit's, because the bundle reports it.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/action.d.ts",
+      "default": "./dist/action.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@seamkit/adapters": "0.0.0",
+    "@seamkit/cli": "0.2.0",
+    "@seamkit/core": "0.0.0",
+    "@seamkit/state": "0.0.0",
+    "yaml": "2.9.1"
+  }
+}
