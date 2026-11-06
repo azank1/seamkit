@@ -1,4 +1,4 @@
-// Runs the compiled tests, and only those. Node 22 strips TypeScript types natively, so its default
+// Runs the compiled tests and the scripts' own tests, and only those. Node 22 strips TypeScript types natively, so its default
 // test discovery also picks up the src/*.test.ts sources; passing an explicit file list keeps the
 // suite identical on every supported Node version. Finding no test files is a failure, not a pass.
 import { existsSync, readdirSync, statSync } from 'node:fs';
@@ -17,6 +17,8 @@ for (const pkg of readdirSync('packages')) {
   const dist = join('packages', pkg, 'dist');
   if (existsSync(dist)) walk(dist);
 }
+// The repository's own scripts carry their tests beside them, as plain modules.
+for (const name of readdirSync('scripts')) if (name.endsWith('.test.mjs')) files.push(join('scripts', name));
 files.sort();
 if (files.length === 0) {
   console.error('run-tests: no compiled test files found under packages/*/dist; run "npm run build" first');
@@ -27,5 +29,6 @@ if (files.length === 0) {
 // is ten minutes, far above the slowest file. Flags given here come after, so they can change it.
 const major = Number(process.versions.node.split('.')[0]);
 const timeout = major >= 24 ? 120000 : 600000;
-const result = spawnSync(process.execPath, ['--test', `--test-timeout=${timeout}`, ...process.argv.slice(2), ...files], { stdio: 'inherit' });
+// Every test process loads the egress guard, so a test that reaches past this machine fails (NFR2).
+const result = spawnSync(process.execPath, ['--import', './scripts/no-egress.mjs', '--test', `--test-timeout=${timeout}`, ...process.argv.slice(2), ...files], { stdio: 'inherit' });
 process.exit(result.status ?? 1);

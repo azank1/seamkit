@@ -355,12 +355,17 @@ cover, is in [`docs/prior-art.md`](docs/prior-art.md).
 
 ```sh
 npm ci
-npm test             # 271 tests, using temporary repositories and a local fake production
+npm test             # 288 tests, using temporary repositories and a local fake production
 npm run demo         # add -- --keep to keep the demo repository
 npm run pack:cli     # builds the npm package into release/seamkit
 npm run smoke:pack   # installs that package into an empty project and runs it
 npm run pack:action  # rebuilds the Action's committed bundle; commit it with the source that changed it
+node scripts/supply-chain.mjs  # licences, shipped dependencies and notices (after both pack commands)
+node scripts/claims.mjs        # every public claim in claims.json, with the tests that prove it
 ```
+
+Every test process loads `scripts/no-egress.mjs`, so a test that opens a socket to anything but this machine fails:
+seamkit's verdicts never call a model or an outside service, and the suite proves it.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) to contribute and [`SECURITY.md`](SECURITY.md) to report a vulnerability.
 

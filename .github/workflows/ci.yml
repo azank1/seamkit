@@ -20,6 +20,8 @@ jobs:
     steps:
       # Action SHAs resolved with `gh api repos/<o>/<r>/commits/<tag>` on 2026-10-14.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
@@ -43,3 +45,47 @@ jobs:
           node scripts/pack-action.mjs
           git diff --exit-code -- packages/action/bundle || { echo "::error::packages/action/bundle is stale; run npm run pack:action and commit it"; exit 1; }
       - run: node scripts/smoke-action.mjs
+
+  # What seamkit ships, and the workflows that build it, meet the bar seamkit asks of others (NFR9).
+  supply-chain:
+    name: supply chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - run: npm ci
+      # Builds both bundles, so the gate also reads the notices that ship beside each.
+      - run: npm run build
+      - run: node scripts/pack-cli.mjs
+      - run: node scripts/pack-action.mjs
+      # Licences (ASF Category A shipped, A or B dev-only), the shipped-dependency allowlist, no model SDK, notices.
+      - run: node scripts/supply-chain.mjs
+      # On a pull request, a claim's text is also compared with the base branch's, where texts never change.
+      - name: claims lint
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ -z "$BASE_REF" ]; then node scripts/claims.mjs; exit; fi
+          git fetch --no-tags --depth=1 origin "refs/heads/$BASE_REF"
+          if git cat-file -e FETCH_HEAD:claims.json 2>/dev/null; then
+            git show FETCH_HEAD:claims.json > "$RUNNER_TEMP/base-claims.json"
+            node scripts/claims.mjs --base "$RUNNER_TEMP/base-claims.json"
+          else
+            node scripts/claims.mjs
+          fi
+      # Tool versions are pinned; actionlint is also checked against its published SHA-256.
+      - name: reuse lint
+        run: pipx run --spec reuse==6.2.0 reuse lint
+      - name: actionlint
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/actionlint.tar.gz" https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+      - name: zizmor
+        run: pipx run --spec zizmor==1.31.1 zizmor --offline --format=github .github/workflows action.yml
