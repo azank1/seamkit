@@ -1,0 +1,41 @@
+{
+  "name": "seamkit",
+  "version": "0.3.0",
+  "description": "Ask whether a merged change is live in production. Read-only MCP tools that answer with seamkit's verdict and exit code; the agent never sees a pass that production did not show.",
+  "author": {
+    "name": "azank1",
+    "url": "https://github.com/azank1"
+  },
+  "homepage": "https://github.com/azank1/seamkit",
+  "repository": "https://github.com/azank1/seamkit",
+  "license": "Apache-2.0",
+  "keywords": [
+    "deployment",
+    "production",
+    "readback",
+    "verification",
+    "rollback",
+    "mcp"
+  ],
+  "userConfig": {
+    "production_url": {
+      "type": "string",
+      "title": "Production address",
+      "description": "The production address seamkit reads when the repository sets none, such as https://your.app. A repository can set its own with SEAMKIT_URL in .claude/settings.json; the tools read only that address.",
+      "required": false
+    }
+  },
+  "mcpServers": {
+    "seamkit": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "seamkit@0.3.0",
+        "mcp"
+      ],
+      "env": {
+        "SEAMKIT_URL": "${SEAMKIT_URL:-${user_config.production_url}}"
+      }
+    }
+  }
+}

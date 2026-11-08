@@ -29,6 +29,7 @@ import {
 import { GitStateStore, NotAGitRepository, STATE_BRANCH, type StoredFile } from '@seamkit/state';
 import { auditAdvice, gatherReadback, type ReadbackRequest } from './readback.js';
 import { makeStamp, writeStamp } from './stamp.js';
+import { FORMATS, toolsIn, type Format } from './tools.js';
 
 export interface Io {
   out(text: string): void;
@@ -60,6 +61,8 @@ Usage:
   seamkit state list [--json]
   seamkit state verify [--json]
   seamkit state sync [--remote <name>] [--no-push]
+  seamkit mcp [--url <production-url>]... [--cwd <dir>]
+  seamkit tools --format mcp|openai|anthropic|gemini
   seamkit version
 
 readback proves whether production holds each merged change: by the commit production says it
@@ -82,6 +85,10 @@ Verdicts are recorded on the ${STATE_BRANCH} branch when it exists (create it wi
 repository; "seamkit stamp --out" writes only the file it names there. "seamkit stamp
 --require-clean" refuses a dirty tree, and a stamp that cannot say whether the tree is
 clean. "seamkit state sync --no-push" merges the remote's ledger here without pushing.
+
+"seamkit mcp" serves the read-only commands as tools to an MCP client over standard input and
+output. It reads only the production addresses it was started with (--url, or SEAMKIT_URL), and
+records nothing. "seamkit tools" writes the same tool definitions for a model API.
 `;
 
 class UsageError extends Error {
@@ -108,6 +115,7 @@ type Flags = {
   deployed?: string;
   out?: string;
   'require-clean'?: boolean;
+  format?: string;
 };
 
 export async function run(argv: readonly string[], io: Io): Promise<number> {
@@ -138,6 +146,7 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         deployed: { type: 'string' },
         out: { type: 'string' },
         'require-clean': { type: 'boolean' },
+        format: { type: 'string' },
       },
     }) as { values: Flags; positionals: string[] });
   } catch (err) {
@@ -170,6 +179,10 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         return await cmdReadback(rest, values, cwd, io, true);
       case 'stamp':
         return await cmdStamp(rest, values, cwd, io);
+      case 'tools':
+        return cmdTools(rest, values, io);
+      case 'mcp':
+        throw new UsageError('seamkit mcp serves over standard input and output; run it as its own command, not through run()');
       default:
         throw new UsageError(`unknown command: ${command}`);
     }
@@ -296,7 +309,7 @@ function productionUrl(flags: Flags, env: Io['env']): string {
 }
 
 /** An address the ledger may record. Never echoed: a malformed URL can still hold a token, and these messages reach reports. */
-function recordableUrl(raw: string, flag: string, example: string): string {
+export function recordableUrl(raw: string, flag: string, example: string): string {
   let url: URL;
   try {
     url = new URL(raw);
@@ -351,6 +364,14 @@ async function cmdReadback(args: string[], flags: Flags, cwd: string, io: Io, au
   if (advice.length > 0) io.out(`\nTo examine more:\n${advice.map((a) => `  - ${a}`).join('\n')}\n`);
   noteRecording(recorded, flags, io);
   return exitCodeFor(outcome);
+}
+
+function cmdTools(args: string[], flags: Flags, io: Io): number {
+  if (args.length > 0) throw new UsageError(`unexpected argument: ${args[0]}`);
+  const format = flags.format;
+  if (format === undefined || !(FORMATS as readonly string[]).includes(format)) throw new UsageError(`--format must be one of ${FORMATS.join(', ')}`);
+  io.out(`${JSON.stringify(toolsIn(format as Format), null, 2)}\n`);
+  return 0;
 }
 
 async function cmdStamp(args: string[], flags: Flags, cwd: string, io: Io): Promise<number> {

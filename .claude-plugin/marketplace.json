@@ -1,0 +1,12 @@
+{
+  "name": "seamkit",
+  "description": "seamkit's plugins: deterministic, read-only checks of whether merged changes are live in production.",
+  "owner": { "name": "azank1", "url": "https://github.com/azank1" },
+  "plugins": [
+    {
+      "name": "seamkit",
+      "source": "./plugins/seamkit",
+      "description": "Ask whether a merged change is live in production. Read-only MCP tools that answer with seamkit's verdict and exit code."
+    }
+  ]
+}

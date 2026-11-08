@@ -10369,6 +10369,123 @@ async function writeStamp(cwd, out, doc) {
   return path;
 }
 
+// packages/cli/dist/tools.js
+var URL_PARAM = {
+  name: "url",
+  type: "string",
+  description: "The production address to read, one of those the server was started with. Null for the only one."
+};
+var LAST = { name: "last", type: "integer", description: "How many of the latest merged changes to judge. Null for 20.", minimum: 1, maximum: 1e3 };
+var BRANCH = {
+  name: "branch",
+  type: "string",
+  description: "The branch whose history is judged, such as main. Null for the default branch.",
+  pattern: "^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$"
+};
+var COMMIT = "^[0-9a-f]{7,64}$";
+var flag2 = (name, value) => value === null || value === void 0 ? [] : [`--${name}`, String(value)];
+var TOOLS = [
+  {
+    name: "audit",
+    title: "Audit production",
+    description: 'Reads production back read-only and judges each of the latest merged changes as live, not live, not proven or nothing to prove, with advice for every gap. Returns the same JSON as "seamkit audit --json". exitCode 0 is a pass; 1 a fail; 3 examined nothing, never a pass; 4 stops for a human. Records nothing.',
+    params: [URL_PARAM, LAST, BRANCH],
+    argv: (a, url2) => ["audit", "--json", "--no-record", ...flag2("url", url2), ...flag2("last", a["last"]), ...flag2("branch", a["branch"])]
+  },
+  {
+    name: "readback",
+    title: "Read back one change or deploy",
+    description: 'Reads production back read-only for one merged pull request (pr), one commit, or the latest changes, and says whether each is live. deployed names the commit a deploy just shipped, so changes merged after it are left to the next deploy. Returns the same JSON as "seamkit readback --json"; a change is shipped only when exitCode is 0. Records nothing.',
+    params: [
+      URL_PARAM,
+      { name: "pr", type: "integer", description: "A merged pull request number. Null for none.", minimum: 1, maximum: 2147483647 },
+      { name: "commit", type: "string", description: "A full or abbreviated commit id (hex). Null for none. Not with pr.", pattern: COMMIT },
+      LAST,
+      BRANCH,
+      { name: "deployed", type: "string", description: "The commit id (hex) the deploy shipped. Null when not judging a deploy.", pattern: COMMIT }
+    ],
+    argv: (a, url2) => [
+      "readback",
+      "--json",
+      "--no-record",
+      ...flag2("url", url2),
+      ...flag2("pr", a["pr"]),
+      ...flag2("commit", a["commit"]),
+      ...flag2("last", a["last"]),
+      ...flag2("branch", a["branch"]),
+      ...flag2("deployed", a["deployed"])
+    ]
+  },
+  {
+    name: "replay",
+    title: "Replay recorded verdicts",
+    description: 'Recomputes every verdict recorded on the seamkit/state ledger from its recorded observations and fails if any comes out differently. Returns the same JSON as "seamkit replay --json". Reads the ledger as this checkout has it.',
+    params: [{ name: "event", type: "string", description: "The id prefix (hex) of one recorded event. Null for all.", pattern: "^[0-9a-f]{4,64}$" }],
+    argv: (a) => ["replay", "--json", ...a["event"] === null || a["event"] === void 0 ? [] : [String(a["event"])]]
+  },
+  {
+    name: "ledger_verify",
+    title: "Verify the ledger",
+    description: 'Checks every file on the seamkit/state ledger against the SHA-256 in its name. Returns the same JSON as "seamkit state verify --json".',
+    params: [],
+    argv: () => ["state", "verify", "--json"]
+  }
+];
+function jsonSchema(tool, constraints = true) {
+  const properties = {};
+  const params = constraints ? tool.params : modelParams(tool);
+  for (const p of params) {
+    properties[p.name] = {
+      type: [p.type, "null"],
+      description: constraints ? p.description : describe2(p),
+      ...constraints && p.minimum !== void 0 ? { minimum: p.minimum } : {},
+      ...constraints && p.maximum !== void 0 ? { maximum: p.maximum } : {},
+      ...constraints && p.pattern !== void 0 ? { pattern: p.pattern } : {}
+    };
+  }
+  return { type: "object", properties, required: params.map((p) => p.name), additionalProperties: false };
+}
+function modelParams(tool) {
+  return tool.params.filter((p) => p.name !== "url");
+}
+function describe2(p) {
+  if (p.minimum !== void 0 && p.maximum !== void 0)
+    return `${p.description} From ${p.minimum} to ${p.maximum}.`;
+  return p.description;
+}
+var FORMATS = ["mcp", "openai", "anthropic", "gemini"];
+var annotations = (tool) => ({
+  title: tool.title,
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: true
+});
+function toolsIn(format) {
+  switch (format) {
+    case "mcp":
+      return TOOLS.map((t) => ({ name: t.name, title: t.title, description: t.description, inputSchema: jsonSchema(t), annotations: annotations(t) }));
+    case "openai":
+      return TOOLS.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: jsonSchema(t, false), strict: true } }));
+    case "anthropic":
+      return TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: jsonSchema(t, false) }));
+    case "gemini":
+      return [{ functionDeclarations: TOOLS.map((t) => ({ name: t.name, description: t.description, ...modelParams(t).length > 0 ? { parameters: geminiSchema(t) } : {} })) }];
+  }
+}
+function geminiSchema(tool) {
+  const properties = {};
+  const params = modelParams(tool);
+  for (const p of params) {
+    properties[p.name] = {
+      type: p.type === "integer" ? "INTEGER" : "STRING",
+      description: describe2(p),
+      nullable: true
+    };
+  }
+  return { type: "OBJECT", properties, required: params.map((p) => p.name) };
+}
+
 // packages/cli/dist/cli.js
 var VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 var HELP = `seamkit ${VERSION}: deterministic production checks.
@@ -10386,6 +10503,8 @@ Usage:
   seamkit state list [--json]
   seamkit state verify [--json]
   seamkit state sync [--remote <name>] [--no-push]
+  seamkit mcp [--url <production-url>]... [--cwd <dir>]
+  seamkit tools --format mcp|openai|anthropic|gemini
   seamkit version
 
 readback proves whether production holds each merged change: by the commit production says it
@@ -10408,6 +10527,10 @@ Verdicts are recorded on the ${STATE_BRANCH} branch when it exists (create it wi
 repository; "seamkit stamp --out" writes only the file it names there. "seamkit stamp
 --require-clean" refuses a dirty tree, and a stamp that cannot say whether the tree is
 clean. "seamkit state sync --no-push" merges the remote's ledger here without pushing.
+
+"seamkit mcp" serves the read-only commands as tools to an MCP client over standard input and
+output. It reads only the production addresses it was started with (--url, or SEAMKIT_URL), and
+records nothing. "seamkit tools" writes the same tool definitions for a model API.
 `;
 var UsageError = class extends Error {
   name = "UsageError";
@@ -10439,7 +10562,8 @@ async function run(argv, io) {
         "version-url": { type: "string" },
         deployed: { type: "string" },
         out: { type: "string" },
-        "require-clean": { type: "boolean" }
+        "require-clean": { type: "boolean" },
+        format: { type: "string" }
       }
     }));
   } catch (err) {
@@ -10475,6 +10599,10 @@ ${HELP}`);
         return await cmdReadback(rest, values, cwd, io, true);
       case "stamp":
         return await cmdStamp(rest, values, cwd, io);
+      case "tools":
+        return cmdTools(rest, values, io);
+      case "mcp":
+        throw new UsageError("seamkit mcp serves over standard input and output; run it as its own command, not through run()");
       default:
         throw new UsageError(`unknown command: ${command}`);
     }
@@ -10598,27 +10726,27 @@ function productionUrl(flags, env) {
     throw new UsageError("give the production URL with --url, or set SEAMKIT_URL");
   return recordableUrl(raw, "--url", "https://your.app");
 }
-function recordableUrl(raw, flag2, example) {
+function recordableUrl(raw, flag3, example) {
   let url2;
   try {
     url2 = new URL(raw);
   } catch {
-    throw new UsageError(`${flag2} is not an absolute URL; give one such as ${example}`);
+    throw new UsageError(`${flag3} is not an absolute URL; give one such as ${example}`);
   }
   if (url2.protocol !== "http:" && url2.protocol !== "https:")
-    throw new UsageError(`${flag2} must be an http or https URL`);
+    throw new UsageError(`${flag3} must be an http or https URL`);
   if (url2.username !== "" || url2.password !== "")
-    throw new UsageError(`${flag2} must not contain a user name or password, because URLs are recorded in the ledger`);
+    throw new UsageError(`${flag3} must not contain a user name or password, because URLs are recorded in the ledger`);
   if (url2.search !== "")
-    throw new UsageError(`${flag2} must not carry a query string, because URLs are recorded in the ledger`);
+    throw new UsageError(`${flag3} must not carry a query string, because URLs are recorded in the ledger`);
   url2.hash = "";
   return url2.href;
 }
-function positive(value, flag2, fallback, max) {
+function positive(value, flag3, fallback, max) {
   if (value === void 0)
     return fallback;
   if (!/^[1-9][0-9]*$/.test(value) || Number(value) > max)
-    throw new UsageError(`${flag2} must be a whole number from 1 to ${max}`);
+    throw new UsageError(`${flag3} must be a whole number from 1 to ${max}`);
   return Number(value);
 }
 async function cmdReadback(args, flags, cwd, io, audit) {
@@ -10670,6 +10798,16 @@ ${advice.map((a) => `  - ${a}`).join("\n")}
 `);
   noteRecording(recorded, flags, io);
   return exitCodeFor(outcome);
+}
+function cmdTools(args, flags, io) {
+  if (args.length > 0)
+    throw new UsageError(`unexpected argument: ${args[0]}`);
+  const format = flags.format;
+  if (format === void 0 || !FORMATS.includes(format))
+    throw new UsageError(`--format must be one of ${FORMATS.join(", ")}`);
+  io.out(`${JSON.stringify(toolsIn(format), null, 2)}
+`);
+  return 0;
 }
 async function cmdStamp(args, flags, cwd, io) {
   if (args.length > 0)
