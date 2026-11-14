@@ -1,6 +1,6 @@
 <div align="center">
 
-# seamkit
+<h1><img src="docs/assets/hero.svg" width="920" alt="seamkit. Is your merged change actually live? A terminal runs npx seamkit audit and answers with an exit code, while a seam between merged and live is stitched one pull request at a time; one stitch is missing, and that change is not live."></h1>
 
 **Is your merged change actually live in production? seamkit checks, and answers with an exit code.**
 
@@ -75,9 +75,23 @@ machine, and its test pins every state. It needs no network and no account.
 ## How it works
 
 <picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/scene-dark.svg">
+  <img src="docs/assets/scene-light.svg" width="920" alt="An illustrated scene in two rows. In front is your pipeline: a repository holding a stack of merged pull requests and a scope card; a bridge across a gap, the seam, where a press stamps each build with a version document; and production, a tower that answers /version. Behind it is seamkit: agents, CI and people ask through the CLI, MCP or the Action; the core, a tower with a lens and no model inside, reads the repository and production over two read-only beams; and it gives three answers: an exit code, a check run, and a ledger that replays byte for byte.">
+</picture>
+
+Your pipeline is the front row, and seamkit is the back row. It never sits in the path of a deploy: it reads your
+repository and reads production with `GET` requests, and nothing it does writes to either.
+
+<details>
+<summary>The same picture as a plain diagram</summary>
+<br>
+
+<picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.svg">
   <img src="docs/assets/architecture-light.svg" width="920" alt="Diagram of the seam between merged and live. Merged changes in git, with an optional seamkit-card in the pull request, flow to a build where seamkit stamp writes version.json, then to your host's deploy, then to production. seamkit reads production read-only, its version document and the text of the served bundle, and reads git history, and never writes to production. Its deterministic core, with no model, gives an exit code for agents and scripts, a check run on the deployed commit through the GitHub Action, and a record on the seamkit/state ledger branch that replays byte for byte. Agents, CI and humans call the same CLI and Action.">
 </picture>
+
+</details>
 
 Three steps, each with a plain artefact you can inspect:
 
