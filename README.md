@@ -287,6 +287,16 @@ seamkit's verdicts never call a model or an outside service, and the suite prove
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) to contribute and [`SECURITY.md`](SECURITY.md) to report a vulnerability.
 
+### Share it
+
+The card below is the repository's social preview, and it is free to use wherever you link to seamkit. It is the
+title banner's finished frame, drawn by `node scripts/art/hero.mjs --social`; the header of that script has the one
+command that turns it into the PNG.
+
+<p align="center">
+  <img src="docs/assets/social-preview.png" width="640" alt="The seamkit share card: the wordmark and the question, is your merged change actually live, over a terminal that runs npx seamkit audit and answers LIVE 5 of 6, FAIL, exit code 1. Beside it, pull requests 12 to 17 are stitched across a seam from merged to live; 16 is not live. The footer reads CLI, GitHub Action, MCP server, Apache-2.0.">
+</p>
+
 <a href="https://star-history.com/#azank1/seamkit&Date">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=azank1/seamkit&type=Date&theme=dark">

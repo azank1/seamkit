@@ -1,17 +1,24 @@
 // Draws the README's title banner: the wordmark beside a seam being stitched, one stitch per merged
 // change, with one that never reached production. Writes docs/assets/hero.svg (one dark banner,
-// used in both themes).
+// used in both themes). With --social it draws the same banner as a still 1280x640 card for the
+// repository's social preview (the finished frame: every stitch, the typed command and its answer)
+// and writes docs/assets/social-preview.svg; GitHub only takes a PNG, so render that with
+//   node scripts/art/hero.mjs --social
+//   chrome --headless --window-size=1280,640 --screenshot=docs/assets/social-preview.png docs/assets/social-preview.svg
+// and upload it in Settings > General > Social preview (it can only be set there).
 //   node scripts/art/hero.mjs
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const OUT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs', 'assets', 'hero.svg');
+const SOCIAL = process.argv.includes('--social');
+const OUT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs', 'assets', SOCIAL ? 'social-preview.svg' : 'hero.svg');
 const W = 1280;
-const H = 420;
+const H = SOCIAL ? 640 : 420;
+const DY = SOCIAL ? 100 : 0; // the card is taller: the banner sits a little above the middle, with a footer below
 const LOOP = 9; // seconds
 const SEAM_X = 930;
-const TOP = 62;
+const TOP = 62 + DY;
 const STEP = 50;
 const CHANGES = [
   { pr: '#12', ok: true },
@@ -30,7 +37,7 @@ o.push(`<defs>
 <linearGradient id="word" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#9db8ff"/></linearGradient>
 <pattern id="weaveL" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="12" height="12" fill="#17263a"/><rect width="12" height="1.2" fill="#22364f"/></pattern>
 <pattern id="weaveR" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)"><rect width="12" height="12" fill="#143026"/><rect width="12" height="1.2" fill="#1d4536"/></pattern>
-<clipPath id="card"><rect width="${W}" height="${H}" rx="20"/></clipPath>
+<clipPath id="card"><rect width="${W}" height="${H}" rx="${SOCIAL ? 0 : 20}"/></clipPath>
 </defs>`);
 o.push(`<g clip-path="url(#card)"><rect width="${W}" height="${H}" fill="url(#bg)"/>`);
 
@@ -38,8 +45,8 @@ o.push(`<g clip-path="url(#card)"><rect width="${W}" height="${H}" fill="url(#bg
 o.push(`<path d="M690,0 H${SEAM_X - 7} V${H} H640 Z" fill="url(#weaveL)"/>`);
 o.push(`<path d="M${SEAM_X + 7},0 H${W} V${H} H${SEAM_X + 7} Z" fill="url(#weaveR)"/>`);
 o.push(`<rect x="${SEAM_X - 7}" y="0" width="14" height="${H}" fill="#070c13"/>`);
-o.push(`<text class="m" x="${SEAM_X - 26}" y="36" font-size="15" fill="#8fa9d8" text-anchor="end" letter-spacing="2">MERGED</text>`);
-o.push(`<text class="m" x="${SEAM_X + 26}" y="36" font-size="15" fill="#7fd3ac" letter-spacing="2">LIVE</text>`);
+o.push(`<text class="m" x="${SEAM_X - 26}" y="${36 + DY}" font-size="15" fill="#8fa9d8" text-anchor="end" letter-spacing="2">MERGED</text>`);
+o.push(`<text class="m" x="${SEAM_X + 26}" y="${36 + DY}" font-size="15" fill="#7fd3ac" letter-spacing="2">LIVE</text>`);
 
 // One stitch per change. A change that is live gets a thread across the seam; one that is not
 // leaves the gap open, and says so.
@@ -66,10 +73,10 @@ CHANGES.forEach((c, i) => {
 // The needle travels down the seam as the stitches land.
 const travel = CHANGES.length * STEP;
 css.push(`.needle{animation:needle ${LOOP}s linear infinite}@keyframes needle{0%,${pct(1)}{transform:translateY(0);opacity:0}${pct(1.2)}{opacity:1}${pct(1.2 + CHANGES.length * 0.75)}{transform:translateY(${travel}px);opacity:1}${pct(2.2 + CHANGES.length * 0.75)},100%{transform:translateY(${travel}px);opacity:0}}`);
-o.push(`<g class="needle"><path d="M${SEAM_X},${TOP - 26} l5,34 l-5,14 l-5,-14 z" fill="#dfe7f2"/><circle cx="${SEAM_X}" cy="${TOP - 14}" r="2.4" fill="#0c1622"/></g>`);
+if (!SOCIAL) o.push(`<g class="needle"><path d="M${SEAM_X},${TOP - 26} l5,34 l-5,14 l-5,-14 z" fill="#dfe7f2"/><circle cx="${SEAM_X}" cy="${TOP - 14}" r="2.4" fill="#0c1622"/></g>`);
 
 // The wordmark, the question, and a terminal line that types itself and answers.
-o.push(`<g transform="translate(70,0)">`);
+o.push(`<g transform="translate(70,${DY})">`);
 o.push(`<g transform="translate(0,84)"><rect width="44" height="44" rx="11" fill="#2752c9"/><path d="M15,8 V36 M29,8 V36" stroke="#ffffff" stroke-width="3.4" stroke-linecap="round"/><path d="M15,14 H29 M15,22 H29 M15,30 H29" stroke="#ffd66b" stroke-width="3" stroke-linecap="round" stroke-dasharray="4 3"/></g>`);
 o.push(`<text class="s" x="60" y="124" font-size="64" font-weight="800" fill="url(#word)" letter-spacing="-1.5">seamkit</text>`);
 o.push(`<text class="s" x="0" y="184" font-size="27" font-weight="600" fill="#e8eef5">Is your merged change actually live?</text>`);
@@ -85,9 +92,14 @@ o.push(`<g class="answer"><text class="m" x="20" y="86" font-size="17"><tspan fi
 o.push(`</g>`);
 css.push(`.typing{animation:typing ${LOOP}s steps(${chars}) infinite;transform-box:fill-box;transform-origin:left}@keyframes typing{0%{transform:scaleX(0)}${pct(1.2)},100%{transform:scaleX(1)}}`);
 css.push(`.answer{animation:answer ${LOOP}s linear infinite}@keyframes answer{0%,${pct(1.2 + CHANGES.length * 0.75)}{opacity:0}${pct(1.6 + CHANGES.length * 0.75)},94%{opacity:1}100%{opacity:0}}`);
+if (SOCIAL) {
+  o.push(`<rect x="70" y="${H - 92}" width="560" height="1" fill="#22364f"/>`);
+  o.push(`<text class="s" x="70" y="${H - 54}" font-size="20" fill="#c9d6e6"><tspan font-weight="700">CLI</tspan><tspan fill="#5d7390">  ·  </tspan><tspan font-weight="700">GitHub Action</tspan><tspan fill="#5d7390">  ·  </tspan><tspan font-weight="700">MCP server</tspan><tspan fill="#5d7390">  ·  </tspan>Apache-2.0</text>`);
+  o.push(`<text class="m" x="70" y="${H - 24}" font-size="15" fill="#6f86a3">github.com/azank1/seamkit</text>`);
+}
 o.push(`</g>`);
 
-const style = `.s{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",Arial,sans-serif}.m{font-family:ui-monospace,"SFMono-Regular","SF Mono",Menlo,Consolas,"Liberation Mono","DejaVu Sans Mono",monospace}${css.join('')}@media (prefers-reduced-motion:reduce){*{animation:none!important}.needle{opacity:0}}`;
+const style = `.s{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",Arial,sans-serif}.m{font-family:ui-monospace,"SFMono-Regular","SF Mono",Menlo,Consolas,"Liberation Mono","DejaVu Sans Mono",monospace}${SOCIAL ? '' : css.join('')}@media (prefers-reduced-motion:reduce){*{animation:none!important}.needle{opacity:0}}`;
 const desc = 'The seamkit wordmark with the question: is your merged change actually live? A terminal runs npx seamkit audit and answers LIVE 5 of 6, FAIL, exit code 1. Beside it, two panels of cloth labelled merged and live are stitched together, one stitch per pull request: 12, 13, 14, 15 and 17 are live, and 16 is not live, where the seam stays open.';
 writeFileSync(OUT, `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-labelledby="t d"><title id="t">seamkit</title><desc id="d">${desc}</desc><style>${style}</style>${o.join('')}</svg>\n`);
-console.log('hero: wrote docs/assets/hero.svg');
+console.log(`hero: wrote docs/assets/${SOCIAL ? 'social-preview' : 'hero'}.svg`);
